@@ -54,8 +54,15 @@ export default function NewComplaintPage() {
     userPerms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL) ||
     userPerms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
     userPerms.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED);
-  const requiresVerification =
-    verificationStatus && verificationStatus !== 'VERIFIED' && !isStaffCreator;
+  const allowUnverified =
+    (user as { allowUnverifiedCitizenComplaints?: boolean })
+      ?.allowUnverifiedCitizenComplaints === true;
+  const emailUnverified = user?.emailVerified === false;
+  const kycUnverified =
+    !!verificationStatus && verificationStatus !== 'VERIFIED';
+  const isUnverifiedCitizen =
+    !isStaffCreator && (emailUnverified || kycUnverified);
+  const blockedByVerification = isUnverifiedCitizen && !allowUnverified;
 
   const { data: categoriesRaw } = useQuery({
     queryKey: ['categories'],
@@ -143,7 +150,7 @@ export default function NewComplaintPage() {
     form.description.trim().length >= 10 &&
     !submitMutation.isPending;
 
-  if (requiresVerification) {
+  if (blockedByVerification) {
     return (
       <div className="mx-auto max-w-2xl">
         <Link
@@ -157,17 +164,33 @@ export default function NewComplaintPage() {
             <AlertTriangle className="mt-0.5 h-6 w-6 text-amber-600" />
             <div>
               <h2 className="text-base font-bold text-amber-900">
-                {t('complaints.new.kycRequired')}
+                {kycUnverified
+                  ? t('complaints.new.kycRequired')
+                  : t('complaints.new.emailRequired')}
               </h2>
               <p className="mt-1 text-sm text-amber-800">
-                {t('complaints.new.kycRequired.desc')}
+                {kycUnverified
+                  ? t('complaints.new.kycRequired.desc')
+                  : t('complaints.new.emailRequired.desc')}
               </p>
-              <Link
-                href="/kyc/submit"
-                className="mt-3 inline-flex rounded-lg bg-amber-700 px-4 py-2 text-sm font-medium text-white hover:bg-amber-800"
-              >
-                {t('profile.kyc.submit')}
-              </Link>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {kycUnverified && (
+                  <Link
+                    href="/kyc/submit"
+                    className="inline-flex rounded-lg bg-amber-700 px-4 py-2 text-sm font-medium text-white hover:bg-amber-800"
+                  >
+                    {t('profile.kyc.submit')}
+                  </Link>
+                )}
+                {emailUnverified && (
+                  <Link
+                    href="/profile"
+                    className="inline-flex rounded-lg border border-amber-700 px-4 py-2 text-sm font-medium text-amber-900 hover:bg-amber-100"
+                  >
+                    {t('auth.unverified.resend')}
+                  </Link>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -191,6 +214,12 @@ export default function NewComplaintPage() {
           <div className="mt-3 flex items-start gap-2 rounded border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
             <Info className="mt-0.5 h-4 w-4 shrink-0" />
             <span>{t('complaints.createOnBehalf.notice')}</span>
+          </div>
+        )}
+        {isUnverifiedCitizen && allowUnverified && (
+          <div className="mt-3 flex items-start gap-2 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+            <Info className="mt-0.5 h-4 w-4 shrink-0 text-gray-500" />
+            <span>{t('complaints.new.unverifiedNotice')}</span>
           </div>
         )}
       </div>

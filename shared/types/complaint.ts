@@ -41,6 +41,16 @@ export enum AttachmentStage {
   INSPECTION = 'INSPECTION',   // Supervisor inspection
 }
 
+export type ComplaintRiskReason = 'UNVERIFIED_EMAIL' | 'UNVERIFIED_KYC';
+
+/** Staff-only metadata for lower-trust citizen submissions. */
+export interface ComplaintRiskInfo {
+  isRiskySubmission: boolean;
+  riskReasons: ComplaintRiskReason[];
+  submittedByEmailVerified?: boolean | null;
+  submittedByKycVerified?: boolean | null;
+}
+
 export interface ComplaintSummary {
   id: string;
   referenceCode: string | null;
@@ -49,12 +59,17 @@ export interface ComplaintSummary {
   priority: ComplaintPriority;
   category: { id: string; name: string };
   department?: { id: string; name: string } | null;
-  createdBy: { id: string; firstName: string; lastName: string };
+  createdBy?: { id: string; firstName: string; lastName: string };
   address?: string | null;
   dueDate?: string | null;
   isOverdue?: boolean;
   createdAt: string;
-  updatedAt: string;
+  updatedAt?: string;
+  /** Present only for staff/admin API responses when the submitter was unverified. */
+  isRiskySubmission?: boolean;
+  riskReasons?: ComplaintRiskReason[];
+  submittedByEmailVerified?: boolean | null;
+  submittedByKycVerified?: boolean | null;
 }
 
 export interface ComplaintDetail extends ComplaintSummary {
@@ -139,6 +154,8 @@ export interface ComplaintQueryParams {
   overdue?: boolean;
   /** Excludes COMPLETED / CLOSED / REJECTED so the action-queue list matches its count. */
   openOnly?: boolean;
+  /** Staff only: complaints from unverified citizens. */
+  riskyOnly?: boolean;
 }
 
 export interface AssignComplaintRequest {

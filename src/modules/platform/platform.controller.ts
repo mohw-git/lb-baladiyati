@@ -301,6 +301,34 @@ export class PlatformController {
     );
   }
 
+  @Get('allow-unverified-citizen-complaints')
+  @RequirePermissions(PERMISSIONS.PLATFORM_VIEW_ALL)
+  @ApiOperation({
+    summary: 'Read whether unverified citizens may submit complaints (risk-marked, LOW priority)',
+  })
+  async getAllowUnverifiedCitizenComplaints() {
+    const enabled =
+      await this.platformService.getAllowUnverifiedCitizenComplaints();
+    return { enabled };
+  }
+
+  @Put('allow-unverified-citizen-complaints')
+  @RequirePermissions(PERMISSIONS.PLATFORM_MANAGE_MUNICIPALITIES)
+  @ApiOperation({
+    summary:
+      'Toggle allowing unverified citizens to submit complaints (internally risk-marked, LOW priority only)',
+  })
+  async setAllowUnverifiedCitizenComplaints(
+    @Body('enabled', ParseBoolPipe) enabled: boolean,
+    @CurrentUser() user: CurrentUserData,
+  ) {
+    return this.platformService.setAllowUnverifiedCitizenComplaints(
+      enabled,
+      user.id,
+      user.email,
+    );
+  }
+
   // ============================================================
   // STATS
   // ============================================================

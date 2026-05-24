@@ -564,6 +564,12 @@ model Complaint {
   dueDate     DateTime?         @map("due_date") // SLA deadline
   escalatedAt DateTime?         @map("escalated_at") // When escalated to higher level
 
+  // Unverified-citizen submission risk (staff-visible only in API responses)
+  isRiskySubmission        Boolean  @default(false) @map("is_risky_submission")
+  riskReasons              Json?    @map("risk_reasons") // e.g. ["UNVERIFIED_EMAIL","UNVERIFIED_KYC"]
+  submittedByEmailVerified Boolean? @map("submitted_by_email_verified")
+  submittedByKycVerified   Boolean? @map("submitted_by_kyc_verified")
+
   // Resolution tracking
   rejectionReason RejectionReason? @map("rejection_reason")
   rejectionNotes  String?          @map("rejection_notes")
@@ -590,6 +596,7 @@ model Complaint {
   @@index([createdById])
   @@index([dueDate])
   @@index([createdAt])
+  @@index([isRiskySubmission])
   @@map("complaints")
 }
 

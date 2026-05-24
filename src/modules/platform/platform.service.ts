@@ -849,6 +849,9 @@ export class PlatformService {
    * users are still let in but the dashboard shows a persistent banner.
    */
   static readonly KEY_REQUIRE_EMAIL_VERIFICATION = 'auth.require_email_verification';
+  /** When true, citizens without verified email/KYC may submit complaints (forced LOW priority, risk flags). */
+  static readonly KEY_ALLOW_UNVERIFIED_CITIZEN_COMPLAINTS =
+    'complaints.allow_unverified_citizen_complaints';
 
   async listSettings() {
     return this.prisma.platformSetting.findMany({ orderBy: { key: 'asc' } });
@@ -971,6 +974,28 @@ export class PlatformService {
       PlatformService.KEY_REQUIRE_EMAIL_VERIFICATION,
       enabled ? 'true' : 'false',
       'When true, /auth/login blocks unverified email accounts and the client must complete email verification before being issued an access token.',
+      actorId,
+      actorEmail,
+    );
+    return { enabled };
+  }
+
+  async getAllowUnverifiedCitizenComplaints(): Promise<boolean> {
+    const v = await this.getSetting(
+      PlatformService.KEY_ALLOW_UNVERIFIED_CITIZEN_COMPLAINTS,
+    );
+    return v === 'true';
+  }
+
+  async setAllowUnverifiedCitizenComplaints(
+    enabled: boolean,
+    actorId: string,
+    actorEmail: string,
+  ) {
+    await this.setSetting(
+      PlatformService.KEY_ALLOW_UNVERIFIED_CITIZEN_COMPLAINTS,
+      enabled ? 'true' : 'false',
+      'When true, citizens without verified email or KYC may submit complaints. Such complaints are forced to LOW priority and marked internally for staff review.',
       actorId,
       actorEmail,
     );

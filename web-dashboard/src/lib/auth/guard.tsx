@@ -5,6 +5,15 @@ import { useRouter, usePathname } from 'next/navigation';
 import { useAuth } from './hooks';
 import { useAuthStore } from './store';
 import { authApi } from '@/lib/api';
+import { isCitizenAccount } from './user';
+
+/** Routes unverified-email citizens may use when platform policy allows complaint submission. */
+const LIMITED_CITIZEN_PREFIXES = [
+  '/profile',
+  '/complaints',
+  '/kyc/submit',
+  '/notifications',
+];
 
 interface AuthGuardProps {
   children: React.ReactNode;
@@ -106,6 +115,34 @@ export function AuthGuard({ children, permissions }: AuthGuardProps) {
       router.replace('/profile?forceChangePassword=1');
     }
   }, [isLoading, isAuthenticated, profileReconciled, user, pathname, router]);
+
+  // Unverified-email citizens with allowUnverifiedCitizenComplaints may only
+  // access complaint submission, profile/KYC, and notifications — not the full dashboard.
+  useEffect(() => {
+    if (
+      !isLoading &&
+      isAuthenticated &&
+      profileReconciled &&
+      user &&
+      isCitizenAccount(user) &&
+      user.emailVerified === false &&
+      user.allowUnverifiedCitizenComplaints === true
+    ) {
+      const allowed = LIMITED_CITIZEN_PREFIXES.some(
+        (p) => pathname === p || pathname.startsWith(`${p}/`),
+      );
+      if (!allowed) {
+        router.replace('/complaints/new');
+      }
+    }
+  }, [
+    isLoading,
+    isAuthenticated,
+    profileReconciled,
+    user,
+    pathname,
+    router,
+  ]);
 
   // If the Super Admin enabled platform-wide "Require 2FA for staff" and this
   // user has not yet enrolled, force them through the 2FA setup flow on

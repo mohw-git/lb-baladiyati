@@ -47,6 +47,7 @@ export const AUDIT_ACTIONS = {
   COMPLAINT_STATUS_CHANGE: 'complaint.status.change',
   COMPLAINT_REJECT: 'complaint.reject',
   COMPLAINT_DELETE: 'complaint.delete',
+  COMPLAINT_RISKY_ACCEPTED: 'complaint.risky.accepted',
   // KYC
   KYC_SUBMIT: 'kyc.submit',
   KYC_APPROVE: 'kyc.approve',

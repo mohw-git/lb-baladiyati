@@ -66,6 +66,14 @@ const PRIORITY_SLA_HOURS: Record<ComplaintPriority, number> = {
   URGENT: 4,     // 4 hours
 };
 
+const PLATFORM_KEY_ALLOW_UNVERIFIED_CITIZEN_COMPLAINTS =
+  'complaints.allow_unverified_citizen_complaints';
+
+export const COMPLAINT_RISK_REASONS = {
+  UNVERIFIED_EMAIL: 'UNVERIFIED_EMAIL',
+  UNVERIFIED_KYC: 'UNVERIFIED_KYC',
+} as const;
+
 @Injectable()
 export class ComplaintsService {
   constructor(
@@ -80,6 +88,46 @@ export class ComplaintsService {
     private mail: MailService,
     private config: ConfigService,
   ) {}
+
+  private async isAllowUnverifiedCitizenComplaints(): Promise<boolean> {
+    const row = await this.prisma.platformSetting.findUnique({
+      where: { key: PLATFORM_KEY_ALLOW_UNVERIFIED_CITIZEN_COMPLAINTS },
+    });
+    return row?.value === 'true';
+  }
+
+  private canSeeRiskMetadata(permissions: string[]): boolean {
+    return (
+      permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL) ||
+      permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
+      permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED)
+    );
+  }
+
+  private mapRiskForStaff(complaint: {
+    isRiskySubmission: boolean;
+    riskReasons: unknown;
+    submittedByEmailVerified: boolean | null;
+    submittedByKycVerified: boolean | null;
+  }) {
+    if (!complaint.isRiskySubmission) {
+      return {
+        isRiskySubmission: false as const,
+        riskReasons: [] as string[],
+        submittedByEmailVerified: complaint.submittedByEmailVerified,
+        submittedByKycVerified: complaint.submittedByKycVerified,
+      };
+    }
+    const reasons = Array.isArray(complaint.riskReasons)
+      ? (complaint.riskReasons as string[])
+      : [];
+    return {
+      isRiskySubmission: true as const,
+      riskReasons: reasons,
+      submittedByEmailVerified: complaint.submittedByEmailVerified,
+      submittedByKycVerified: complaint.submittedByKycVerified,
+    };
+  }
 
   /**
    * Citizen-facing notification for a complaint status change.
@@ -150,27 +198,55 @@ export class ComplaintsService {
     dto: CreateComplaintDto,
     files?: Express.Multer.File[],
   ) {
-    // Check KYC verification - citizens must be verified to submit complaints
+    const permissions = await this.permissionsResolver.getUserPermissions(userId);
+    const isStaff =
+      permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL) ||
+      permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
+      permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED);
+
     const creator = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { verificationStatus: true },
+      select: {
+        verificationStatus: true,
+        emailVerifiedAt: true,
+        createdVia: true,
+      },
     });
 
-    if (creator?.verificationStatus !== VerificationStatus.VERIFIED) {
-      // Check if user has admin/staff permissions (staff bypass KYC)
-      const permissions = await this.permissionsResolver.getUserPermissions(userId);
-      const isStaff = permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL) ||
-                      permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
-                      permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED);
+    const emailVerified = !!creator?.emailVerifiedAt;
+    const kycVerified =
+      creator?.verificationStatus === VerificationStatus.VERIFIED;
+    const allowUnverifiedPolicy = await this.isAllowUnverifiedCitizenComplaints();
 
-      if (!isStaff) {
-        throw new ForbiddenException({
-          statusCode: 403,
-          error: 'USER_NOT_VERIFIED',
-          message: 'Identity verification required to submit complaints. Please complete KYC verification first.',
-        });
+    const riskReasons: string[] = [];
+    if (!emailVerified) riskReasons.push(COMPLAINT_RISK_REASONS.UNVERIFIED_EMAIL);
+    if (!kycVerified) riskReasons.push(COMPLAINT_RISK_REASONS.UNVERIFIED_KYC);
+    const isRiskySubmission = !isStaff && riskReasons.length > 0;
+
+    if (!isStaff) {
+      if (isRiskySubmission && !allowUnverifiedPolicy) {
+        if (!kycVerified) {
+          throw new ForbiddenException({
+            statusCode: 403,
+            code: 'USER_NOT_VERIFIED',
+            message:
+              'Identity verification required to submit complaints. Please complete KYC verification first.',
+          });
+        }
+        if (!emailVerified) {
+          throw new ForbiddenException({
+            statusCode: 403,
+            code: 'EMAIL_NOT_VERIFIED',
+            message:
+              'Email verification is required before you can submit complaints.',
+          });
+        }
       }
     }
+
+    const riskyDueDate = isRiskySubmission
+      ? new Date(Date.now() + PRIORITY_SLA_HOURS.LOW * 60 * 60 * 1000)
+      : undefined;
 
     // Hard limit photo count even if multer was bypassed (defence in depth).
     if (files && files.length > 5) {
@@ -232,6 +308,16 @@ export class ComplaintsService {
         longitude: dto.longitude,
         address: dto.address,
         status: ComplaintStatus.SUBMITTED,
+        ...(isRiskySubmission
+          ? {
+              priority: ComplaintPriority.LOW,
+              dueDate: riskyDueDate,
+              isRiskySubmission: true,
+              riskReasons,
+              submittedByEmailVerified: emailVerified,
+              submittedByKycVerified: kycVerified,
+            }
+          : {}),
       },
     });
 
@@ -242,6 +328,9 @@ export class ComplaintsService {
         changedById: userId,
         fromStatus: null,
         toStatus: ComplaintStatus.SUBMITTED,
+        notes: isRiskySubmission
+          ? 'Submitted by unverified citizen'
+          : undefined,
       },
     });
 
@@ -285,8 +374,27 @@ export class ComplaintsService {
         referenceCode: complaint.referenceCode,
         title: complaint.title,
         attachmentCount: attachments.length,
+        isRiskySubmission,
+        riskReasons: isRiskySubmission ? riskReasons : undefined,
       },
     });
+
+    if (isRiskySubmission) {
+      await this.audit.log({
+        actorId: userId,
+        actorEmail: creatorEmail,
+        municipalityId,
+        action: AUDIT_ACTIONS.COMPLAINT_RISKY_ACCEPTED,
+        resourceType: 'Complaint',
+        resourceId: complaint.id,
+        metadata: {
+          referenceCode: complaint.referenceCode,
+          riskReasons,
+          policy: PLATFORM_KEY_ALLOW_UNVERIFIED_CITIZEN_COMPLAINTS,
+          forcedPriority: ComplaintPriority.LOW,
+        },
+      });
+    }
 
     // Realtime: tell HODs/Assigners/Admins in this muni a new complaint landed
     this.realtime.complaintCreated({
@@ -429,6 +537,15 @@ export class ComplaintsService {
       });
     }
 
+    if (query.riskyOnly) {
+      if (!this.canSeeRiskMetadata(permissions)) {
+        throw new ForbiddenException(
+          'You do not have permission to filter risky submissions',
+        );
+      }
+      where.AND.push({ isRiskySubmission: true });
+    }
+
     // Clean up empty AND array
     if (where.AND.length === 0) {
       delete where.AND;
@@ -444,6 +561,10 @@ export class ComplaintsService {
           status: true,
           priority: true,
           dueDate: true,
+          isRiskySubmission: true,
+          riskReasons: true,
+          submittedByEmailVerified: true,
+          submittedByKycVerified: true,
           category: {
             select: { id: true, name: true },
           },
@@ -466,10 +587,26 @@ export class ComplaintsService {
 
     // Add isOverdue flag
     const now = new Date();
-    const complaintsWithOverdue = complaints.map((c) => ({
-      ...c,
-      isOverdue: c.dueDate ? c.dueDate < now && !['COMPLETED', 'CLOSED', 'REJECTED'].includes(c.status) : false,
-    }));
+    const showRisk = this.canSeeRiskMetadata(permissions);
+    const complaintsWithOverdue = complaints.map((c) => {
+      const base = {
+        id: c.id,
+        referenceCode: c.referenceCode,
+        title: c.title,
+        status: c.status,
+        priority: c.priority,
+        dueDate: c.dueDate,
+        category: c.category,
+        department: c.department,
+        createdAt: c.createdAt,
+        isOverdue: c.dueDate
+          ? c.dueDate < now &&
+            !['COMPLETED', 'CLOSED', 'REJECTED'].includes(c.status)
+          : false,
+      };
+      if (!showRisk) return base;
+      return { ...base, ...this.mapRiskForStaff(c) };
+    });
 
     return paginate(complaintsWithOverdue, total, query);
   }
@@ -688,6 +825,9 @@ export class ComplaintsService {
       // ("Read-only preview for transfer/help decision") and hide actions
       // that would fail backend authz anyway.
       previewOnly: isPreviewOnly,
+      ...(!isCitizenOnly && !isPreviewOnly
+        ? this.mapRiskForStaff(complaint)
+        : {}),
     };
   }
 

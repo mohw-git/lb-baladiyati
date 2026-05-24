@@ -15,6 +15,9 @@ import { PERMISSIONS } from '@shared/constants/permissions';
 import { ComplaintStatus, ComplaintPriority, RejectionReason } from '@shared/types/complaint';
 import { STATUS_LABELS } from '@shared/constants/status';
 import { StatusBadge } from '@/components/features/complaints/status-badge';
+import { UnverifiedSubmitterBadge } from '@/components/features/complaints/unverified-submitter-badge';
+import { PriorityBadge } from '@/components/features/complaints/priority-badge';
+import type { ComplaintRiskReason } from '@shared/types/complaint';
 import { formatDate, getFullName } from '@/lib/utils';
 import {
   ArrowLeft, MapPin, Calendar, User as UserIcon, Tag, Building,
@@ -354,10 +357,19 @@ export default function ComplaintDetailPage() {
             <ArrowLeft className={rtl ? 'h-4 w-4 rotate-180' : 'h-4 w-4'} /> {t('common.backTo.complaints')}
           </Link>
           <h1 className="text-xl font-bold text-gray-900">{complaint.title}</h1>
-          <div className="mt-1 flex items-center gap-3 text-sm text-gray-500">
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-gray-500">
             <span className="font-mono">{complaint.referenceCode}</span>
             <StatusBadge status={complaint.status} />
+            <PriorityBadge priority={complaint.priority} />
+            {complaint.isRiskySubmission && (
+              <UnverifiedSubmitterBadge
+                riskReasons={complaint.riskReasons as ComplaintRiskReason[] | undefined}
+              />
+            )}
           </div>
+          {complaint.isRiskySubmission && (
+            <p className="mt-1 text-xs text-amber-800">{t('complaints.risk.forcedLow')}</p>
+          )}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           {approvalState.show && (

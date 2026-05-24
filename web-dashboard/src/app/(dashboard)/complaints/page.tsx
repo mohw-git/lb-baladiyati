@@ -6,6 +6,8 @@ import Link from 'next/link';
 import { complaintsApi, categoriesApi, departmentsApi } from '@/lib/api';
 import { StatusBadge } from '@/components/features/complaints/status-badge';
 import { PriorityBadge } from '@/components/features/complaints/priority-badge';
+import { UnverifiedSubmitterBadge } from '@/components/features/complaints/unverified-submitter-badge';
+import type { ComplaintRiskReason } from '@shared/types/complaint';
 import { ComplaintStatus, ComplaintPriority } from '@shared/types/complaint';
 import { formatDate } from '@/lib/utils';
 import { useTranslate, useLocale } from '@/lib/i18n';
@@ -153,6 +155,7 @@ export default function ComplaintsPage() {
   const [priorityFilter, setPriorityFilter] = useState<ComplaintPriority | ''>('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState('');
+  const [riskyOnly, setRiskyOnly] = useState(false);
   const limit = 15;
 
   const bucketParams = activeBucket?.queryParams() ?? {};
@@ -168,6 +171,7 @@ export default function ComplaintsPage() {
       priorityFilter,
       categoryFilter,
       departmentFilter,
+      riskyOnly,
     ],
     queryFn: () =>
       complaintsApi.list({
@@ -178,6 +182,7 @@ export default function ComplaintsPage() {
         priority: priorityFilter ? [priorityFilter] : undefined,
         categoryId: categoryFilter || undefined,
         departmentId: departmentFilter || undefined,
+        riskyOnly: riskyOnly || undefined,
         ...bucketParams,
         ...(bucketOpenOnly && !statusFilter ? { openOnly: true } : {}),
       }),
@@ -213,6 +218,7 @@ export default function ComplaintsPage() {
     setPriorityFilter('');
     setCategoryFilter('');
     setDepartmentFilter('');
+    setRiskyOnly(false);
   };
 
   const clearFilters = () => {
@@ -224,7 +230,8 @@ export default function ComplaintsPage() {
     setPage(1);
   };
 
-  const hasFilters = search || statusFilter || priorityFilter || categoryFilter || departmentFilter;
+  const hasFilters =
+    search || statusFilter || priorityFilter || categoryFilter || departmentFilter || riskyOnly;
 
   // Status labels using i18n
   const statusLabels: Record<ComplaintStatus, string> = {
@@ -408,6 +415,21 @@ export default function ComplaintsPage() {
             </select>
           )}
 
+          {isStaffView && (
+            <label className="flex items-center gap-2 rounded border border-gray-200 bg-white px-2 py-2 text-xs text-gray-700">
+              <input
+                type="checkbox"
+                checked={riskyOnly}
+                onChange={(e) => {
+                  setRiskyOnly(e.target.checked);
+                  setPage(1);
+                }}
+                className="h-3.5 w-3.5 rounded border-gray-300 text-brand-600"
+              />
+              {t('complaints.filter.riskyOnly')}
+            </label>
+          )}
+
           {hasFilters && (
             <button
               onClick={clearFilters}
@@ -462,9 +484,14 @@ export default function ComplaintsPage() {
                       data-label={t('complaints.col.title')}
                       className="max-w-[200px]"
                     >
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         {c.isOverdue && (
                           <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-alert-600" />
+                        )}
+                        {c.isRiskySubmission && isStaffView && (
+                          <UnverifiedSubmitterBadge
+                            riskReasons={c.riskReasons as ComplaintRiskReason[] | undefined}
+                          />
                         )}
                         <span className="truncate font-medium text-gray-900 block">{c.title}</span>
                       </div>

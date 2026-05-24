@@ -40,6 +40,11 @@ export interface AuthUser {
   emailVerifiedAt?: string | null;
   /** Convenience boolean derived from `emailVerifiedAt`. */
   emailVerified?: boolean;
+  /**
+   * Platform policy (citizens only): when true, unverified email/KYC citizens
+   * may submit complaints (backend forces LOW priority and internal risk flags).
+   */
+  allowUnverifiedCitizenComplaints?: boolean;
   /** Backend-stored language preference: EN | AR | FR (uppercase Prisma enum). */
   locale?: 'EN' | 'AR' | 'FR';
 }

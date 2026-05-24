@@ -184,6 +184,13 @@ export const platformApi = {
   setRequireEmailVerification: (enabled: boolean) =>
     put<{ enabled: boolean }>('/platform/require-email-verification', { enabled }),
 
+  getAllowUnverifiedCitizenComplaints: () =>
+    get<{ enabled: boolean }>('/platform/allow-unverified-citizen-complaints'),
+  setAllowUnverifiedCitizenComplaints: (enabled: boolean) =>
+    put<{ enabled: boolean }>('/platform/allow-unverified-citizen-complaints', {
+      enabled,
+    }),
+
   // Stats
   getStats: () => get<PlatformStats>('/platform/stats'),
 

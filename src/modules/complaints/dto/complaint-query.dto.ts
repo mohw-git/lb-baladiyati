@@ -63,4 +63,13 @@ export class ComplaintQueryDto extends PaginationDto {
   @Transform(({ value }) => value === 'true')
   @IsBoolean()
   openOnly?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Staff only: filter to complaints submitted by unverified citizens',
+    example: true,
+  })
+  @IsOptional()
+  @Transform(({ value }) => value === 'true')
+  @IsBoolean()
+  riskyOnly?: boolean;
 }

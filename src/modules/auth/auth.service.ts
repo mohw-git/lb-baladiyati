@@ -228,28 +228,39 @@ export class AuthService {
         where: { key: 'auth.require_email_verification' },
       });
       if (requireSetting?.value === 'true') {
-        // Best-effort: kick off a fresh verification email so the user
-        // has something actionable in their inbox right away. Honours
-        // the per-user 3-tokens-per-15-min throttle in
-        // sendEmailVerification() so this can't be weaponised by repeated
-        // login attempts.
-        await this.sendEmailVerification(user.email, req).catch(() => undefined);
-        await this.audit.logFromRequest(req, {
-          actorId: user.id,
-          actorEmail: user.email,
-          municipalityId: user.municipalityId,
-          action: AUDIT_ACTIONS.AUTH_LOGIN_FAILED,
-          metadata: {
-            reason: 'email_not_verified',
-            email: dto.email.toLowerCase(),
-          },
-        });
-        throw new ForbiddenException({
-          code: 'EMAIL_NOT_VERIFIED',
-          message:
-            'Your email address is not verified. Please check your inbox for the verification link.',
-          email: user.email,
-        });
+        const isCitizen = (user as any).createdVia === 'SELF_REGISTRATION';
+        let allowLimitedCitizenAccess = false;
+        if (isCitizen) {
+          const allowComplaints = await this.prisma.platformSetting.findUnique({
+            where: { key: 'complaints.allow_unverified_citizen_complaints' },
+          });
+          allowLimitedCitizenAccess = allowComplaints?.value === 'true';
+        }
+
+        if (!allowLimitedCitizenAccess) {
+          // Best-effort: kick off a fresh verification email so the user
+          // has something actionable in their inbox right away. Honours
+          // the per-user 3-tokens-per-15-min throttle in
+          // sendEmailVerification() so this can't be weaponised by repeated
+          // login attempts.
+          await this.sendEmailVerification(user.email, req).catch(() => undefined);
+          await this.audit.logFromRequest(req, {
+            actorId: user.id,
+            actorEmail: user.email,
+            municipalityId: user.municipalityId,
+            action: AUDIT_ACTIONS.AUTH_LOGIN_FAILED,
+            metadata: {
+              reason: 'email_not_verified',
+              email: dto.email.toLowerCase(),
+            },
+          });
+          throw new ForbiddenException({
+            code: 'EMAIL_NOT_VERIFIED',
+            message:
+              'Your email address is not verified. Please check your inbox for the verification link.',
+            email: user.email,
+          });
+        }
       }
     }
 
@@ -435,7 +446,13 @@ export class AuthService {
     };
 
     if (this.isCitizenAccount(user as any)) {
-      return this.sanitizeProfileForCitizen(profile);
+      const allowRow = await this.prisma.platformSetting.findUnique({
+        where: { key: 'complaints.allow_unverified_citizen_complaints' },
+      });
+      return this.sanitizeProfileForCitizen({
+        ...profile,
+        allowUnverifiedCitizenComplaints: allowRow?.value === 'true',
+      });
     }
 
     return profile;
