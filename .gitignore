@@ -1,0 +1,77 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+**/dist/
+.next/
+**/.next/
+*.tsbuildinfo
+**/*.tsbuildinfo
+
+# Expo / Metro
+.expo/
+**/.expo/
+
+# Sentry
+.sentryclirc
+
+# Environment files (never commit real secrets)
+.env
+.env.local
+.env.*.local
+.env.production
+.env.staging
+**/.env
+**/.env.local
+**/.env.*.local
+# Allow committed templates
+!.env.example
+!**/.env.example
+
+# Secrets folder (Firebase admin JSON, API keys, etc.)
+secrets/
+**/secrets/
+
+# Firebase service-account / google-services credentials (do NOT commit)
+*firebase-adminsdk*.json
+google-services.json
+GoogleService-Info.plist
+
+# Uploads (runtime user files)
+uploads/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Testing
+coverage/
+
+# Prisma
+prisma/*.db
+prisma/*.db-journal
+
+# Caddy
+Caddyfile.autosave
+
+# PM2
+.pm2/
+
+# Windows
+*.bak
+
+# Resend / mail secrets
+*resend*

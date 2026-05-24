@@ -1,0 +1,46 @@
+-- AlterTable
+ALTER TABLE "municipalities" ADD COLUMN     "address" TEXT,
+ADD COLUMN     "address_ar" TEXT,
+ADD COLUMN     "address_fr" TEXT,
+ADD COLUMN     "email" TEXT,
+ADD COLUMN     "latitude" DOUBLE PRECISION,
+ADD COLUMN     "longitude" DOUBLE PRECISION,
+ADD COLUMN     "opening_hours" TEXT,
+ADD COLUMN     "opening_hours_ar" TEXT,
+ADD COLUMN     "opening_hours_fr" TEXT,
+ADD COLUMN     "phone" TEXT,
+ADD COLUMN     "website" TEXT,
+ADD COLUMN     "whats_app" TEXT;
+
+-- CreateTable
+CREATE TABLE "platform_branding" (
+    "id" TEXT NOT NULL DEFAULT 'default',
+    "logo_url" TEXT,
+    "banner_image_url" TEXT,
+    "banner_overlay_color" TEXT,
+    "banner_overlay_opacity" DOUBLE PRECISION,
+    "platform_name" TEXT DEFAULT 'Baladi',
+    "platform_name_ar" TEXT DEFAULT 'بلدي',
+    "platform_name_fr" TEXT DEFAULT 'Baladi',
+    "platform_description" TEXT,
+    "platform_description_ar" TEXT,
+    "platform_description_fr" TEXT,
+    "operator_name" TEXT,
+    "operator_name_ar" TEXT,
+    "operator_name_fr" TEXT,
+    "support_email" TEXT,
+    "support_phone" TEXT,
+    "support_whats_app" TEXT,
+    "office_address" TEXT,
+    "office_address_ar" TEXT,
+    "office_address_fr" TEXT,
+    "opening_hours" TEXT,
+    "opening_hours_ar" TEXT,
+    "opening_hours_fr" TEXT,
+    "app_store_url" TEXT,
+    "google_play_url" TEXT,
+    "apk_url" TEXT,
+    "updated_at" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "platform_branding_pkey" PRIMARY KEY ("id")
+);

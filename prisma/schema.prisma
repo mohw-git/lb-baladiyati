@@ -1,0 +1,1023 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== ENUMS ====================
+
+enum ComplaintStatus {
+  SUBMITTED // Citizen submitted
+  UNDER_REVIEW // HOD/Supervisor reviewing
+  ASSIGNED // Assigned to field worker
+  IN_PROGRESS // Worker started work
+  PENDING_APPROVAL // Work done, waiting supervisor/HOD approval
+  COMPLETED // Approved and completed
+  REJECTED // Rejected with reason
+  CLOSED // Finalized and closed
+}
+
+enum ComplaintPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum RejectionReason {
+  DUPLICATE
+  INVALID_CATEGORY
+  INSUFFICIENT_INFO
+  OUT_OF_JURISDICTION
+  NOT_MUNICIPAL_ISSUE
+  ALREADY_RESOLVED
+  OTHER
+}
+
+enum AttachmentType {
+  IMAGE
+  DOCUMENT
+}
+
+enum AttachmentStage {
+  SUBMISSION // Initial complaint photos
+  PROOF // Work completion proof
+  INSPECTION // Supervisor inspection photos
+}
+
+enum NotificationType {
+  COMPLAINT_SUBMITTED
+  COMPLAINT_ASSIGNED
+  COMPLAINT_STATUS_CHANGED
+  COMPLAINT_COMPLETED
+  COMPLAINT_REJECTED
+  COMPLAINT_ESCALATED
+  COMPLAINT_FEEDBACK_REQUESTED
+  NEWS_PUBLISHED
+  KYC_SUBMITTED
+  KYC_APPROVED
+  KYC_REJECTED
+  TASK_ASSIGNED
+  TASK_STATUS_CHANGED
+  TRANSFER_REQUESTED
+  TRANSFER_ACCEPTED
+  TRANSFER_REJECTED
+  HELP_REQUESTED
+  HELP_ACCEPTED
+  HELP_DECLINED
+  HELP_ASSIGNED
+  HELP_SUBMITTED
+  HELP_COMPLETED
+  HELP_REJECTED
+  HELP_CANCELLED
+}
+
+// ==================== TASK / TRANSFER ENUMS ====================
+
+enum TaskStatus {
+  NEW // just created, not picked up
+  IN_PROGRESS // someone is working on it
+  BLOCKED // waiting on something external
+  DONE
+  CANCELLED
+}
+
+/// Discriminator for the polymorphic transfer-request entity:
+/// the target is either a citizen-facing Complaint or an internal Task.
+enum TransferTargetType {
+  COMPLAINT
+  TASK
+}
+
+enum TransferStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  CANCELLED // cancelled by the original requester
+  AUTO_CANCELLED // future: stale-request expiry job
+}
+
+// ==================== USER ENUMS ====================
+
+enum UserCreatedVia {
+  SELF_REGISTRATION // Citizen who self-registered via /auth/register
+  ADMIN_PROVISIONED // Created by a tenant admin via /users
+  PLATFORM_PROVISIONED // Created by super admin (e.g. first muni admin)
+  PLATFORM_SEEDED // Bootstrapped by the seed script
+}
+
+// ==================== KYC ENUMS ====================
+
+enum VerificationStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum KycDocType {
+  ID_FRONT
+  ID_BACK
+  SELFIE
+}
+
+enum KycAction {
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum Platform {
+  ANDROID
+  IOS
+  WEB
+}
+
+/// How the user satisfies the 2FA challenge at login. TOTP is the default
+/// (Google Authenticator etc.); EMAIL sends a one-time code to the user's
+/// verified email address via the MailService.
+enum TwoFactorMethod {
+  TOTP
+  EMAIL
+}
+
+/// User's preferred UI language. Drives both web dashboard + mobile app
+/// localization, plus future server-rendered notification body templates.
+enum UserLocale {
+  EN
+  AR
+  FR
+}
+
+// ==================== HELP REQUEST ENUM ====================
+
+// Lifecycle for ComplaintHelpRequest. Models the "I need another department's
+// help to solve this complaint" scenario without transferring ownership.
+//
+//   PENDING   → original dept asked, helper dept hasn't replied
+//   ACCEPTED  → helper HOD agreed to help (will be assigned to a worker)
+//   IN_PROGRESS → helper HOD assigned a worker who is doing the work
+//   SUBMITTED → helper worker uploaded proof; helper HOD reviewing
+//   COMPLETED → original HOD approved the helper contribution. Original
+//               department can now finish closing the complaint.
+//   DECLINED  → helper HOD refused to take this on (terminal)
+//   REJECTED  → original HOD rejected helper's submission (terminal; original
+//               team has to find another way)
+//   CANCELLED → requester withdrew the request before acceptance (terminal)
+enum HelpRequestStatus {
+  PENDING
+  ACCEPTED
+  IN_PROGRESS
+  SUBMITTED
+  COMPLETED
+  DECLINED
+  REJECTED
+  CANCELLED
+}
+
+// ==================== MUNICIPALITY ====================
+
+model Municipality {
+  id        String   @id @default(uuid())
+  // `name` is the canonical / English-fallback name used everywhere we don't
+  // have a translation yet. `nameAr` / `nameFr` are optional manual
+  // translations entered by the super admin who creates the municipality.
+  // When a UI requests a locale, we fall back: nameXx -> name.
+  name      String
+  nameAr    String?  @map("name_ar")
+  nameFr    String?  @map("name_fr")
+  // Short institutional description (multilingual)
+  description   String? @map("description")
+  descriptionAr String? @map("description_ar")
+  descriptionFr String? @map("description_fr")
+  code      String   @unique // e.g. "BEI", "TRI"
+  logoUrl   String?  @map("logo_url")
+  // Banner image for institutional header (sidebar background, login page, dashboard).
+  // Subtle municipal imagery (skyline, landmark) — NOT a marketing hero.
+  bannerImageUrl       String?  @map("banner_image_url")
+  // Hex color, e.g. "#0f2555" — overlay applied on top of banner for readability
+  bannerOverlayColor   String?  @map("banner_overlay_color")
+  // 0.0 – 1.0 — opacity of the dark overlay, defaults to 0.6 in UI when null
+  bannerOverlayOpacity Float?   @map("banner_overlay_opacity")
+  // Optional branding customization (institutional hex color, e.g. "#0f2555")
+  primaryColor String? @map("primary_color")
+  // Public contact information (shown on municipality profile pages)
+  email         String?  @map("email")
+  phone         String?  @map("phone")
+  whatsApp      String?  @map("whats_app")
+  address       String?  @map("address")
+  addressAr     String?  @map("address_ar")
+  addressFr     String?  @map("address_fr")
+  openingHours  String?  @map("opening_hours")
+  openingHoursAr String? @map("opening_hours_ar")
+  openingHoursFr String? @map("opening_hours_fr")
+  website       String?  @map("website")
+  latitude      Float?   @map("latitude")
+  longitude     Float?   @map("longitude")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // ── Positional slot: the ONE Admin of this municipality (org-chart "Mayor's office") ──
+  // Setting/changing this slot is the only way to grant the Admin role.
+  // Done atomically by Super Admin via /platform/municipalities/:id/transfer-admin.
+  adminUserId String? @unique @map("admin_user_id")
+  admin       User?   @relation("MunicipalityAdmin", fields: [adminUserId], references: [id])
+
+  departments         Department[]
+  users               User[]                 @relation("MunicipalityMembers")
+  roles               Role[]
+  complaintCategories ComplaintCategory[]
+  complaints          Complaint[]
+  newsPosts           NewsPost[]
+  notifications       Notification[]
+  kycSubmissions      KycSubmission[]
+  tasks               Task[]                 @relation("MunicipalityTasks")
+  transferRequests    TransferRequest[]      @relation("MunicipalityTransfers")
+  helpRequests        ComplaintHelpRequest[] @relation("MunicipalityHelpRequests")
+
+  @@map("municipalities")
+}
+
+// ==================== DEPARTMENTS ====================
+
+model Department {
+  id             String    @id @default(uuid())
+  municipalityId String    @map("municipality_id")
+  name           String
+  nameAr         String?   @map("name_ar")
+  nameFr         String?   @map("name_fr")
+  description    String?
+  descriptionAr  String?   @map("description_ar")
+  descriptionFr  String?   @map("description_fr")
+  deletedAt      DateTime? @map("deleted_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  // ── Positional slot: the ONE Head of Department (HOD) ──
+  // Setting/changing this slot is the only way to grant the HOD role.
+  // Done atomically by the Municipality Admin via /departments/:id/head.
+  headUserId String? @unique @map("head_user_id")
+  head       User?   @relation("DepartmentHead", fields: [headUserId], references: [id])
+
+  municipality    Municipality           @relation(fields: [municipalityId], references: [id])
+  users           User[]                 @relation("DepartmentMembers")
+  categories      ComplaintCategory[]
+  complaints      Complaint[]
+  tasks           Task[]                 @relation("DepartmentTasks")
+  transfersOut    TransferRequest[]      @relation("TransfersFromDept")
+  transfersIn     TransferRequest[]      @relation("TransfersToDept")
+  helpRequestsOut ComplaintHelpRequest[] @relation("HelpRequestFrom")
+  helpRequestsIn  ComplaintHelpRequest[] @relation("HelpRequestTo")
+
+  @@unique([municipalityId, name])
+  @@index([municipalityId])
+  @@map("departments")
+}
+
+// ==================== USERS ====================
+
+model User {
+  id                 String             @id @default(uuid())
+  municipalityId     String?            @map("municipality_id")
+  departmentId       String?            @map("department_id")
+  supervisorId       String?            @map("supervisor_id") // For org hierarchy: worker -> supervisor -> HOD
+  email              String
+  passwordHash       String             @map("password_hash")
+  firstName          String             @map("first_name")
+  lastName           String             @map("last_name")
+  phone              String?
+  avatarUrl          String?            @map("avatar_url")
+  verificationStatus VerificationStatus @default(UNVERIFIED) @map("verification_status")
+  verifiedAt         DateTime?          @map("verified_at")
+  isSuperAdmin       Boolean            @default(false) @map("is_super_admin")
+  twoFactorEnabled   Boolean            @default(false) @map("two_factor_enabled")
+  twoFactorMethod    TwoFactorMethod    @default(TOTP) @map("two_factor_method")
+  twoFactorSecret    String?            @map("two_factor_secret") // base32 TOTP secret (encrypted at rest in production)
+  emailVerifiedAt    DateTime?          @map("email_verified_at")
+  // How was this account created? Self-registered (citizen) vs provisioned by an admin.
+  // Used to enforce "self-registered users cannot be elevated to staff roles".
+  createdVia         UserCreatedVia     @default(ADMIN_PROVISIONED) @map("created_via")
+  mustChangePassword Boolean            @default(false) @map("must_change_password")
+  // Preferred UI language. The clients send `Accept-Language` as a hint, but
+  // this field is authoritative once the user explicitly picks one.
+  locale             UserLocale         @default(EN)
+  isActive           Boolean            @default(true) @map("is_active")
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
+
+  municipality          Municipality?          @relation("MunicipalityMembers", fields: [municipalityId], references: [id])
+  department            Department?            @relation("DepartmentMembers", fields: [departmentId], references: [id])
+  supervisor            User?                  @relation("Supervisor", fields: [supervisorId], references: [id])
+  subordinates          User[]                 @relation("Supervisor")
+  // Positional slots this user occupies (at most ONE of each across the platform)
+  municipalityAdminOf   Municipality?          @relation("MunicipalityAdmin")
+  departmentHeadOf      Department?            @relation("DepartmentHead")
+  userRoles             UserRole[]
+  complaintsCreated     Complaint[]            @relation("CreatedBy")
+  assignmentsGiven      ComplaintAssignment[]  @relation("AssignedBy")
+  assignmentsReceived   ComplaintAssignment[]  @relation("AssignedTo")
+  statusLogs            ComplaintStatusLog[]
+  deviceTokens          DeviceToken[]
+  userNotifications     UserNotification[]
+  passwordResetTokens   PasswordResetToken[]
+  emailOtps             EmailOtp[]
+  newsPosts             NewsPost[]             @relation("Author")
+  feedbackGiven         ComplaintFeedback[]    @relation("FeedbackBy")
+  refreshTokens         RefreshToken[]
+  kycSubmissions        KycSubmission[]
+  kycReviews            KycReviewLog[]         @relation("KycReviewer")
+  // Internal tasks
+  tasksCreated          Task[]                 @relation("TaskCreatedBy")
+  tasksAssigned         Task[]                 @relation("TaskAssignedTo")
+  // Cross-dept transfers
+  transfersRequested    TransferRequest[]      @relation("TransferRequestedBy")
+  transfersResponded    TransferRequest[]      @relation("TransferRespondedBy")
+  transfersAssigned     TransferRequest[]      @relation("TransferNewAssignee")
+  // Cross-dept help requests
+  helpRequestsRequested ComplaintHelpRequest[] @relation("HelpRequestRequestedBy")
+  helpRequestsResponded ComplaintHelpRequest[] @relation("HelpRequestRespondedBy")
+  helpRequestsHelping   ComplaintHelpRequest[] @relation("HelpRequestHelperAssignee")
+  helpRequestsSubmitted ComplaintHelpRequest[] @relation("HelpRequestSubmittedBy")
+  helpRequestsClosed    ComplaintHelpRequest[] @relation("HelpRequestClosedBy")
+
+  @@unique([email]) // Global unique email (prevents login ambiguity across municipalities)
+  @@index([municipalityId])
+  @@index([departmentId])
+  @@index([supervisorId])
+  @@index([email])
+  @@index([isSuperAdmin])
+  @@map("users")
+}
+
+// ==================== AUDIT LOG ====================
+
+model AuditLog {
+  id             String   @id @default(uuid())
+  actorId        String?  @map("actor_id") // null if anonymous (e.g. failed login)
+  actorEmail     String?  @map("actor_email") // denormalized for visibility even if user deleted
+  municipalityId String?  @map("municipality_id") // affected municipality (null for cross-tenant ops)
+  action         String // e.g. 'user.create', 'complaint.assign', 'auth.login'
+  resourceType   String?  @map("resource_type") // e.g. 'User', 'Complaint', 'Municipality'
+  resourceId     String?  @map("resource_id")
+  ipAddress      String?  @map("ip_address")
+  userAgent      String?  @map("user_agent")
+  metadata       Json? // arbitrary context (old/new values, reason, etc.)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([actorId])
+  @@index([municipalityId])
+  @@index([action])
+  @@index([resourceType, resourceId])
+  @@index([createdAt])
+  @@index([actorEmail])
+  @@map("audit_logs")
+}
+
+// ==================== PLATFORM SETTINGS ====================
+
+/// Generic key/value store for platform-level (cross-tenant) configuration.
+/// Used for: maintenance mode, feature flags, system announcements, etc.
+model PlatformSetting {
+  key         String   @id
+  value       String   @db.Text
+  description String?  @db.Text
+  updatedById String?  @map("updated_by_id")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("platform_settings")
+}
+
+/// Singleton branding record (id = "default").  Super admins edit this through
+/// the /platform/branding page to control the public-facing portal identity.
+model PlatformBranding {
+  id                    String   @id @default("default")
+  // Logo / official icon URL for the platform (shown in public nav + login)
+  logoUrl               String?  @map("logo_url")
+  // Hero banner image URL (replaces plain navy background on homepage)
+  bannerImageUrl        String?  @map("banner_image_url")
+  // Hex color for dark overlay on banner, e.g. "#0c1a2e"
+  bannerOverlayColor    String?  @map("banner_overlay_color")
+  // 0.0 – 1.0 overlay opacity (default 0.65)
+  bannerOverlayOpacity  Float?   @map("banner_overlay_opacity")
+  // Platform name (shown next to logo in public header)
+  platformName          String?  @default("Baladi") @map("platform_name")
+  platformNameAr        String?  @default("بلدي") @map("platform_name_ar")
+  platformNameFr        String?  @default("Baladi") @map("platform_name_fr")
+  // Short description shown in homepage hero
+  platformDescription   String?  @db.Text @map("platform_description")
+  platformDescriptionAr String?  @db.Text @map("platform_description_ar")
+  platformDescriptionFr String?  @db.Text @map("platform_description_fr")
+  // Operator / ministry name (e.g. "Ministry of Interior and Municipalities")
+  operatorName          String?  @map("operator_name")
+  operatorNameAr        String?  @map("operator_name_ar")
+  operatorNameFr        String?  @map("operator_name_fr")
+  // Platform support contact
+  supportEmail          String?  @map("support_email")
+  supportPhone          String?  @map("support_phone")
+  supportWhatsApp       String?  @map("support_whats_app")
+  // Office address (multilingual)
+  officeAddress         String?  @map("office_address")
+  officeAddressAr       String?  @map("office_address_ar")
+  officeAddressFr       String?  @map("office_address_fr")
+  // Opening hours (multilingual)
+  openingHours          String?  @map("opening_hours")
+  openingHoursAr        String?  @map("opening_hours_ar")
+  openingHoursFr        String?  @map("opening_hours_fr")
+  // Mobile app download links
+  appStoreUrl           String?  @map("app_store_url")
+  googlePlayUrl         String?  @map("google_play_url")
+  apkUrl                String?  @map("apk_url")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  @@map("platform_branding")
+}
+
+// ==================== RBAC ====================
+
+model Permission {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  name      String
+  // Localized display labels (formal government terminology). When the UI
+  // shows the permission to an admin, it picks the label matching the
+  // current locale and falls back to `name`.
+  nameAr    String?  @map("name_ar")
+  nameFr    String?  @map("name_fr")
+  module    String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  rolePermissions RolePermission[]
+
+  @@index([module])
+  @@map("permissions")
+}
+
+model Role {
+  id              String    @id @default(uuid())
+  municipalityId  String    @map("municipality_id")
+  name            String
+  nameAr          String?   @map("name_ar")
+  nameFr          String?   @map("name_fr")
+  description     String?
+  descriptionAr   String?   @map("description_ar")
+  descriptionFr   String?   @map("description_fr")
+  isSystem        Boolean   @default(false) @map("is_system")
+  // Positional / system-managed role: only the system itself can grant or revoke
+  // it (via Municipality.adminUserId or Department.headUserId slot updates).
+  // The generic POST /users/:id/roles endpoint refuses these.
+  isSystemManaged Boolean   @default(false) @map("is_system_managed")
+  // Discord-style hierarchy. Higher = stronger. Multiple roles may share a level.
+  // Used to gate role assignment, role editing, and user management:
+  //   - actor's effective rank (max of their roles' priority) must be > target role's priority to assign/remove it
+  //   - actor's effective rank must be > target user's effective rank to manage them
+  // Composes with RBAC permissions; both checks must pass.
+  priority        Int       @default(0)
+  deletedAt       DateTime? @map("deleted_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  municipality    Municipality     @relation(fields: [municipalityId], references: [id])
+  rolePermissions RolePermission[]
+  userRoles       UserRole[]
+
+  @@unique([municipalityId, name])
+  @@index([municipalityId])
+  @@map("roles")
+}
+
+model RolePermission {
+  id           String   @id @default(uuid())
+  roleId       String   @map("role_id")
+  permissionId String   @map("permission_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  roleId    String   @map("role_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@index([userId])
+  @@map("user_roles")
+}
+
+// ==================== COMPLAINT CATEGORIES ====================
+
+model ComplaintCategory {
+  id             String   @id @default(uuid())
+  municipalityId String   @map("municipality_id")
+  departmentId   String?  @map("department_id")
+  name           String
+  nameAr         String?  @map("name_ar")
+  nameFr         String?  @map("name_fr")
+  description    String?  @map("description")
+  descriptionAr  String?  @map("description_ar")
+  descriptionFr  String?  @map("description_fr")
+  icon           String?
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  municipality Municipality @relation(fields: [municipalityId], references: [id])
+  department   Department?  @relation(fields: [departmentId], references: [id])
+  complaints   Complaint[]
+
+  @@unique([municipalityId, name])
+  @@index([municipalityId])
+  @@map("complaint_categories")
+}
+
+// ==================== COMPLAINTS ====================
+
+model Complaint {
+  id             String          @id @default(uuid())
+  municipalityId String          @map("municipality_id")
+  categoryId     String          @map("category_id")
+  departmentId   String?         @map("department_id")
+  createdById    String          @map("created_by_id")
+  referenceCode  String?         @unique @map("reference_code")
+  title          String
+  description    String
+  latitude       Decimal?        @db.Decimal(10, 8)
+  longitude      Decimal?        @db.Decimal(11, 8)
+  address        String?
+  status         ComplaintStatus @default(SUBMITTED)
+
+  // Priority & SLA
+  priority    ComplaintPriority @default(MEDIUM)
+  dueDate     DateTime?         @map("due_date") // SLA deadline
+  escalatedAt DateTime?         @map("escalated_at") // When escalated to higher level
+
+  // Resolution tracking
+  rejectionReason RejectionReason? @map("rejection_reason")
+  rejectionNotes  String?          @map("rejection_notes")
+  resolvedAt      DateTime?        @map("resolved_at")
+
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  municipality Municipality           @relation(fields: [municipalityId], references: [id])
+  category     ComplaintCategory      @relation(fields: [categoryId], references: [id])
+  department   Department?            @relation(fields: [departmentId], references: [id])
+  createdBy    User                   @relation("CreatedBy", fields: [createdById], references: [id])
+  attachments  ComplaintAttachment[]
+  assignments  ComplaintAssignment[]
+  statusLogs   ComplaintStatusLog[]
+  feedback     ComplaintFeedback?
+  helpRequests ComplaintHelpRequest[]
+
+  @@index([municipalityId])
+  @@index([departmentId])
+  @@index([status])
+  @@index([priority])
+  @@index([createdById])
+  @@index([dueDate])
+  @@index([createdAt])
+  @@map("complaints")
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// ComplaintHelpRequest — collaboration without ownership transfer.
+//
+// When a worker / supervisor / HOD on a complaint discovers it needs another
+// department's expertise, they file a help request instead of transferring.
+// The complaint stays with the original department; the helper department's
+// HOD chooses to accept or decline. If accepted, they assign one of their own
+// workers, who completes the work and submits proof. The helper HOD reviews,
+// then the original HOD reviews, and the helper request is closed.
+//
+// We deliberately keep this separate from TransferRequest because the intent
+// is fundamentally different: transfers move accountability, help requests
+// borrow capacity.
+// ──────────────────────────────────────────────────────────────────────────
+model ComplaintHelpRequest {
+  id               String @id @default(uuid())
+  municipalityId   String @map("municipality_id")
+  complaintId      String @map("complaint_id")
+  fromDepartmentId String @map("from_department_id") // owning dept
+  toDepartmentId   String @map("to_department_id") // helping dept
+  requestedById    String @map("requested_by_id")
+  reason           String
+
+  status HelpRequestStatus @default(PENDING)
+
+  // Helper-side response (decline or accept)
+  respondedById  String?   @map("responded_by_id")
+  respondedAt    DateTime? @map("responded_at")
+  responseReason String?   @map("response_reason")
+
+  // Helper-side worker assigned by the helper HOD
+  helperAssigneeId String? @map("helper_assignee_id")
+
+  // Submission of helper work
+  submittedById       String?   @map("submitted_by_id")
+  submittedAt         DateTime? @map("submitted_at")
+  solutionNotes       String?   @map("solution_notes")
+  solutionAttachments Json?     @map("solution_attachments") // [{ url, mime, size, filename }]
+
+  // Final review by original HOD
+  closedById  String?   @map("closed_by_id")
+  closedAt    DateTime? @map("closed_at")
+  closeReason String?   @map("close_reason")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  municipality   Municipality @relation("MunicipalityHelpRequests", fields: [municipalityId], references: [id])
+  complaint      Complaint    @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  fromDepartment Department   @relation("HelpRequestFrom", fields: [fromDepartmentId], references: [id])
+  toDepartment   Department   @relation("HelpRequestTo", fields: [toDepartmentId], references: [id])
+  requestedBy    User         @relation("HelpRequestRequestedBy", fields: [requestedById], references: [id])
+  respondedBy    User?        @relation("HelpRequestRespondedBy", fields: [respondedById], references: [id])
+  helperAssignee User?        @relation("HelpRequestHelperAssignee", fields: [helperAssigneeId], references: [id])
+  submittedBy    User?        @relation("HelpRequestSubmittedBy", fields: [submittedById], references: [id])
+  closedBy       User?        @relation("HelpRequestClosedBy", fields: [closedById], references: [id])
+
+  @@index([municipalityId])
+  @@index([complaintId])
+  @@index([toDepartmentId, status])
+  @@index([fromDepartmentId, status])
+  @@index([helperAssigneeId, status])
+  @@map("complaint_help_requests")
+}
+
+model ComplaintAttachment {
+  id          String          @id @default(uuid())
+  complaintId String          @map("complaint_id")
+  type        AttachmentType
+  stage       AttachmentStage
+  url         String
+  filename    String
+  mimeType    String          @map("mime_type")
+  size        Int
+  deletedAt   DateTime?       @map("deleted_at")
+  createdAt   DateTime        @default(now()) @map("created_at")
+
+  complaint Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+
+  @@index([complaintId])
+  @@map("complaint_attachments")
+}
+
+model ComplaintAssignment {
+  id           String   @id @default(uuid())
+  complaintId  String   @map("complaint_id")
+  assignedToId String   @map("assigned_to_id")
+  assignedById String   @map("assigned_by_id")
+  notes        String?
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  complaint  Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  assignedTo User      @relation("AssignedTo", fields: [assignedToId], references: [id])
+  assignedBy User      @relation("AssignedBy", fields: [assignedById], references: [id])
+
+  @@index([complaintId])
+  @@index([assignedToId])
+  @@map("complaint_assignments")
+}
+
+model ComplaintStatusLog {
+  id          String           @id @default(uuid())
+  complaintId String           @map("complaint_id")
+  changedById String           @map("changed_by_id")
+  fromStatus  ComplaintStatus? @map("from_status")
+  toStatus    ComplaintStatus  @map("to_status")
+  notes       String?
+  createdAt   DateTime         @default(now()) @map("created_at")
+
+  complaint Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  changedBy User      @relation(fields: [changedById], references: [id])
+
+  @@index([complaintId])
+  @@map("complaint_status_logs")
+}
+
+// Citizen feedback after complaint resolution
+model ComplaintFeedback {
+  id          String   @id @default(uuid())
+  complaintId String   @unique @map("complaint_id")
+  givenById   String   @map("given_by_id")
+  rating      Int // 1-5 stars
+  comment     String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  complaint Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  givenBy   User      @relation("FeedbackBy", fields: [givenById], references: [id])
+
+  @@map("complaint_feedback")
+}
+
+// ==================== INTERNAL TASKS ====================
+
+/// Internal staff work item (e.g. "prepare quarterly report", "patch the
+/// Hamra Street pothole"). Cousin of Complaint but with no citizen baggage.
+/// Both Complaint and Task share the same TransferRequest workflow for
+/// cross-department handoffs.
+model Task {
+  id             String            @id @default(uuid())
+  municipalityId String            @map("municipality_id")
+  departmentId   String            @map("department_id") // owning department
+  assignedToId   String?           @map("assigned_to_id") // current owner (nullable until picked up)
+  createdById    String            @map("created_by_id") // who opened it
+  title          String
+  description    String?
+  status         TaskStatus        @default(NEW)
+  priority       ComplaintPriority @default(MEDIUM)
+  dueDate        DateTime?         @map("due_date")
+  completedAt    DateTime?         @map("completed_at")
+  deletedAt      DateTime?         @map("deleted_at")
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
+
+  municipality Municipality @relation("MunicipalityTasks", fields: [municipalityId], references: [id])
+  department   Department   @relation("DepartmentTasks", fields: [departmentId], references: [id])
+  assignedTo   User?        @relation("TaskAssignedTo", fields: [assignedToId], references: [id])
+  createdBy    User         @relation("TaskCreatedBy", fields: [createdById], references: [id])
+
+  @@index([municipalityId])
+  @@index([departmentId])
+  @@index([assignedToId])
+  @@index([status])
+  @@index([createdById])
+  @@map("tasks")
+}
+
+// ==================== TRANSFER REQUESTS ====================
+
+/// Cross-department handoff request. The ONLY way a complaint or task can
+/// move to another department: the source side opens a request, and the
+/// receiving department's HOD must accept (and pick an assignee) or reject.
+///
+/// Polymorphic: targetType + targetId points to either a Complaint or a Task.
+model TransferRequest {
+  id               String             @id @default(uuid())
+  municipalityId   String             @map("municipality_id")
+  targetType       TransferTargetType @map("target_type")
+  targetId         String             @map("target_id")
+  fromDepartmentId String             @map("from_department_id")
+  toDepartmentId   String             @map("to_department_id")
+  requestedById    String             @map("requested_by_id")
+  reason           String             @db.Text // why does this need to move?
+  status           TransferStatus     @default(PENDING)
+
+  // Response (set when ACCEPTED / REJECTED / CANCELLED)
+  respondedById  String?   @map("responded_by_id")
+  respondedAt    DateTime? @map("responded_at")
+  responseReason String?   @map("response_reason") @db.Text
+  newAssigneeId  String?   @map("new_assignee_id") // who the receiving HOD picked, on ACCEPT
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  municipality   Municipality @relation("MunicipalityTransfers", fields: [municipalityId], references: [id])
+  fromDepartment Department   @relation("TransfersFromDept", fields: [fromDepartmentId], references: [id])
+  toDepartment   Department   @relation("TransfersToDept", fields: [toDepartmentId], references: [id])
+  requestedBy    User         @relation("TransferRequestedBy", fields: [requestedById], references: [id])
+  respondedBy    User?        @relation("TransferRespondedBy", fields: [respondedById], references: [id])
+  newAssignee    User?        @relation("TransferNewAssignee", fields: [newAssigneeId], references: [id])
+
+  @@index([municipalityId])
+  @@index([targetType, targetId])
+  @@index([toDepartmentId, status]) // primary HOD-inbox query
+  @@index([fromDepartmentId, status])
+  @@index([requestedById])
+  @@index([status])
+  @@map("transfer_requests")
+}
+
+// ==================== NEWS ====================
+
+model NewsPost {
+  id             String    @id @default(uuid())
+  municipalityId String    @map("municipality_id")
+  authorId       String    @map("author_id")
+  title          String
+  // Localized title/content. Citizens reading an announcement see the version
+  // matching their selected language; falls back to `title`/`content`.
+  titleAr        String?   @map("title_ar")
+  titleFr        String?   @map("title_fr")
+  content        String
+  contentAr      String?   @map("content_ar") @db.Text
+  contentFr      String?   @map("content_fr") @db.Text
+  coverImageUrl  String?   @map("cover_image_url")
+  isPublished    Boolean   @default(false) @map("is_published")
+  publishedAt    DateTime? @map("published_at")
+  deletedAt      DateTime? @map("deleted_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  municipality Municipality @relation(fields: [municipalityId], references: [id])
+  author       User         @relation("Author", fields: [authorId], references: [id])
+
+  @@index([municipalityId])
+  @@index([isPublished])
+  @@map("news_posts")
+}
+
+// ==================== NOTIFICATIONS ====================
+
+model DeviceToken {
+  id         String    @id @default(uuid())
+  userId     String    @map("user_id")
+  token      String
+  platform   Platform
+  // Optional metadata for diagnostics + multi-device support
+  deviceName String?   @map("device_name")
+  appVersion String?   @map("app_version")
+  lastSeenAt DateTime  @default(now()) @map("last_seen_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, token])
+  @@index([userId])
+  @@map("device_tokens")
+}
+
+model Notification {
+  id             String           @id @default(uuid())
+  municipalityId String           @map("municipality_id")
+  type           NotificationType
+  title          String
+  body           String
+  data           Json?
+  createdAt      DateTime         @default(now()) @map("created_at")
+
+  municipality      Municipality       @relation(fields: [municipalityId], references: [id])
+  userNotifications UserNotification[]
+
+  @@index([municipalityId])
+  @@map("notifications")
+}
+
+model UserNotification {
+  id             String    @id @default(uuid())
+  userId         String    @map("user_id")
+  notificationId String    @map("notification_id")
+  isRead         Boolean   @default(false) @map("is_read")
+  readAt         DateTime? @map("read_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, notificationId])
+  @@index([userId, isRead])
+  @@map("user_notifications")
+}
+
+// ==================== REFRESH TOKENS ====================
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash")
+  family    String // Token family for rotation detection
+  isRevoked Boolean  @default(false) @map("is_revoked")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@index([family])
+  @@map("refresh_tokens")
+}
+
+// ==================== KYC (Identity Verification) ====================
+
+model KycSubmission {
+  id              String             @id @default(uuid())
+  userId          String             @map("user_id")
+  municipalityId  String             @map("municipality_id")
+  status          VerificationStatus @default(PENDING)
+  submittedAt     DateTime           @default(now()) @map("submitted_at")
+  reviewedAt      DateTime?          @map("reviewed_at")
+  reviewedById    String?            @map("reviewed_by_id")
+  rejectionReason String?            @map("rejection_reason")
+  deletedAt       DateTime?          @map("deleted_at")
+  createdAt       DateTime           @default(now()) @map("created_at")
+  updatedAt       DateTime           @updatedAt @map("updated_at")
+
+  user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  municipality Municipality    @relation(fields: [municipalityId], references: [id])
+  attachments  KycAttachment[]
+  reviewLogs   KycReviewLog[]
+
+  @@index([userId])
+  @@index([municipalityId])
+  @@index([status])
+  @@map("kyc_submissions")
+}
+
+model KycAttachment {
+  id           String     @id @default(uuid())
+  submissionId String     @map("submission_id")
+  docType      KycDocType @map("doc_type")
+  storageKey   String     @map("storage_key") // Relative file path (not publicly accessible)
+  mimeType     String     @map("mime_type")
+  size         Int
+  createdAt    DateTime   @default(now()) @map("created_at")
+
+  submission KycSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
+  @@map("kyc_attachments")
+}
+
+model KycReviewLog {
+  id            String    @id @default(uuid())
+  submissionId  String    @map("submission_id")
+  action        KycAction
+  performedById String    @map("performed_by_id")
+  reason        String?
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  submission  KycSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  performedBy User          @relation("KycReviewer", fields: [performedById], references: [id])
+
+  @@index([submissionId])
+  @@map("kyc_review_logs")
+}
+
+// ==================== COMPLAINT REFERENCE SEQUENCE ====================
+
+/// Per-municipality, per-year complaint reference counter.
+/// Used to mint sequential reference codes such as `BEI-CMP-2026-000001`.
+/// Primary key is composite (municipalityId, year) so concurrent inserts
+/// take a row-level lock during the upsert/increment, guaranteeing unique
+/// sequential codes without an extra DB round-trip.
+model ComplaintSequence {
+  municipalityId String @map("municipality_id")
+  year           Int
+  lastSequence   Int    @default(0) @map("last_sequence")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@id([municipalityId, year])
+  @@map("complaint_sequences")
+}
+
+// ==================== AUTH: PASSWORD RESET ====================
+
+/// Single-use, time-boxed password-reset token. Stored hashed
+/// (never the raw token). The endpoint that mints the token returns the
+/// raw value via email link; the verify endpoint hashes the submitted
+/// token and looks it up here.
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
+}
+
+// ==================== AUTH: EMAIL OTP ====================
+
+/// One-time codes for email-based 2FA / step-up auth.
+/// Code is stored hashed; raw code is sent by email.
+/// `purpose` differentiates flows (e.g. `LOGIN_2FA`, `VERIFY_EMAIL`).
+model EmailOtp {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  purpose    String   // 'LOGIN_2FA' | 'VERIFY_EMAIL' | 'STEP_UP'
+  codeHash   String   @map("code_hash")
+  expiresAt  DateTime @map("expires_at")
+  attempts   Int      @default(0)
+  consumedAt DateTime? @map("consumed_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose])
+  @@index([expiresAt])
+  @@map("email_otps")
+}

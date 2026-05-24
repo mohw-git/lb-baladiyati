@@ -1,0 +1,159 @@
+// ============================================================
+// Complaint types — matches backend Prisma schema + DTOs
+// ============================================================
+
+export enum ComplaintStatus {
+  SUBMITTED = 'SUBMITTED',           // Citizen submitted
+  UNDER_REVIEW = 'UNDER_REVIEW',     // HOD/Supervisor reviewing
+  ASSIGNED = 'ASSIGNED',             // Assigned to field worker
+  IN_PROGRESS = 'IN_PROGRESS',       // Worker started work
+  PENDING_APPROVAL = 'PENDING_APPROVAL', // Work done, waiting approval
+  COMPLETED = 'COMPLETED',           // Approved and completed
+  REJECTED = 'REJECTED',             // Rejected with reason
+  CLOSED = 'CLOSED',                 // Finalized and closed
+}
+
+export enum ComplaintPriority {
+  LOW = 'LOW',
+  MEDIUM = 'MEDIUM',
+  HIGH = 'HIGH',
+  URGENT = 'URGENT',
+}
+
+export enum RejectionReason {
+  DUPLICATE = 'DUPLICATE',
+  INVALID_CATEGORY = 'INVALID_CATEGORY',
+  INSUFFICIENT_INFO = 'INSUFFICIENT_INFO',
+  OUT_OF_JURISDICTION = 'OUT_OF_JURISDICTION',
+  NOT_MUNICIPAL_ISSUE = 'NOT_MUNICIPAL_ISSUE',
+  ALREADY_RESOLVED = 'ALREADY_RESOLVED',
+  OTHER = 'OTHER',
+}
+
+export enum AttachmentType {
+  IMAGE = 'IMAGE',
+  DOCUMENT = 'DOCUMENT',
+}
+
+export enum AttachmentStage {
+  SUBMISSION = 'SUBMISSION',   // Initial complaint photos
+  PROOF = 'PROOF',             // Work completion proof
+  INSPECTION = 'INSPECTION',   // Supervisor inspection
+}
+
+export interface ComplaintSummary {
+  id: string;
+  referenceCode: string | null;
+  title: string;
+  status: ComplaintStatus;
+  priority: ComplaintPriority;
+  category: { id: string; name: string };
+  department?: { id: string; name: string } | null;
+  createdBy: { id: string; firstName: string; lastName: string };
+  address?: string | null;
+  dueDate?: string | null;
+  isOverdue?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ComplaintDetail extends ComplaintSummary {
+  description: string;
+  latitude?: string | null;
+  longitude?: string | null;
+  rejectionReason?: RejectionReason | null;
+  rejectionNotes?: string | null;
+  resolvedAt?: string | null;
+  escalatedAt?: string | null;
+  attachments: ComplaintAttachment[];
+  currentAssignment?: ComplaintAssignment | null;
+  statusHistory: ComplaintStatusLog[];
+  feedback?: ComplaintFeedback | null;
+}
+
+export interface ComplaintAttachment {
+  id: string;
+  type: AttachmentType;
+  stage: AttachmentStage;
+  url: string;
+  filename: string;
+  mimeType?: string;
+  size?: number;
+  createdAt?: string;
+}
+
+export interface ComplaintAssignment {
+  assignedTo: { id: string; firstName: string; lastName: string };
+  assignedBy: { id: string; firstName: string; lastName: string };
+  notes?: string | null;
+  createdAt: string;
+}
+
+export interface ComplaintStatusLog {
+  id: string;
+  fromStatus: ComplaintStatus | null;
+  toStatus: ComplaintStatus;
+  changedBy: { id: string; firstName: string; lastName: string };
+  notes?: string | null;
+  createdAt: string;
+}
+
+export interface ComplaintFeedback {
+  id: string;
+  rating: number; // 1-5
+  comment?: string | null;
+  createdAt: string;
+}
+
+// ============================================================
+// Request DTOs
+// ============================================================
+
+export interface CreateComplaintRequest {
+  categoryId: string;
+  title: string;
+  description: string;
+  latitude?: number;
+  longitude?: number;
+  address?: string;
+}
+
+export interface ComplaintQueryParams {
+  page?: number;
+  limit?: number;
+  search?: string;
+  status?: ComplaintStatus | ComplaintStatus[];
+  priority?: ComplaintPriority | ComplaintPriority[];
+  categoryId?: string;
+  departmentId?: string;
+  myAssignments?: boolean;
+  unassigned?: boolean;
+  overdue?: boolean;
+  /** Excludes COMPLETED / CLOSED / REJECTED so the action-queue list matches its count. */
+  openOnly?: boolean;
+}
+
+export interface AssignComplaintRequest {
+  assignedToId: string;
+  notes?: string;
+}
+
+export interface ChangeStatusRequest {
+  status: ComplaintStatus;
+  notes?: string;
+}
+
+export interface SetPriorityRequest {
+  priority: ComplaintPriority;
+  dueDate?: string; // ISO date string
+}
+
+export interface RejectComplaintRequest {
+  reason: RejectionReason;
+  notes?: string;
+}
+
+export interface SubmitFeedbackRequest {
+  rating: number; // 1-5
+  comment?: string;
+}

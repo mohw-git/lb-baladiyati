@@ -1,0 +1,73 @@
+{
+  "expo": {
+    "name": "Baladi",
+    "slug": "baladi-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "scheme": "baladi",
+    "extra": {
+      "apiUrl": "http://localhost:3000",
+      "sentryDsn": "",
+      "sentryEnvironment": "development"
+    },
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#2563eb"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.lbbaladiyati.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "We need camera access to take photos of issues.",
+        "NSLocationWhenInUseUsageDescription": "We need your location to report issues accurately.",
+        "NSPhotoLibraryUsageDescription": "We need photo library access to attach images to complaints."
+      }
+    },
+    "android": {
+      "package": "com.lbbaladiyati.app",
+      "googleServicesFile": "./google-services.json",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#2563eb"
+      },
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "CAMERA",
+        "ACCESS_FINE_LOCATION",
+        "READ_EXTERNAL_STORAGE",
+        "POST_NOTIFICATIONS"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#0c1a2e"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Baladi to access your photos to attach to complaints."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow Baladi to use your location to report issues accurately."
+        }
+      ],
+      "expo-font"
+    ]
+  }
+}

@@ -1,0 +1,208 @@
+==============================================================
+ BALADI — HOW TO RUN THE PROJECT (development)
+==============================================================
+
+You need 3 things running at the same time, each in its OWN terminal:
+  1. The NestJS backend API     (port 3000)
+  2. The Expo mobile app        (Metro bundler / Expo Go)
+  3. Prisma Studio (DB browser) (port 5555)
+
+The web dashboard is a 4th optional terminal (port 3001 by default).
+
+--------------------------------------------------------------
+PREREQUISITES (one-time setup)
+--------------------------------------------------------------
+- Node.js 20+ installed
+- PostgreSQL running locally with a database called "baladi"
+- A .env file at the project root with at least:
+    DATABASE_URL="postgresql://USER:PASS@localhost:5432/baladi"
+    JWT_SECRET="some-long-random-string"
+    PORT=3000
+- Dependencies installed (only the first time, or after pulling new code):
+
+    cd C:\Users\A\Documents\bau\FYP
+    npm install
+
+    cd C:\Users\A\Documents\bau\FYP\web-dashboard
+    npm install
+
+    cd C:\Users\A\Documents\bau\FYP\mobile-app
+    npm install
+
+- Apply the database schema + seed data (only the first time, or after schema changes):
+
+    cd C:\Users\A\Documents\bau\FYP
+    npx prisma db push
+    npm run db:seed
+
+
+==============================================================
+ TERMINAL 1 — BACKEND (NestJS, port 3000)
+==============================================================
+    cd C:\Users\A\Documents\bau\FYP
+    npm run start:dev
+
+When you see "Nest application successfully started" the API is up at:
+    http://localhost:3000
+    http://localhost:3000/api/docs   (Swagger / OpenAPI)
+
+
+==============================================================
+ TERMINAL 2 — MOBILE APP (Expo Go)
+==============================================================
+    cd C:\Users\A\Documents\bau\FYP\mobile-app
+    npx expo start --clear
+
+Then:
+  - Install "Expo Go" on your phone (App Store / Play Store).
+  - Make sure the phone is on the SAME Wi-Fi as your computer.
+  - Scan the QR code shown in the terminal with Expo Go (Android)
+    or with the iPhone Camera app (iOS).
+
+If the app can't reach the API, configure the API URL via Expo (DO NOT
+hard-code into client.ts — it's already wired to read from expo-constants):
+
+  Option A (recommended): start Expo with the env var
+      $env:EXPO_PUBLIC_API_URL = "http://192.168.1.42:3000"
+      npx expo start --clear
+
+  Option B (per-project default): edit mobile-app\app.json
+      "expo": { "extra": { "apiUrl": "http://192.168.1.42:3000" } }
+
+(Find the IP with `ipconfig` -> IPv4 of your Wi-Fi adapter.)
+
+Other useful Expo env vars (all optional):
+  EXPO_PUBLIC_SENTRY_DSN     -> turns on mobile error reporting
+
+
+==============================================================
+ TERMINAL 3 — PRISMA STUDIO (visual database browser, port 5555)
+==============================================================
+    cd C:\Users\A\Documents\bau\FYP
+    npx prisma studio
+
+This opens http://localhost:5555 in your browser. You can view and
+edit any table (Users, Complaints, AuditLog, etc.).
+
+
+==============================================================
+ TERMINAL 4 (optional) — WEB DASHBOARD (Next.js, port 3001)
+==============================================================
+    cd C:\Users\A\Documents\bau\FYP\web-dashboard
+    npm run dev
+
+Opens at http://localhost:3001
+(If 3000 is taken by the backend, Next will pick 3001 automatically.)
+
+
+==============================================================
+ DEFAULT TEST ACCOUNTS (created by the seed script)
+==============================================================
+  Super admin:   super@platform.local         / Test1234!
+  Beirut admin:  admin@beirut.gov.lb          / Test1234!
+  Worker:        worker@beirut.gov.lb         / Test1234!
+  Citizen:       citizen@example.com          / Test1234!
+
+(Check prisma/seed.ts for the full list.)
+
+
+==============================================================
+ COMMON COMMANDS (cheat sheet)
+==============================================================
+Backend:
+    npm run start:dev          # dev server with hot reload
+    npm run build              # compile to dist/
+    npm run start:prod         # run compiled build
+    npm run db:seed            # re-seed the database
+    npx prisma db push         # apply schema.prisma to DB (no migration files)
+    npx prisma migrate dev     # create + apply a migration file
+    npx prisma generate        # regenerate the Prisma client
+    npx prisma studio          # GUI database browser
+
+Mobile:
+    npx expo start --clear     # Metro bundler (clears cache)
+    npx expo start --tunnel    # use if phone can't reach LAN IP
+    npx expo start --android   # open on connected Android device/emulator
+    npx expo start --ios       # open in iOS Simulator (macOS only)
+
+Web dashboard:
+    npm run dev                # Next.js dev server
+    npm run build              # production build
+    npm run start              # run production build
+
+
+==============================================================
+ IS THIS HOW REAL-WORLD APPS ARE RUN?
+==============================================================
+Short answer: YES for development, NO for production.
+
+WHAT WE'RE DOING (DEV) -- this IS the standard way:
+  - Run each service in its own terminal with hot-reload (`start:dev`,
+    `expo start`, `next dev`). Every dev team in the world does this.
+  - Use Prisma Studio / pgAdmin / DBeaver as a local DB GUI.
+  - Use Expo Go on a real phone to test the app on Wi-Fi.
+  - Hit the backend at http://localhost:3000 directly.
+
+This is fine for:
+  - You developing on your laptop.
+  - Demoing the project (FYP defence, etc.).
+  - Small team, no real users.
+
+WHAT CHANGES IN PRODUCTION (real users, real money on the line):
+  1. PROCESS MANAGEMENT
+     You don't open a terminal and type `npm run start:dev`. The backend
+     runs as a long-lived service via:
+       - Docker container (most common today), OR
+       - PM2 / systemd on a Linux server.
+     If it crashes it auto-restarts. Logs go to a log aggregator
+     (Datadog, Loki, CloudWatch, ELK), not your terminal.
+
+  2. HOSTING
+     - Backend: containerized and deployed to AWS ECS / Fargate,
+       Google Cloud Run, Azure Container Apps, Fly.io, Render,
+       Railway, or a Kubernetes cluster.
+     - Database: managed PostgreSQL (AWS RDS, Supabase, Neon, etc.)
+       — NOT Postgres on the same machine.
+     - Web dashboard: Vercel / Netlify / Cloudflare Pages, or as a
+       static export behind a CDN.
+     - Mobile app: built with `eas build` and shipped through the
+       Apple App Store + Google Play (NOT Expo Go — Expo Go is only
+       for development).
+
+  3. NETWORKING
+     - HTTPS only, behind a real domain (e.g. api.baladi.gov.lb)
+       with TLS certificates from Let's Encrypt or the cloud provider.
+     - A reverse proxy (Nginx / Caddy / cloud load balancer) sits in
+       front of the backend and handles TLS, gzip, rate limiting.
+     - Mobile app points to https://api.baladi.gov.lb, NOT a LAN IP.
+
+  4. DATABASE WORKFLOW
+     - You DON'T use `prisma db push` in production. You commit
+       migration files (`prisma migrate dev` locally -> commit ->
+       `prisma migrate deploy` runs on the server during deploy).
+     - Prisma Studio is dev-only. In production you use a managed
+       DB console (RDS Console, Supabase dashboard) and audited
+       SQL access.
+     - Daily automated backups + point-in-time recovery.
+
+  5. CI/CD
+     - GitHub Actions / GitLab CI runs tests, builds Docker images,
+       pushes to a container registry, deploys automatically.
+     - Separate environments: development -> staging -> production.
+
+  6. SECRETS
+     - .env never committed. Real secrets live in AWS Secrets Manager,
+       GCP Secret Manager, Doppler, 1Password, etc.
+
+  7. OBSERVABILITY
+     - Sentry for error tracking, Datadog/New Relic for metrics,
+     - Health-check endpoints, uptime monitoring (Pingdom, UptimeRobot).
+
+So your current setup is a perfectly normal DEV environment — it's
+literally what professional teams use day-to-day on their laptops.
+The difference is what happens once you ship to real users: the same
+code runs, but inside containers, on managed infrastructure, behind
+HTTPS, with backups, monitoring, and automated deployments.
+
+For a Final Year Project, the dev setup is more than enough. If your
+supervisor asks "how would you deploy this?", point at section above.
