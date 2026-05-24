@@ -39,3 +39,6 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Firebase Android client config (required for EAS cloud builds)
+!google-services.json

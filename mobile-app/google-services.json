@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "628219082233",
+    "project_id": "baufyp",
+    "storage_bucket": "baufyp.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:628219082233:android:fe4213ab62c01638833928",
+        "android_client_info": {
+          "package_name": "com.lbbaladiyati.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB8DyZ08RIZpWukFmONegEEaQVJu5GqHh0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
