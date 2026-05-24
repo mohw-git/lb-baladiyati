@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth, useUserName } from '@/lib/auth';
+import { isCitizenAccount } from '@/lib/auth/user';
 import { useAuthStore } from '@/lib/auth/store';
 import { notificationsApi, municipalitiesApi } from '@/lib/api';
 import { authApi } from '@/lib/api/endpoints/auth';
@@ -70,10 +71,11 @@ export function Header() {
 
   if (!user) return null;
 
+  const showStaffRole = !isCitizenAccount(user);
   const firstRole = user.roles?.[0];
   const rawRoleName = typeof firstRole === 'string' ? firstRole : (firstRole as any)?.name || '';
   const sysRoleKey = rawRoleName ? systemRoleLabelKey(rawRoleName) : null;
-  const roleName = sysRoleKey ? t(sysRoleKey) : rawRoleName;
+  const roleName = showStaffRole ? (sysRoleKey ? t(sysRoleKey) : rawRoleName) : '';
   const municipalityName = muniData
     ? pickName(muniData as any, locale) || (user as any)?.municipality?.name
     : (user as any)?.municipality?.name || '';

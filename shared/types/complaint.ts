@@ -69,6 +69,14 @@ export interface ComplaintDetail extends ComplaintSummary {
   currentAssignment?: ComplaintAssignment | null;
   statusHistory: ComplaintStatusLog[];
   feedback?: ComplaintFeedback | null;
+  /**
+   * True when the caller is reading this complaint only because their
+   * department has a pending inbound transfer/help request. The response
+   * has been sanitized (no internal notes, no citizen identity, no proof
+   * photos, no assignee identity). Frontend should render a banner and
+   * hide actions that would fail server-side authorization.
+   */
+  previewOnly?: boolean;
 }
 
 export interface ComplaintAttachment {

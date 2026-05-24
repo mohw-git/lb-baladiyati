@@ -73,12 +73,18 @@ export default function ProfileScreen() {
       {
         text: t('profile.signOut'), style: 'destructive',
         onPress: async () => {
-          // Invalidate refresh token on the server
-          if (refreshToken) {
-            try { await authApi.logout(refreshToken); } catch {}
-          }
+          const rt = refreshToken;
+          // Unregister push + clear local session while access token is still valid.
           await logout();
-          router.replace('/(auth)/login');
+          if (rt) {
+            try { await authApi.logout(rt); } catch {}
+          }
+          try {
+            router.replace('/(auth)/login');
+          } catch {
+            // Router may not be ready if the app is recovering from a render error.
+            setTimeout(() => router.replace('/(auth)/login'), 0);
+          }
         },
       },
     ]);
@@ -94,7 +100,9 @@ export default function ProfileScreen() {
         <Text style={styles.name}>{user?.firstName} {user?.lastName}</Text>
         <Text style={styles.email}>{user?.email}</Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: Spacing.sm }}>
-          {user?.roles?.[0] && (
+          {(user as any)?.accountType !== 'CITIZEN' &&
+            user?.roles?.[0] &&
+            user.roles[0] !== 'Citizen' && (
             <View style={styles.roleBadge}>
               <Text style={styles.roleText}>{user.roles[0]}</Text>
             </View>
@@ -173,6 +181,24 @@ export default function ProfileScreen() {
             <InfoRow icon="business" label={t('profile.municipality')} value={pickName(profile?.municipality as any, locale) || '—'} />
           </View>
         )}
+      </View>
+
+      {/* Two-factor authentication status */}
+      <View style={styles.card}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.sm }}>
+          <Ionicons name="shield-checkmark-outline" size={22} color={Colors.gray[600]} />
+          <Text style={styles.cardTitle}>{t('profile.2fa.title')}</Text>
+        </View>
+        <Text style={{ fontSize: FontSize.sm, color: Colors.gray[700] }}>
+          {(profile as any)?.twoFactorEnabled
+            ? (profile as any)?.twoFactorMethod === 'EMAIL'
+              ? `${t('profile.2fa.enabled')} — ${t('profile.2fa.methodEmail')}`
+              : `${t('profile.2fa.enabled')} — ${t('profile.2fa.methodTotp')}`
+            : t('profile.2fa.disabled')}
+        </Text>
+        <Text style={{ fontSize: FontSize.xs, color: Colors.gray[500], marginTop: Spacing.xs }}>
+          {t('profile.2fa.manageWeb')}
+        </Text>
       </View>
 
       {/* Menu items */}

@@ -238,10 +238,12 @@ export const DEFAULT_ROLES = {
       PERMISSIONS.TASK_VIEW_ASSIGNED,
       PERMISSIONS.TASK_CHANGE_STATUS,
       PERMISSIONS.TRANSFER_VIEW,
-      // Workers CAN raise help requests — they are first to spot when a
-      // complaint needs another department's input. They cannot transfer
-      // (give up ownership), but borrowing capacity is fine.
-      PERMISSIONS.HELP_REQUEST,
+      // Workers can SEE help requests they are involved in (assigned helper)
+      // but cannot OPEN one directly — the service rejects requests from
+      // users without dept-level visibility. They escalate through their
+      // Supervisor/HOD instead, who opens the formal request with full
+      // source-side accountability. This prevents cross-department friction
+      // from being triggered by a single field worker.
       PERMISSIONS.HELP_VIEW,
     ],
   },

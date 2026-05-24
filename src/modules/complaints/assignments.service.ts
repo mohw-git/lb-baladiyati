@@ -15,6 +15,18 @@ export class AssignmentsService {
     private realtime: RealtimeService,
   ) {}
 
+  /**
+   * Statuses at which a complaint can be (re)assigned. Once work has actually
+   * started (IN_PROGRESS / PENDING_APPROVAL) or the complaint has been closed,
+   * we refuse to re-route silently — supervisor must move it back via the
+   * normal status workflow first. This protects worker progress / audit trail.
+   */
+  private static readonly ASSIGNABLE_STATUSES: ComplaintStatus[] = [
+    ComplaintStatus.SUBMITTED,
+    ComplaintStatus.UNDER_REVIEW,
+    ComplaintStatus.ASSIGNED,
+  ];
+
   async assignComplaint(
     complaintId: string,
     assignedToId: string,
@@ -33,6 +45,17 @@ export class AssignmentsService {
 
     if (!complaint) {
       throw new NotFoundException('Complaint not found');
+    }
+
+    // Status gate — the complaint must be in a state that accepts assignment.
+    // Without this check, callers could silently reassign IN_PROGRESS work
+    // and break the worker's flow, or "reassign" closed complaints.
+    if (!AssignmentsService.ASSIGNABLE_STATUSES.includes(complaint.status)) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'INVALID_STATUS_FOR_ASSIGNMENT',
+        message: `Cannot assign while complaint is ${complaint.status}. Move it back to UNDER_REVIEW first if you need to reassign.`,
+      });
     }
 
     // Cannot assign a complaint to its creator (citizen who submitted it)
@@ -130,14 +153,19 @@ export class AssignmentsService {
       },
     });
 
-    // Update complaint status to ASSIGNED if currently SUBMITTED
-    if (complaint.status === ComplaintStatus.SUBMITTED) {
+    // Auto-transition pre-work statuses to ASSIGNED so the worker isn't stuck.
+    // Without this, a complaint in UNDER_REVIEW that gets assigned would keep
+    // its status and the worker couldn't legally call IN_PROGRESS next
+    // (the status machine only allows ASSIGNED → IN_PROGRESS).
+    if (
+      complaint.status === ComplaintStatus.SUBMITTED ||
+      complaint.status === ComplaintStatus.UNDER_REVIEW
+    ) {
       await this.prisma.complaint.update({
         where: { id: complaintId },
         data: { status: ComplaintStatus.ASSIGNED },
       });
 
-      // Log status change
       await this.prisma.complaintStatusLog.create({
         data: {
           complaintId,
@@ -145,6 +173,18 @@ export class AssignmentsService {
           fromStatus: complaint.status,
           toStatus: ComplaintStatus.ASSIGNED,
           notes: `Assigned to ${assignee.firstName} ${assignee.lastName}`,
+        },
+      });
+    } else if (complaint.status === ComplaintStatus.ASSIGNED) {
+      // Reassignment — log it explicitly so the audit trail makes it obvious
+      // that ownership moved between staff.
+      await this.prisma.complaintStatusLog.create({
+        data: {
+          complaintId,
+          changedById: assignedById,
+          fromStatus: complaint.status,
+          toStatus: ComplaintStatus.ASSIGNED,
+          notes: `Reassigned to ${assignee.firstName} ${assignee.lastName}`,
         },
       });
     }
@@ -194,6 +234,7 @@ export class AssignmentsService {
         complaintId,
         isActive: true,
       },
+      orderBy: { createdAt: 'desc' },
       include: {
         assignedTo: {
           select: { id: true, firstName: true, lastName: true, email: true },

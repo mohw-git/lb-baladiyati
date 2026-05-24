@@ -87,7 +87,7 @@ export class KycController {
   })
   @ApiCreatedResponse({ description: 'KYC submitted successfully', type: KycSubmitResponseDto })
   @ApiBadRequestResponse({ description: 'Validation error or duplicate submission', type: ApiErrorResponseDto })
-  @ApiForbiddenResponse({ description: 'Not mobile or not permitted', type: ApiErrorResponseDto })
+  @ApiForbiddenResponse({ description: 'Not permitted or not a citizen account', type: ApiErrorResponseDto })
   @UseInterceptors(
     FileFieldsInterceptor(
       [

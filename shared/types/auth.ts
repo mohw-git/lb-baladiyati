@@ -44,10 +44,14 @@ export interface AuthUser {
   locale?: 'EN' | 'AR' | 'FR';
 }
 
+export type AccountType = 'CITIZEN' | 'STAFF';
+
 export interface AuthUserWithRoles extends AuthUser {
+  /** Set by the API so clients can render citizen vs staff UI without inferring roles. */
+  accountType?: AccountType;
   mustChangePassword?: boolean;
   mustEnrollTwoFactor?: boolean;
-  roles: string[];
+  roles?: string[];
   /** Same as `roles` but with the Arabic/French translations when provided. */
   rolesDetailed?: {
     id: string;
@@ -55,7 +59,7 @@ export interface AuthUserWithRoles extends AuthUser {
     nameAr: string | null;
     nameFr: string | null;
   }[];
-  permissions: string[];
+  permissions?: string[];
   municipality?: {
     id: string;
     name: string;
@@ -70,6 +74,8 @@ export interface AuthUserWithRoles extends AuthUser {
     nameFr?: string | null;
   } | null;
   twoFactorEnabled?: boolean;
+  /** Active second factor: TOTP (authenticator) or EMAIL (OTP by email). */
+  twoFactorMethod?: 'TOTP' | 'EMAIL' | null;
   /** Discord-style hierarchy rank: max priority across the user's roles. */
   effectiveRank?: number;
 }

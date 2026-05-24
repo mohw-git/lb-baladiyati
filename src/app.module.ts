@@ -36,6 +36,7 @@ import { HealthModule } from './modules/health/health.module';
 
 // Guards
 import { JwtAuthGuard } from './core/auth/jwt-auth.guard';
+import { TwoFactorEnrollmentGuard } from './core/auth/two-factor-enrollment.guard';
 import { PermissionsGuard } from './core/rbac/permissions.guard';
 import { WebOnlyGuard } from './core/auth/guards/web-only.guard';
 import { MaintenanceGuard } from './core/maintenance/maintenance.guard';
@@ -149,6 +150,11 @@ import { MaintenanceGuard } from './core/maintenance/maintenance.guard';
     {
       provide: APP_GUARD,
       useClass: PermissionsGuard,
+    },
+    // Staff without 2FA cannot access app APIs (profile + 2FA setup still allowed)
+    {
+      provide: APP_GUARD,
+      useClass: TwoFactorEnrollmentGuard,
     },
     // Global Web-Only Guard (rejects mobile-app requests on @WebOnly endpoints)
     {

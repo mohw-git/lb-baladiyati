@@ -23,6 +23,10 @@ export default function TabLayout() {
     return <Redirect href="/(auth)/login" />;
   }
 
+  if ((user as any).mustEnrollTwoFactor && !(user as any).twoFactorEnabled) {
+    return <Redirect href="/enroll-2fa" />;
+  }
+
   const isWorkerOrAbove = userRole === 'worker' || userRole === 'supervisor' || userRole === 'admin';
   const isCitizen = userRole === 'citizen';
   // Inbox tab: anyone who can read cross-department transfers OR help requests.

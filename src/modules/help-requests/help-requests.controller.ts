@@ -64,7 +64,7 @@ export class HelpRequestsController {
     @Param('complaintId') complaintId: string,
     @CurrentUser() user: CurrentUserData,
   ) {
-    return this.help.historyFor(complaintId, user.municipalityId);
+    return this.help.historyFor(complaintId, user.id, user.municipalityId);
   }
 
   @Get(':id')
@@ -158,6 +158,15 @@ export class HelpRequestsController {
 
   @Post(':id/submit')
   @HttpCode(HttpStatus.OK)
+  // Submitting helper work requires *some* help-flow permission. The service
+  // narrows further (must be assigned helper, helper HOD, helper-dept member,
+  // or Admin) so this controller-level guard just keeps random authenticated
+  // users with no help.* permission out of the endpoint.
+  @RequirePermissions(
+    PERMISSIONS.HELP_REQUEST,
+    PERMISSIONS.HELP_RESPOND,
+    PERMISSIONS.HELP_VIEW,
+  )
   @ApiOperation({
     summary:
       'Helper worker (or helper HOD) submits proof of work for review by the requesting HOD',

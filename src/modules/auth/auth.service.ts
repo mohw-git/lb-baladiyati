@@ -44,6 +44,44 @@ export class AuthService {
     return crypto.createHash('sha256').update(token).digest('hex');
   }
 
+  /** Self-registered accounts and Citizen-only role holders. */
+  private isCitizenAccount(user: {
+    createdVia: string;
+    userRoles: { role: { name: string } }[];
+  }): boolean {
+    if (user.createdVia === 'SELF_REGISTRATION') return true;
+    const roleNames = user.userRoles
+      .map((ur) => ur.role?.name)
+      .filter((n): n is string => !!n);
+    return roleNames.length > 0 && roleNames.every((n) => n === 'Citizen');
+  }
+
+  /**
+   * Remove staff-only metadata from profile/session payloads for citizens.
+   * Clients apply citizen permission keys locally for navigation guards.
+   */
+  private sanitizeProfileForCitizen<T extends Record<string, unknown>>(profile: T): T {
+    const {
+      roles: _roles,
+      rolesDetailed: _rolesDetailed,
+      department: _department,
+      permissions: _permissions,
+      effectiveRank: _effectiveRank,
+      isSuperAdmin: _isSuperAdmin,
+      mustEnrollTwoFactor: _mustEnrollTwoFactor,
+      ...rest
+    } = profile;
+    return {
+      ...rest,
+      accountType: 'CITIZEN',
+      roles: [],
+      permissions: [],
+      department: null,
+      isSuperAdmin: false,
+      mustEnrollTwoFactor: false,
+    } as unknown as T;
+  }
+
   async register(dto: RegisterDto, req?: Request) {
     // Find municipality by code
     const municipality = await this.prisma.municipality.findUnique({
@@ -125,14 +163,7 @@ export class AuthService {
     this.sendEmailVerification(user.email, req).catch(() => undefined);
 
     return {
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        phone: user.phone,
-        municipalityId: user.municipalityId,
-      },
+      user: await this.getProfile(user.id),
       accessToken,
       refreshToken,
     };
@@ -261,24 +292,8 @@ export class AuthService {
       };
     }
 
-    // Get roles and permissions
     const roles = await this.permissionsResolver.getUserRoleNames(user.id);
-    const permissions = await this.permissionsResolver.getUserPermissions(user.id);
 
-    // Platform-wide "Require 2FA for staff" enforcement.
-    // If the Super Admin has turned this on, every non-citizen account that
-    // hasn't enrolled in 2FA is flagged so the web client can force them
-    // through the setup flow before letting them use the app.
-    const isStaff = user.createdVia !== 'SELF_REGISTRATION';
-    let mustEnrollTwoFactor = false;
-    if (isStaff && !user.twoFactorEnabled) {
-      const setting = await this.prisma.platformSetting.findUnique({
-        where: { key: 'auth.require_2fa_staff' },
-      });
-      mustEnrollTwoFactor = setting?.value === 'true';
-    }
-
-    // Generate tokens and persist refresh token
     const { accessToken, refreshToken } = await this.generateAndStoreTokens(user);
 
     await this.audit.logFromRequest(req, {
@@ -289,58 +304,8 @@ export class AuthService {
       metadata: { roles },
     });
 
-    // Get department and municipality info + role priorities for hierarchy rank
-    const fullUser = await this.prisma.user.findUnique({
-      where: { id: user.id },
-      select: {
-        avatarUrl: true,
-        verificationStatus: true,
-        locale: true,
-        municipality: { select: { id: true, name: true, nameAr: true, nameFr: true, code: true } },
-        department: { select: { id: true, name: true, nameAr: true, nameFr: true } },
-        userRoles: {
-          select: { role: { select: { id: true, name: true, nameAr: true, nameFr: true, priority: true } } },
-        },
-      },
-    });
-    const rolePriorities =
-      (fullUser?.userRoles ?? []).map((ur: any) => ur.role?.priority ?? 0);
-    const effectiveRank = user.isSuperAdmin
-      ? Number.MAX_SAFE_INTEGER
-      : rolePriorities.length
-        ? Math.max(...rolePriorities)
-        : 0;
-
     return {
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        phone: user.phone,
-        isActive: user.isActive,
-        isSuperAdmin: user.isSuperAdmin,
-        avatarUrl: fullUser?.avatarUrl,
-        verificationStatus: fullUser?.verificationStatus,
-        // Surface email-verification status so the dashboard banner can
-        // appear immediately on first login (without an extra /auth/me round-trip).
-        emailVerifiedAt: (user as any).emailVerifiedAt ?? null,
-        emailVerified: !!(user as any).emailVerifiedAt,
-        locale: (fullUser as any)?.locale ?? 'EN',
-        municipalityId: user.municipalityId,
-        municipality: fullUser?.municipality,
-        department: fullUser?.department,
-        roles,
-        rolesDetailed: (fullUser?.userRoles ?? []).map((ur: any) => ({
-          id: ur.role.id,
-          name: ur.role.name,
-          nameAr: ur.role.nameAr ?? null,
-          nameFr: ur.role.nameFr ?? null,
-        })),
-        permissions,
-        mustEnrollTwoFactor,
-        effectiveRank,
-      },
+      user: await this.getProfile(user.id),
       accessToken,
       refreshToken,
     };
@@ -361,6 +326,7 @@ export class AuthService {
         emailVerifiedAt: true,
         isActive: true,
         twoFactorEnabled: true,
+        twoFactorMethod: true,
         mustChangePassword: true,
         createdVia: true,
         locale: true,
@@ -419,6 +385,9 @@ export class AuthService {
     // Super Admin toggles it.
     const isStaff = (user as any).createdVia !== 'SELF_REGISTRATION';
     const twoFactorEnabled = (user as any).twoFactorEnabled ?? false;
+    const twoFactorMethod = twoFactorEnabled
+      ? ((user as any).twoFactorMethod as 'TOTP' | 'EMAIL' | null) ?? 'TOTP'
+      : null;
     let mustEnrollTwoFactor = false;
     if (isStaff && !twoFactorEnabled) {
       const setting = await this.prisma.platformSetting.findUnique({
@@ -427,8 +396,9 @@ export class AuthService {
       mustEnrollTwoFactor = setting?.value === 'true';
     }
 
-    return {
+    const profile = {
       id: user.id,
+      createdVia: (user as any).createdVia,
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName,
@@ -442,6 +412,7 @@ export class AuthService {
       isActive: user.isActive,
       isSuperAdmin,
       twoFactorEnabled,
+      twoFactorMethod,
       mustChangePassword: (user as any).mustChangePassword ?? false,
       mustEnrollTwoFactor,
       locale: (user as any).locale ?? 'EN',
@@ -460,7 +431,14 @@ export class AuthService {
       })),
       permissions,
       effectiveRank,
+      accountType: 'STAFF' as const,
     };
+
+    if (this.isCitizenAccount(user as any)) {
+      return this.sanitizeProfileForCitizen(profile);
+    }
+
+    return profile;
   }
 
   async updateProfile(userId: string, dto: UpdateProfileDto) {
@@ -946,7 +924,21 @@ export class AuthService {
       where: { codeHash: tokenHash, purpose: 'VERIFY_EMAIL' },
       include: { user: true },
     });
-    if (!record || record.consumedAt || record.expiresAt < new Date()) {
+    if (!record) {
+      throw new BadRequestException(
+        'Verification link is invalid or has expired.',
+      );
+    }
+
+    // Idempotent: link already used or user verified (e.g. React Strict Mode double-submit).
+    if (record.user.emailVerifiedAt) {
+      return {
+        message: 'Email already verified.',
+        alreadyVerified: true as const,
+      };
+    }
+
+    if (record.consumedAt || record.expiresAt < new Date()) {
       throw new BadRequestException(
         'Verification link is invalid or has expired.',
       );
@@ -981,7 +973,10 @@ export class AuthService {
       resourceId: record.userId,
     });
 
-    return { message: 'Email verified successfully.' };
+    return {
+      message: 'Email verified successfully.',
+      alreadyVerified: false as const,
+    };
   }
 
   // ==========================================================
@@ -1006,6 +1001,12 @@ export class AuthService {
       );
     }
 
+    if (user.twoFactorEnabled && (user as any).twoFactorMethod === 'EMAIL') {
+      throw new BadRequestException('Email-based 2FA is already enabled');
+    }
+
+    await this.clearEmailOtps(userId, ['LOGIN_2FA', 'DISABLE_2FA']);
+
     await this.prisma.user.update({
       where: { id: userId },
       data: {
@@ -1028,27 +1029,36 @@ export class AuthService {
     return { enabled: true, method: 'EMAIL' as const };
   }
 
+  /** Invalidate unconsumed email OTPs for the given purposes. */
+  private async clearEmailOtps(userId: string, purposes: string[]) {
+    await this.prisma.emailOtp.updateMany({
+      where: { userId, purpose: { in: purposes }, consumedAt: null },
+      data: { consumedAt: new Date() },
+    });
+  }
+
   /**
-   * Internal helper — called from `login()` when the user's 2FA method is
-   * EMAIL. Generates a 6-digit OTP, stores its hash, and emails it.
-   * Best-effort send: failures are logged but don't break login.
+   * Issue a 6-digit email OTP (hashed at rest). Used for login and disable flows.
+   * Never logs the plaintext code.
    */
-  private async issueEmailOtpForLogin(
+  private async issueEmailOtp(
     user: { id: string; email: string; firstName: string; locale: any },
+    purpose: 'LOGIN_2FA' | 'DISABLE_2FA',
     req?: Request,
+    auditAction: string = AUDIT_ACTIONS.AUTH_2FA_EMAIL_OTP_REQUEST,
+    mailEvent: string = 'login_2fa_otp',
+    mailPurpose: 'LOGIN' | 'GENERIC' = 'LOGIN',
+    rateLimitMessage = 'Too many codes requested. Please try again in a few minutes.',
   ) {
-    // Throttle: max 5 codes / 15 min per user
     const recent = await this.prisma.emailOtp.count({
       where: {
         userId: user.id,
-        purpose: 'LOGIN_2FA',
+        purpose,
         createdAt: { gte: new Date(Date.now() - 15 * 60_000) },
       },
     });
     if (recent >= 5) {
-      throw new BadRequestException(
-        'Too many sign-in codes requested. Please try again in a few minutes.',
-      );
+      throw new BadRequestException(rateLimitMessage);
     }
 
     const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
@@ -1057,20 +1067,15 @@ export class AuthService {
     const expiresAt = new Date(Date.now() + expiresInMinutes * 60_000);
 
     await this.prisma.emailOtp.create({
-      data: {
-        userId: user.id,
-        purpose: 'LOGIN_2FA',
-        codeHash,
-        expiresAt,
-      },
+      data: { userId: user.id, purpose, codeHash, expiresAt },
     });
 
     const tpl = this.mail.emailOtp(
       ((user.locale as 'EN' | 'AR' | 'FR') ?? 'EN'),
-      { code, expiresInMinutes, purpose: 'LOGIN' },
+      { code, expiresInMinutes, purpose: mailPurpose },
     );
     const result = await this.mail
-      .send({ to: user.email, event: 'login_2fa_otp', ...tpl })
+      .send({ to: user.email, event: mailEvent, ...tpl })
       .catch((err) => ({
         delivered: false,
         provider: 'resend' as const,
@@ -1080,14 +1085,30 @@ export class AuthService {
     await this.audit.logFromRequest(req, {
       actorId: user.id,
       actorEmail: user.email,
-      action: AUDIT_ACTIONS.AUTH_2FA_EMAIL_OTP_REQUEST,
+      action: auditAction,
       metadata: {
+        purpose,
         delivered: result.delivered,
         provider: (result as any).provider,
         providerId: (result as any).providerId,
         reason: (result as any).error,
       },
     });
+  }
+
+  private async issueEmailOtpForLogin(
+    user: { id: string; email: string; firstName: string; locale: any },
+    req?: Request,
+  ) {
+    return this.issueEmailOtp(
+      user,
+      'LOGIN_2FA',
+      req,
+      AUDIT_ACTIONS.AUTH_2FA_EMAIL_OTP_REQUEST,
+      'login_2fa_otp',
+      'LOGIN',
+      'Too many sign-in codes requested. Please try again in a few minutes.',
+    );
   }
 
   /**
@@ -1197,8 +1218,6 @@ export class AuthService {
       data: { consumedAt: new Date() },
     });
 
-    const roles = await this.permissionsResolver.getUserRoleNames(user.id);
-    const permissions = await this.permissionsResolver.getUserPermissions(user.id);
     const { accessToken, refreshToken } = await this.generateAndStoreTokens(user);
 
     await this.audit.logFromRequest(req, {
@@ -1208,33 +1227,8 @@ export class AuthService {
       action: AUDIT_ACTIONS.AUTH_2FA_EMAIL_LOGIN,
     });
 
-    const fullUser = await this.prisma.user.findUnique({
-      where: { id: user.id },
-      select: {
-        avatarUrl: true,
-        verificationStatus: true,
-        municipality: { select: { id: true, name: true, code: true } },
-        department: { select: { id: true, name: true } },
-      },
-    });
-
     return {
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        phone: user.phone,
-        isActive: user.isActive,
-        isSuperAdmin: user.isSuperAdmin,
-        avatarUrl: fullUser?.avatarUrl,
-        verificationStatus: fullUser?.verificationStatus,
-        municipalityId: user.municipalityId,
-        municipality: fullUser?.municipality,
-        department: fullUser?.department,
-        roles,
-        permissions,
-      },
+      user: await this.getProfile(user.id),
       accessToken,
       refreshToken,
     };
@@ -1284,10 +1278,13 @@ export class AuthService {
   async setupTwoFactor(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { email: true, twoFactorEnabled: true },
+      select: { email: true, twoFactorEnabled: true, twoFactorMethod: true },
     });
     if (!user) throw new NotFoundException('User not found');
-    if (user.twoFactorEnabled) {
+    if (
+      user.twoFactorEnabled &&
+      (user as any).twoFactorMethod !== 'EMAIL'
+    ) {
       throw new BadRequestException('Two-factor authentication is already enabled');
     }
 
@@ -1297,10 +1294,16 @@ export class AuthService {
       length: 20,
     });
 
-    // Store the candidate secret. It only becomes "enabled" after a successful verify.
+    // Store the candidate secret. When switching from EMAIL, keep 2FA enabled
+    // until verify succeeds so the account is never left without a second factor.
+    const switchingFromEmail =
+      user.twoFactorEnabled && (user as any).twoFactorMethod === 'EMAIL';
     await this.prisma.user.update({
       where: { id: userId },
-      data: { twoFactorSecret: secret.base32, twoFactorEnabled: false },
+      data: {
+        twoFactorSecret: secret.base32,
+        ...(switchingFromEmail ? {} : { twoFactorEnabled: false }),
+      },
     });
 
     const otpauthUrl = secret.otpauth_url ?? '';
@@ -1317,10 +1320,19 @@ export class AuthService {
   async verifyAndEnableTwoFactor(userId: string, code: string, req?: Request) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { twoFactorSecret: true, twoFactorEnabled: true, email: true, municipalityId: true },
+      select: {
+        twoFactorSecret: true,
+        twoFactorEnabled: true,
+        twoFactorMethod: true,
+        email: true,
+        municipalityId: true,
+      },
     });
     if (!user) throw new NotFoundException('User not found');
-    if (user.twoFactorEnabled) {
+    if (
+      user.twoFactorEnabled &&
+      (user as any).twoFactorMethod !== 'EMAIL'
+    ) {
       throw new BadRequestException('Two-factor authentication is already enabled');
     }
     if (!user.twoFactorSecret) {
@@ -1338,9 +1350,14 @@ export class AuthService {
       throw new UnauthorizedException('Invalid verification code');
     }
 
+    await this.clearEmailOtps(userId, ['LOGIN_2FA', 'DISABLE_2FA']);
+
     await this.prisma.user.update({
       where: { id: userId },
-      data: { twoFactorEnabled: true },
+      data: {
+        twoFactorEnabled: true,
+        twoFactorMethod: 'TOTP',
+      },
     });
 
     await this.audit.logFromRequest(req, {
@@ -1355,16 +1372,36 @@ export class AuthService {
     return { enabled: true };
   }
 
-  /** Disable 2FA. Requires password + a current TOTP code. */
+  /** Disable TOTP 2FA. Requires password + a current authenticator code. */
   async disableTwoFactor(userId: string, password: string, code: string, req?: Request) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new NotFoundException('User not found');
-    if (!user.twoFactorEnabled || !user.twoFactorSecret) {
+    if (!user.twoFactorEnabled) {
       throw new BadRequestException('Two-factor authentication is not enabled');
+    }
+    const method = (user as any).twoFactorMethod ?? 'TOTP';
+    if (method === 'EMAIL') {
+      throw new BadRequestException(
+        'Email-based 2FA cannot be disabled with an authenticator code. Request a disable code by email first.',
+      );
+    }
+    if (!user.twoFactorSecret) {
+      throw new BadRequestException('Authenticator 2FA is not configured for this account');
     }
 
     const valid = await comparePassword(password, user.passwordHash);
-    if (!valid) throw new UnauthorizedException('Password is incorrect');
+    if (!valid) {
+      await this.audit.logFromRequest(req, {
+        actorId: userId,
+        actorEmail: user.email,
+        municipalityId: user.municipalityId,
+        action: AUDIT_ACTIONS.AUTH_2FA_DISABLE_FAILED,
+        resourceType: 'User',
+        resourceId: userId,
+        metadata: { method: 'TOTP', reason: 'invalid_password' },
+      });
+      throw new UnauthorizedException('Password is incorrect');
+    }
 
     const verified = speakeasy.totp.verify({
       secret: user.twoFactorSecret,
@@ -1372,11 +1409,27 @@ export class AuthService {
       token: code,
       window: 1,
     });
-    if (!verified) throw new UnauthorizedException('Invalid verification code');
+    if (!verified) {
+      await this.audit.logFromRequest(req, {
+        actorId: userId,
+        actorEmail: user.email,
+        municipalityId: user.municipalityId,
+        action: AUDIT_ACTIONS.AUTH_2FA_DISABLE_FAILED,
+        resourceType: 'User',
+        resourceId: userId,
+        metadata: { method: 'TOTP', reason: 'invalid_code' },
+      });
+      throw new UnauthorizedException('Invalid verification code');
+    }
+
+    await this.clearEmailOtps(userId, ['LOGIN_2FA', 'DISABLE_2FA']);
 
     await this.prisma.user.update({
       where: { id: userId },
-      data: { twoFactorEnabled: false, twoFactorSecret: null },
+      data: {
+        twoFactorEnabled: false,
+        twoFactorSecret: null,
+      },
     });
 
     await this.audit.logFromRequest(req, {
@@ -1386,6 +1439,151 @@ export class AuthService {
       action: AUDIT_ACTIONS.AUTH_2FA_DISABLE,
       resourceType: 'User',
       resourceId: userId,
+      metadata: { method: 'TOTP' },
+    });
+
+    return { disabled: true };
+  }
+
+  /** Step 1: email a single-use OTP to confirm disabling email-based 2FA. */
+  async requestDisableEmailTwoFactor(userId: string, password: string, req?: Request) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        locale: true,
+        passwordHash: true,
+        twoFactorEnabled: true,
+        twoFactorMethod: true,
+        municipalityId: true,
+      },
+    });
+    if (!user) throw new NotFoundException('User not found');
+    if (!user.twoFactorEnabled || user.twoFactorMethod !== 'EMAIL') {
+      throw new BadRequestException('Email-based 2FA is not enabled');
+    }
+
+    const valid = await comparePassword(password, user.passwordHash);
+    if (!valid) {
+      await this.audit.logFromRequest(req, {
+        actorId: userId,
+        actorEmail: user.email,
+        municipalityId: user.municipalityId,
+        action: AUDIT_ACTIONS.AUTH_2FA_DISABLE_FAILED,
+        resourceType: 'User',
+        resourceId: userId,
+        metadata: { method: 'EMAIL', reason: 'invalid_password', step: 'request' },
+      });
+      throw new UnauthorizedException('Password is incorrect');
+    }
+
+    await this.clearEmailOtps(userId, ['DISABLE_2FA']);
+
+    await this.issueEmailOtp(
+      user as any,
+      'DISABLE_2FA',
+      req,
+      AUDIT_ACTIONS.AUTH_2FA_DISABLE_EMAIL_OTP_REQUEST,
+      'disable_2fa_otp',
+      'GENERIC',
+      'Too many disable codes requested. Please try again in a few minutes.',
+    );
+
+    return { message: 'A confirmation code has been sent to your email.' };
+  }
+
+  /** Step 2: confirm disable with password + emailed OTP. */
+  async confirmDisableEmailTwoFactor(
+    userId: string,
+    password: string,
+    code: string,
+    req?: Request,
+  ) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+    if (!user.twoFactorEnabled || (user as any).twoFactorMethod !== 'EMAIL') {
+      throw new BadRequestException('Email-based 2FA is not enabled');
+    }
+
+    const valid = await comparePassword(password, user.passwordHash);
+    if (!valid) {
+      await this.audit.logFromRequest(req, {
+        actorId: userId,
+        actorEmail: user.email,
+        municipalityId: user.municipalityId,
+        action: AUDIT_ACTIONS.AUTH_2FA_DISABLE_FAILED,
+        resourceType: 'User',
+        resourceId: userId,
+        metadata: { method: 'EMAIL', reason: 'invalid_password', step: 'confirm' },
+      });
+      throw new UnauthorizedException('Password is incorrect');
+    }
+
+    const codeHash = this.hashToken(code);
+    const otp = await this.prisma.emailOtp.findFirst({
+      where: {
+        userId,
+        purpose: 'DISABLE_2FA',
+        codeHash,
+        consumedAt: null,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!otp || otp.expiresAt < new Date()) {
+      const latest = await this.prisma.emailOtp.findFirst({
+        where: { userId, purpose: 'DISABLE_2FA', consumedAt: null },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (latest) {
+        await this.prisma.emailOtp.update({
+          where: { id: latest.id },
+          data: { attempts: { increment: 1 } },
+        });
+        if (latest.attempts + 1 >= 5) {
+          await this.prisma.emailOtp.update({
+            where: { id: latest.id },
+            data: { consumedAt: new Date() },
+          });
+        }
+      }
+      await this.audit.logFromRequest(req, {
+        actorId: userId,
+        actorEmail: user.email,
+        municipalityId: user.municipalityId,
+        action: AUDIT_ACTIONS.AUTH_2FA_DISABLE_FAILED,
+        resourceType: 'User',
+        resourceId: userId,
+        metadata: { method: 'EMAIL', reason: 'invalid_code', step: 'confirm' },
+      });
+      throw new UnauthorizedException('Invalid or expired confirmation code.');
+    }
+
+    await this.prisma.emailOtp.update({
+      where: { id: otp.id },
+      data: { consumedAt: new Date() },
+    });
+
+    await this.clearEmailOtps(userId, ['LOGIN_2FA', 'DISABLE_2FA']);
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        twoFactorEnabled: false,
+        twoFactorSecret: null,
+      },
+    });
+
+    await this.audit.logFromRequest(req, {
+      actorId: userId,
+      actorEmail: user.email,
+      municipalityId: user.municipalityId,
+      action: AUDIT_ACTIONS.AUTH_2FA_DISABLE,
+      resourceType: 'User',
+      resourceId: userId,
+      metadata: { method: 'EMAIL' },
     });
 
     return { disabled: true };
@@ -1410,7 +1608,13 @@ export class AuthService {
     if (!user || !user.isActive) {
       throw new UnauthorizedException('User not found or inactive');
     }
-    if (!user.twoFactorEnabled || !user.twoFactorSecret) {
+    const method = (user as any).twoFactorMethod ?? 'TOTP';
+    if (!user.twoFactorEnabled || method !== 'TOTP') {
+      throw new BadRequestException(
+        'This account uses email-based 2FA. Use /auth/2fa/email/login instead.',
+      );
+    }
+    if (!user.twoFactorSecret) {
       throw new BadRequestException('Two-factor authentication is not enabled for this account');
     }
 
@@ -1422,8 +1626,6 @@ export class AuthService {
     });
     if (!verified) throw new UnauthorizedException('Invalid verification code');
 
-    const roles = await this.permissionsResolver.getUserRoleNames(user.id);
-    const permissions = await this.permissionsResolver.getUserPermissions(user.id);
     const { accessToken, refreshToken } = await this.generateAndStoreTokens(user);
 
     await this.audit.logFromRequest(req, {
@@ -1431,35 +1633,11 @@ export class AuthService {
       actorEmail: user.email,
       municipalityId: user.municipalityId,
       action: AUDIT_ACTIONS.AUTH_2FA_LOGIN,
-    });
-
-    const fullUser = await this.prisma.user.findUnique({
-      where: { id: user.id },
-      select: {
-        avatarUrl: true,
-        verificationStatus: true,
-        municipality: { select: { id: true, name: true, code: true } },
-        department: { select: { id: true, name: true } },
-      },
+      metadata: { method: 'TOTP' },
     });
 
     return {
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        phone: user.phone,
-        isActive: user.isActive,
-        isSuperAdmin: user.isSuperAdmin,
-        avatarUrl: fullUser?.avatarUrl,
-        verificationStatus: fullUser?.verificationStatus,
-        municipalityId: user.municipalityId,
-        municipality: fullUser?.municipality,
-        department: fullUser?.department,
-        roles,
-        permissions,
-      },
+      user: await this.getProfile(user.id),
       accessToken,
       refreshToken,
     };

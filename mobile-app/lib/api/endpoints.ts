@@ -21,6 +21,20 @@ export const authApi = {
     post<any>('/auth/refresh', { refreshToken }, { skipAuth: true }),
   twoFactorLogin: (data: { challengeToken: string; code: string }) =>
     post<any>('/auth/2fa/login', data, { skipAuth: true }),
+  emailTwoFactorLogin: (data: { challengeToken: string; code: string }) =>
+    post<any>('/auth/2fa/email/login', data, { skipAuth: true }),
+  resendEmailTwoFactorCode: (challengeToken: string) =>
+    post<{ message: string }>('/auth/2fa/email/resend', { challengeToken }, { skipAuth: true }),
+  resendVerification: (email: string) =>
+    post<{ message: string }>('/auth/resend-verification', { email }, { skipAuth: true }),
+  enableEmailTwoFactor: (password: string) =>
+    post<{ enabled: true; method: 'EMAIL' }>('/auth/2fa/email/enable', { password }),
+  requestDisableEmailTwoFactor: (password: string) =>
+    post<{ message: string }>('/auth/2fa/email/disable/request', { password }),
+  confirmDisableEmailTwoFactor: (data: { password: string; code: string }) =>
+    post<{ disabled: true }>('/auth/2fa/email/disable/confirm', data),
+  disableTwoFactor: (data: { password: string; code: string }) =>
+    post<{ disabled: true }>('/auth/2fa/disable', data),
   getProfile: () => get<any>('/auth/me'),
   updateProfile: (data: {
     firstName?: string;
@@ -116,7 +130,7 @@ export const notificationsApi = {
 export const deviceTokensApi = {
   register: (token: string, platform: 'ANDROID' | 'IOS' | 'WEB') =>
     post<any>('/device-tokens', { token, platform }),
-  remove: (token: string) => del<any>(`/device-tokens/${token}`),
+  remove: (token: string) => del<any>(`/device-tokens/${encodeURIComponent(token)}`),
 };
 
 // Departments (for help-request modal pickers)
@@ -138,7 +152,10 @@ export const helpRequestsApi = {
     post<any>(`/help-requests/${id}/accept`, data),
   decline: (id: string, data: { reason: string }) =>
     post<any>(`/help-requests/${id}/decline`, data),
-  assign: (id: string, data: { assigneeId: string; note?: string }) =>
+  // Backend DTO uses `helperAssigneeId` (matches Prisma column). The earlier
+  // `assigneeId` here would have been silently dropped by class-validator's
+  // whitelist, causing the assign to 400 with a confusing message.
+  assign: (id: string, data: { helperAssigneeId: string; note?: string }) =>
     post<any>(`/help-requests/${id}/assign`, data),
   submit: (id: string, data: { notes: string; attachments?: any[] }) =>
     post<any>(`/help-requests/${id}/submit`, data),

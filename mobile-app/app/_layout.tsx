@@ -96,6 +96,9 @@ export default function RootLayout() {
         <Stack.Screen name="complaint/[id]" options={{ headerShown: true, title: 'Complaint Details', headerBackTitle: 'Back' }} />
         <Stack.Screen name="news/[id]" options={{ headerShown: true, title: 'News Article', headerBackTitle: 'Back' }} />
         <Stack.Screen name="language" options={{ headerShown: false }} />
+        <Stack.Screen name="kyc" options={{ headerShown: true, title: 'Identity Verification', headerBackTitle: 'Back' }} />
+        <Stack.Screen name="notifications" options={{ headerShown: true, title: 'Notifications', headerBackTitle: 'Back' }} />
+        <Stack.Screen name="enroll-2fa" options={{ headerShown: true, title: 'Two-Factor Setup', headerBackTitle: 'Back' }} />
       </Stack>
     </QueryClientProvider>
   );

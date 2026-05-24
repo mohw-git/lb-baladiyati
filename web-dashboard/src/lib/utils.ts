@@ -18,13 +18,25 @@ export function formatRelative(date: string | Date) {
 }
 
 /** Get user initials from first and last name */
-export function getInitials(firstName: string, lastName: string) {
-  return `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase();
+export function getInitials(
+  firstName?: string | null,
+  lastName?: string | null,
+  fallback = '?',
+) {
+  const initials = `${firstName?.charAt(0) ?? ''}${lastName?.charAt(0) ?? ''}`.toUpperCase();
+  return initials || fallback;
 }
 
-/** Get full name */
-export function getFullName(user: { firstName: string; lastName: string }) {
-  return `${user.firstName} ${user.lastName}`;
+/** Get full name — safe when user / name fields are null (e.g. deleted staff, system actions) */
+export function getFullName(
+  user?: { firstName?: string | null; lastName?: string | null } | null,
+  fallback = '—',
+): string {
+  if (!user) return fallback;
+  const parts = [user.firstName, user.lastName]
+    .map((part) => part?.trim())
+    .filter(Boolean) as string[];
+  return parts.length > 0 ? parts.join(' ') : fallback;
 }
 
 /** Build query string from params object, omitting undefined/null values */

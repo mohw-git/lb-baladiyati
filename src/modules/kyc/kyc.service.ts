@@ -86,13 +86,23 @@ export class KycService {
       );
     }
 
-    // Check user status
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { verificationStatus: true },
+      select: { verificationStatus: true, createdVia: true },
     });
 
-    if (user?.verificationStatus === VerificationStatus.VERIFIED) {
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    // Self-service KYC is for citizens only; staff accounts are provisioned internally.
+    if (user.createdVia !== 'SELF_REGISTRATION') {
+      throw new ForbiddenException(
+        'Identity verification submission is only available for citizen accounts',
+      );
+    }
+
+    if (user.verificationStatus === VerificationStatus.VERIFIED) {
       throw new BadRequestException('Your identity is already verified');
     }
 

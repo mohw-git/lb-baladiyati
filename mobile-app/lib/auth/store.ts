@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import * as SecureStore from 'expo-secure-store';
 import { configureAuth } from '../api/client';
+import { registerPushNotifications, unregisterPushNotifications } from '../push/push';
 
 interface AuthUser {
   id: string;
@@ -49,6 +50,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     await SecureStore.setItemAsync(KEYS.ACCESS_TOKEN, accessToken);
     await SecureStore.setItemAsync(KEYS.REFRESH_TOKEN, refreshToken);
     await SecureStore.setItemAsync(KEYS.USER, JSON.stringify(user));
+    void registerPushNotifications(user.id);
   },
 
   setTokens: async (accessToken, refreshToken) => {
@@ -71,6 +73,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: async () => {
+    await unregisterPushNotifications();
     set({ user: null, accessToken: null, refreshToken: null });
     await SecureStore.deleteItemAsync(KEYS.ACCESS_TOKEN);
     await SecureStore.deleteItemAsync(KEYS.REFRESH_TOKEN);
@@ -87,6 +90,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (accessToken && refreshToken && userJson) {
         const user = JSON.parse(userJson);
         set({ user, accessToken, refreshToken, isLoading: false });
+        void registerPushNotifications(user.id);
       } else {
         set({ isLoading: false });
       }

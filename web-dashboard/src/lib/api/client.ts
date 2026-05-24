@@ -121,7 +121,9 @@ interface RequestOptions extends Omit<RequestInit, 'body'> {
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { body, skipAuth, isFormData, ...fetchOptions } = options;
 
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {
+    'X-Client-Platform': 'WEB',
+  };
 
   if (!isFormData) {
     headers['Content-Type'] = 'application/json';

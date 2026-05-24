@@ -323,16 +323,20 @@ export class ComplaintsService {
 
     // Filter based on permissions (hierarchical)
     if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
-      // Admin can see all - no additional filter
+      // Admin / Assigner can see all complaints in the municipality, including
+      // unrouted ones (departmentId === null). The Assigner queue is exactly
+      // this set; admins use it for oversight.
     } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT)) {
-      // HOD/Supervisor sees their department + unassigned complaints
+      // HOD/Supervisor sees ONLY their department's complaints. Unrouted
+      // complaints (departmentId=null) belong to the Assigner queue, not
+      // to an arbitrary HOD — showing them would leak cross-dept work the
+      // HOD has no authority over and would also break the bucket count
+      // (which is scoped to own dept) vs list (which previously included
+      // null-dept) match.
       if (user?.departmentId) {
-        where.AND.push({
-          OR: [
-            { departmentId: user.departmentId },
-            { departmentId: null },
-          ],
-        });
+        where.AND.push({ departmentId: user.departmentId });
+      } else {
+        return paginate([], 0, query);
       }
     } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED)) {
       // Field workers always see their assigned complaints
@@ -568,12 +572,34 @@ export class ComplaintsService {
     const canViewDepartment = permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT);
     const isOwner = complaint.createdById === userId;
     const isAssigned = await this.assignmentsService.isAssignedTo(complaintId, userId);
-    // HOD/Supervisor can view complaints in their department OR unassigned complaints
-    const isSameDepartment = user?.departmentId && complaint.departmentId === user.departmentId;
-    const isUnassignedComplaint = complaint.departmentId === null;
-    const canViewAsDepartmentHead = canViewDepartment && (isSameDepartment || isUnassignedComplaint);
+    // HOD/Supervisor can ONLY view complaints in their own department.
+    // Unrouted complaints (departmentId=null) are the Assigner's queue —
+    // HOD has no operational authority there and shouldn't read them.
+    const isSameDepartment =
+      !!user?.departmentId && complaint.departmentId === user.departmentId;
+    const canViewAsDepartmentHead = canViewDepartment && isSameDepartment;
 
-    if (!canViewAll && !isOwner && !isAssigned && !canViewAsDepartmentHead) {
+    // PREVIEW ACCESS: a HOD/Supervisor of a department that has an OPEN
+    // transfer/help request targeting their department can read a sanitized
+    // version of the complaint so they can make an informed decision. They
+    // do NOT see internal staff notes, assignee identity, or status logs.
+    const canPreviewAsReceiver =
+      !canViewAll &&
+      !isOwner &&
+      !isAssigned &&
+      !canViewAsDepartmentHead &&
+      canViewDepartment &&
+      user?.departmentId
+        ? await this.hasPendingInboundRequest(complaintId, user.departmentId)
+        : false;
+
+    if (
+      !canViewAll &&
+      !isOwner &&
+      !isAssigned &&
+      !canViewAsDepartmentHead &&
+      !canPreviewAsReceiver
+    ) {
       throw new ForbiddenException('You do not have access to this complaint');
     }
 
@@ -592,23 +618,27 @@ export class ComplaintsService {
     // identity of staff who changed the status. Strip those fields here so
     // the response cannot leak via DTO/serializer drift.
     const isCitizenOnly = isOwner && !canViewAll && !canViewAsDepartmentHead && !isAssigned;
+    // Receiver-preview viewers (HOD/Supervisor of a dept with a pending
+    // inbound transfer/help) need enough to decide but NOT internal notes,
+    // status history, current assignee, or the citizen reporter's identity.
+    const isPreviewOnly = canPreviewAsReceiver;
 
-    const safeStatusHistory = complaint.statusLogs.map((log: any) => ({
-      id: log.id,
-      fromStatus: log.fromStatus,
-      toStatus: log.toStatus,
-      // Hide staff notes from citizens — these are internal triage notes.
-      notes: isCitizenOnly ? null : log.notes,
-      changedBy: isCitizenOnly ? null : log.changedBy,
-      createdAt: log.createdAt,
-    }));
+    const safeStatusHistory = isPreviewOnly
+      ? []
+      : complaint.statusLogs.map((log: any) => ({
+          id: log.id,
+          fromStatus: log.fromStatus,
+          toStatus: log.toStatus,
+          notes: isCitizenOnly ? null : log.notes,
+          changedBy: isCitizenOnly ? null : log.changedBy,
+          createdAt: log.createdAt,
+        }));
 
     const safeAssignment = currentAssignment
-      ? isCitizenOnly
+      ? isCitizenOnly || isPreviewOnly
         ? {
-            // Citizens see only that the complaint *is* assigned, not who.
+            // Citizens / preview-mode see only that the complaint IS assigned.
             assignedAt: currentAssignment.createdAt,
-            // Department is allowed (it's already on the complaint root).
             isAssigned: true,
           }
         : {
@@ -619,6 +649,12 @@ export class ComplaintsService {
           }
       : null;
 
+    // Strip citizen reporter PII from preview mode — the receiver doesn't
+    // need the citizen's name/email to decide on a transfer or help request.
+    const safeCreatedBy = isPreviewOnly
+      ? null
+      : complaint.createdBy;
+
     return {
       id: complaint.id,
       referenceCode: complaint.referenceCode,
@@ -628,8 +664,8 @@ export class ComplaintsService {
       priority: complaint.priority,
       dueDate: complaint.dueDate,
       isOverdue,
-      rejectionReason: complaint.rejectionReason,
-      rejectionNotes: complaint.rejectionNotes,
+      rejectionReason: isPreviewOnly ? null : complaint.rejectionReason,
+      rejectionNotes: isPreviewOnly ? null : complaint.rejectionNotes,
       resolvedAt: complaint.resolvedAt,
       escalatedAt: complaint.escalatedAt,
       latitude: complaint.latitude?.toString(),
@@ -637,13 +673,124 @@ export class ComplaintsService {
       address: complaint.address,
       category: complaint.category,
       department: complaint.department,
-      createdBy: complaint.createdBy,
-      attachments: complaint.attachments,
+      createdBy: safeCreatedBy,
+      // Submission photos are operationally needed to evaluate a transfer/
+      // help request. Proof photos belong to the source dept's worker and
+      // are stripped in preview mode.
+      attachments: isPreviewOnly
+        ? complaint.attachments.filter((a) => a.stage === AttachmentStage.SUBMISSION)
+        : complaint.attachments,
       currentAssignment: safeAssignment,
       statusHistory: safeStatusHistory,
-      feedback: complaint.feedback,
+      feedback: isPreviewOnly ? null : complaint.feedback,
       createdAt: complaint.createdAt,
+      // Surface preview mode to the frontend so the UI can show a banner
+      // ("Read-only preview for transfer/help decision") and hide actions
+      // that would fail backend authz anyway.
+      previewOnly: isPreviewOnly,
     };
+  }
+
+  /**
+   * Returns true if the given department currently has a pending transfer or
+   * help request targeting it for this complaint. Used to grant preview
+   * access on the complaint detail page so the receiver HOD can make an
+   * informed decision before accepting/rejecting.
+   */
+  /**
+   * Enforce who may approve completion or return work for more fixes while a
+   * complaint sits in PENDING_APPROVAL.
+   */
+  private async assertCanReviewPendingApproval(
+    complaintId: string,
+    userId: string,
+    complaintDepartmentId: string | null,
+    permissions: string[],
+    dto: ChangeStatusDto,
+  ): Promise<void> {
+    const canViewAll = permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
+    const canApprove = permissions.includes(PERMISSIONS.COMPLAINT_APPROVE);
+
+    if (!canViewAll && !canApprove) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'APPROVAL_NOT_PERMITTED',
+        message:
+          'You do not have permission to approve or return work on this complaint.',
+      });
+    }
+
+    if (!canViewAll) {
+      const reviewer = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { departmentId: true },
+      });
+
+      if (
+        !complaintDepartmentId ||
+        reviewer?.departmentId !== complaintDepartmentId
+      ) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'APPROVAL_WRONG_DEPARTMENT',
+          message:
+            'Only the Head of Department or supervisors for this complaint\'s department can approve or return work.',
+        });
+      }
+
+      const isAssignee = await this.assignmentsService.isAssignedTo(
+        complaintId,
+        userId,
+      );
+      if (isAssignee) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'CANNOT_APPROVE_OWN_WORK',
+          message:
+            'You cannot approve or return work on a complaint you submitted for approval.',
+        });
+      }
+    }
+
+    if (dto.status === ComplaintStatus.IN_PROGRESS) {
+      const notes = dto.notes?.trim() ?? '';
+      if (notes.length < 5) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'RETURN_REASON_REQUIRED',
+          message:
+            'A note of at least 5 characters is required when returning work to the field worker.',
+        });
+      }
+    }
+  }
+
+  private async hasPendingInboundRequest(
+    complaintId: string,
+    receiverDepartmentId: string,
+  ): Promise<boolean> {
+    const [openHelp, openTransfer] = await Promise.all([
+      this.prisma.complaintHelpRequest.findFirst({
+        where: {
+          complaintId,
+          toDepartmentId: receiverDepartmentId,
+          status: {
+            in: ['PENDING', 'ACCEPTED', 'IN_PROGRESS', 'SUBMITTED'] as any,
+          },
+        },
+        select: { id: true },
+      }),
+      this.prisma.transferRequest.findFirst({
+        where: {
+          targetType: 'COMPLAINT' as any,
+          targetId: complaintId,
+          toDepartmentId: receiverDepartmentId,
+          status: 'PENDING' as any,
+        },
+        select: { id: true },
+      }),
+    ]);
+    return !!openHelp || !!openTransfer;
   }
 
   async changeStatus(
@@ -693,6 +840,22 @@ export class ComplaintsService {
           !permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
         throw new ForbiddenException('You do not have approval authority');
       }
+    }
+
+    // PENDING_APPROVAL → COMPLETED / IN_PROGRESS: department-scoped review
+    if (
+      this.statusService.isPendingApprovalReviewTransition(
+        complaint.status,
+        dto.status,
+      )
+    ) {
+      await this.assertCanReviewPendingApproval(
+        complaintId,
+        userId,
+        complaint.departmentId,
+        permissions,
+        dto,
+      );
     }
 
     // Check if proof attachment is required (for PENDING_APPROVAL)
@@ -1001,14 +1164,11 @@ export class ComplaintsService {
 
     const baseWhere: any = { municipalityId, deletedAt: null };
 
-    // Apply department filter for non-admins
+    // Apply department filter for non-admins. Mirrors findAll() exactly so
+    // tab counts and the list always agree.
     if (!permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
       if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) && user?.departmentId) {
-        // Show complaints in their department OR unassigned complaints
-        baseWhere.OR = [
-          { departmentId: user.departmentId },
-          { departmentId: null },
-        ];
+        baseWhere.departmentId = user.departmentId;
       } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED)) {
         baseWhere.assignments = { some: { assignedToId: userId, isActive: true } };
       } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_OWN)) {
@@ -1065,6 +1225,9 @@ export class ComplaintsService {
     ]);
 
     // Permission-scoped base: identical to findAll's permission branch.
+    // CRITICAL: keep this in lock-step with findAll() or tab badges drift
+    // from the actual list contents. HOD/Supervisor sees only own dept,
+    // NOT unrouted (null-dept) complaints — those belong to Assigner queue.
     const scopedWhere: any = { municipalityId, deletedAt: null };
     if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
       // no extra filter
@@ -1072,10 +1235,7 @@ export class ComplaintsService {
       permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) &&
       user?.departmentId
     ) {
-      scopedWhere.OR = [
-        { departmentId: user.departmentId },
-        { departmentId: null },
-      ];
+      scopedWhere.departmentId = user.departmentId;
     } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED)) {
       scopedWhere.assignments = {
         some: { assignedToId: userId, isActive: true },
@@ -1112,10 +1272,6 @@ export class ComplaintsService {
             ...scopedWhere,
             assignments: { none: { isActive: true } },
             status: openStatuses,
-            ...(user?.departmentId &&
-            !permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)
-              ? { departmentId: user.departmentId }
-              : {}),
           }
         : null;
 
@@ -1205,7 +1361,7 @@ export class ComplaintsService {
     const baseWhere: any = { municipalityId, deletedAt: null };
     if (!permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
       if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) && user?.departmentId) {
-        baseWhere.OR = [{ departmentId: user.departmentId }, { departmentId: null }];
+        baseWhere.departmentId = user.departmentId;
       } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED)) {
         baseWhere.assignments = { some: { assignedToId: userId, isActive: true } };
       } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_OWN)) {

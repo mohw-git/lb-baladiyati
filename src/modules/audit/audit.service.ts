@@ -34,6 +34,8 @@ export const AUDIT_ACTIONS = {
   AUTH_2FA_EMAIL_ENABLE: 'auth.2fa.email.enable',
   AUTH_2FA_EMAIL_LOGIN: 'auth.2fa.email.login.success',
   AUTH_2FA_EMAIL_OTP_REQUEST: 'auth.2fa.email.otp_requested',
+  AUTH_2FA_DISABLE_EMAIL_OTP_REQUEST: 'auth.2fa.disable.email.otp_requested',
+  AUTH_2FA_DISABLE_FAILED: 'auth.2fa.disable.failed',
   // Users (tenant)
   USER_CREATE: 'user.create',
   USER_UPDATE: 'user.update',

@@ -6,12 +6,14 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import {
+  ComplaintStatus,
   HelpRequestStatus,
   NotificationType,
   Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { PermissionsResolver } from '../../core/rbac/permissions.resolver';
+import { PERMISSIONS } from '../../core/rbac/permissions.constants';
 import { paginate } from '../../core/common/dto/pagination.dto';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -24,6 +26,18 @@ import {
   RespondHelpRequestDto,
   SubmitHelpRequestDto,
 } from './dto/help-request.dto';
+
+/**
+ * Statuses where a complaint is considered actively being worked on and a
+ * help request is operationally meaningful. Outside of these, asking for
+ * help is premature (complaint not even routed/assigned yet) or pointless
+ * (work is already closed). Keep in sync with TransfersService.
+ */
+const HELP_REQUESTABLE_STATUSES: ComplaintStatus[] = [
+  ComplaintStatus.ASSIGNED,
+  ComplaintStatus.IN_PROGRESS,
+  ComplaintStatus.PENDING_APPROVAL,
+];
 
 /**
  * Cross-department HELP requests.
@@ -64,6 +78,7 @@ export class HelpRequestsService {
       select: {
         id: true,
         title: true,
+        status: true,
         municipalityId: true,
         departmentId: true,
         createdById: true,
@@ -85,6 +100,17 @@ export class HelpRequestsService {
       );
     }
 
+    // Minimum complaint status gate. Asking for help on a SUBMITTED or
+    // UNDER_REVIEW complaint is premature — the source dept hasn't decided
+    // they need help yet. After COMPLETED/CLOSED/REJECTED it's pointless.
+    if (!HELP_REQUESTABLE_STATUSES.includes(complaint.status)) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'COMPLAINT_NOT_HELP_REQUESTABLE',
+        message: `Cannot request help while complaint is ${complaint.status}. Assign a worker first; help requests open once work is in progress.`,
+      });
+    }
+
     // The helper dept must exist in the same municipality
     const toDept = await this.prisma.department.findFirst({
       where: {
@@ -102,7 +128,7 @@ export class HelpRequestsService {
       select: { departmentId: true },
     });
     const perms = await this.permissions.getUserPermissions(user.id);
-    const isPrivileged = perms.includes('complaint.view_all');
+    const isPrivileged = perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
     const sameDept = me?.departmentId === complaint.departmentId;
     const isAssignee = complaint.assignments.some(
       (a) => a.assignedToId === user.id,
@@ -111,6 +137,25 @@ export class HelpRequestsService {
       throw new ForbiddenException(
         'You can only request help for complaints in your department or assigned to you.',
       );
+    }
+
+    // Source-side approval gate. Pure workers (only complaint.view_assigned,
+    // no dept-level visibility) cannot send help requests directly to a
+    // receiver HOD — they must escalate through a Supervisor or HOD who has
+    // dept-level oversight. This prevents a single worker from triggering
+    // cross-department political friction without source-side sign-off.
+    // Workers can still flag the need via in-team channels; the supervisor
+    // then opens the formal help request on their behalf.
+    const hasDeptOversight =
+      perms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
+      perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
+    if (!hasDeptOversight) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'SOURCE_APPROVAL_REQUIRED',
+        message:
+          'Workers must escalate help requests through their Supervisor or Head of Department. Ask them to open the request on your behalf.',
+      });
     }
 
     // No more than one OPEN help request at a time per complaint
@@ -355,17 +400,15 @@ export class HelpRequestsService {
       );
     }
 
-    // Either the assigned helper, or the helper-dept HOD/Admin can submit
-    const me = await this.prisma.user.findUnique({
-      where: { id: user.id },
-      select: { departmentId: true },
-    });
+    // Only the assigned helper or the helper-dept HOD/Admin can submit.
+    // We deliberately drop the previous "any same-dept member" loophole —
+    // that allowed every worker in the helper department to upload work
+    // for a request that wasn't theirs.
     const perms = await this.permissions.getUserPermissions(user.id);
-    const isAdmin = perms.includes('complaint.view_all');
+    const isAdmin = perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
     const isAssigned = hr.helperAssigneeId === user.id;
     const isHelperHod = await this.isHodOf(user.id, hr.toDepartmentId);
-    const sameDept = me?.departmentId === hr.toDepartmentId;
-    if (!isAdmin && !isAssigned && !isHelperHod && !sameDept) {
+    if (!isAdmin && !isAssigned && !isHelperHod) {
       throw new ForbiddenException(
         'Only the assigned helper or their HOD can submit work.',
       );
@@ -501,7 +544,7 @@ export class HelpRequestsService {
 
     // Requester or HOD of original department or Admin can cancel
     const perms = await this.permissions.getUserPermissions(user.id);
-    const isAdmin = perms.includes('complaint.view_all');
+    const isAdmin = perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
     const isOriginalHod = await this.isHodOf(user.id, hr.fromDepartmentId);
     if (
       !isAdmin &&
@@ -550,13 +593,26 @@ export class HelpRequestsService {
         select: { departmentId: true },
       });
       const perms = await this.permissions.getUserPermissions(userId);
-      const isAdmin = perms.includes('complaint.view_all');
+      const isAdmin = perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
+      const hasDeptOversight =
+        perms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
+        perms.includes(PERMISSIONS.HELP_RESPOND);
 
       if (query.inbox) {
+        // Inbox = "requests landing in MY dept that need HOD/Supervisor
+        // attention". Pure workers (no dept-level oversight, no help.respond)
+        // never see receiver inbox; only their own assigned helper work,
+        // which they reach via complaint detail or "outgoing"-of-self.
         if (isAdmin) {
           // admin sees nothing extra; the muni filter is enough
-        } else if (me?.departmentId) {
+        } else if (hasDeptOversight && me?.departmentId) {
           filters.push({ toDepartmentId: me.departmentId });
+        } else if (me?.departmentId) {
+          // Worker: only requests where they are the helper assignee.
+          filters.push({
+            toDepartmentId: me.departmentId,
+            helperAssigneeId: userId,
+          });
         } else {
           return paginate([], 0, query);
         }
@@ -564,7 +620,7 @@ export class HelpRequestsService {
       if (query.outgoing) {
         if (isAdmin) {
           // skip narrow filter
-        } else if (me?.departmentId) {
+        } else if (hasDeptOversight && me?.departmentId) {
           filters.push({
             OR: [
               { fromDepartmentId: me.departmentId },
@@ -572,6 +628,7 @@ export class HelpRequestsService {
             ],
           });
         } else {
+          // Pure worker can only see requests they personally raised.
           filters.push({ requestedById: userId });
         }
       }
@@ -594,8 +651,10 @@ export class HelpRequestsService {
     return paginate(items, total, query);
   }
 
-  async findOne(id: string, _userId: string, municipalityId: string) {
-    return this.loadOrFail(id, municipalityId);
+  async findOne(id: string, userId: string, municipalityId: string) {
+    const hr = await this.loadOrFail(id, municipalityId);
+    await this.assertCanRead(userId, hr);
+    return hr;
   }
 
   /** Pending help-requests targeting the caller's department (badge count). */
@@ -605,13 +664,18 @@ export class HelpRequestsService {
       select: { departmentId: true },
     });
     const perms = await this.permissions.getUserPermissions(userId);
-    const isAdmin = perms.includes('complaint.view_all');
+    const isAdmin = perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
+    const hasDeptOversight =
+      perms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
+      perms.includes(PERMISSIONS.HELP_RESPOND);
+
     if (isAdmin) {
       return this.prisma.complaintHelpRequest.count({
         where: { municipalityId, status: HelpRequestStatus.PENDING },
       });
     }
-    if (!me?.departmentId) return 0;
+    // Workers don't see receiver inbox badge — they have no action to take.
+    if (!hasDeptOversight || !me?.departmentId) return 0;
     return this.prisma.complaintHelpRequest.count({
       where: {
         municipalityId,
@@ -621,10 +685,84 @@ export class HelpRequestsService {
     });
   }
 
-  /** Help-request history for a single complaint (for the timeline strip). */
-  async historyFor(complaintId: string, municipalityId: string) {
+  /**
+   * Help-request history for a single complaint (for the timeline strip).
+   *
+   * Scoped to the caller's authority:
+   *   - Admin: sees everything for the complaint
+   *   - Source-side staff (dept oversight / same dept / assigned worker on
+   *     the complaint): sees everything for the complaint
+   *   - Helper-side dept oversight (HOD/Supervisor of the helper dept):
+   *     sees requests targeting their department
+   *   - Helper-side assigned worker: sees only the specific request(s) they
+   *     were assigned to
+   *   - Other users: empty
+   */
+  async historyFor(complaintId: string, userId: string, municipalityId: string) {
+    const complaint = await this.prisma.complaint.findFirst({
+      where: { id: complaintId, municipalityId, deletedAt: null },
+      select: {
+        id: true,
+        departmentId: true,
+        createdById: true,
+        assignments: {
+          where: { isActive: true },
+          select: { assignedToId: true },
+        },
+      },
+    });
+    if (!complaint) return [];
+
+    const me = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { departmentId: true },
+    });
+    const perms = await this.permissions.getUserPermissions(userId);
+    const isAdmin = perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
+
+    if (isAdmin) {
+      return this.prisma.complaintHelpRequest.findMany({
+        where: { complaintId, municipalityId },
+        orderBy: { createdAt: 'asc' },
+        include: this.includeRelations(),
+      });
+    }
+
+    const sourceDeptOversight =
+      perms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) &&
+      me?.departmentId === complaint.departmentId;
+    const isComplaintAssignee = complaint.assignments.some(
+      (a) => a.assignedToId === userId,
+    );
+    const isCitizenOwner = complaint.createdById === userId;
+
+    // Citizens never see help-request internals on their own complaint.
+    if (isCitizenOwner && !sourceDeptOversight && !isComplaintAssignee) {
+      return [];
+    }
+
+    // Source-side privileged: full timeline
+    if (sourceDeptOversight || isComplaintAssignee) {
+      return this.prisma.complaintHelpRequest.findMany({
+        where: { complaintId, municipalityId },
+        orderBy: { createdAt: 'asc' },
+        include: this.includeRelations(),
+      });
+    }
+
+    // Helper-side: only requests where helper dept = caller dept AND caller
+    // has dept oversight OR was assigned the helper work.
+    if (!me?.departmentId) return [];
     return this.prisma.complaintHelpRequest.findMany({
-      where: { complaintId, municipalityId },
+      where: {
+        complaintId,
+        municipalityId,
+        toDepartmentId: me.departmentId,
+        ...(perms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
+        perms.includes(PERMISSIONS.HELP_RESPOND)
+          ? {}
+          : { helperAssigneeId: userId }),
+      },
       orderBy: { createdAt: 'asc' },
       include: this.includeRelations(),
     });
@@ -643,12 +781,43 @@ export class HelpRequestsService {
     return hr;
   }
 
+  /**
+   * Authorize read access to a single help request. Mirrors the visibility
+   * rules in `findAll`: source side sees full timeline, helper side only
+   * sees what they were assigned or what they oversee, citizens see nothing.
+   */
+  private async assertCanRead(
+    userId: string,
+    hr: Awaited<ReturnType<typeof this.loadOrFail>>,
+  ) {
+    const perms = await this.permissions.getUserPermissions(userId);
+    if (perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) return;
+
+    const me = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { departmentId: true },
+    });
+    const hasDeptOversight =
+      perms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
+      perms.includes(PERMISSIONS.HELP_RESPOND);
+
+    // Source side
+    if (hr.requestedById === userId) return;
+    if (me?.departmentId && me.departmentId === hr.fromDepartmentId && hasDeptOversight) return;
+
+    // Helper side
+    if (hr.helperAssigneeId === userId) return;
+    if (me?.departmentId && me.departmentId === hr.toDepartmentId && hasDeptOversight) return;
+
+    throw new ForbiddenException('You do not have access to this help request');
+  }
+
   private async assertCanRespond(userId: string, departmentId: string) {
     const perms = await this.permissions.getUserPermissions(userId);
-    if (!perms.includes('help.respond')) {
+    if (!perms.includes(PERMISSIONS.HELP_RESPOND)) {
       throw new ForbiddenException('You do not have permission to respond to help requests');
     }
-    const isAdmin = perms.includes('complaint.view_all');
+    const isAdmin = perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
     if (isAdmin) return;
     if (!(await this.isHodOf(userId, departmentId))) {
       throw new ForbiddenException(
@@ -664,7 +833,7 @@ export class HelpRequestsService {
    */
   private async assertCanCloseFromOriginal(userId: string, fromDepartmentId: string) {
     const perms = await this.permissions.getUserPermissions(userId);
-    const isAdmin = perms.includes('complaint.view_all');
+    const isAdmin = perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
     if (isAdmin) return;
     if (!(await this.isHodOf(userId, fromDepartmentId))) {
       throw new ForbiddenException(
@@ -681,7 +850,15 @@ export class HelpRequestsService {
     return dept?.headUserId === userId;
   }
 
-  /** HOD of the helper dept + all Admins of the municipality. */
+  /**
+   * Notification recipients for a NEW help request landing in `toDepartmentId`.
+   *
+   * Default: the receiver HOD. Admins are intentionally NOT notified for
+   * routine help requests — they have full visibility via the dashboard and
+   * shouldn't be paged for every operational request. Admins ARE notified as
+   * a FALLBACK when the receiver dept has no HOD slot set, so the request
+   * never goes unnoticed.
+   */
   private async recipientsForToDept(
     municipalityId: string,
     toDepartmentId: string,
@@ -690,6 +867,12 @@ export class HelpRequestsService {
       where: { id: toDepartmentId },
       select: { headUserId: true },
     });
+
+    if (dept?.headUserId) {
+      return [dept.headUserId];
+    }
+
+    // Fallback: HOD slot vacant — page admins so the request doesn't drop.
     const admins = await this.prisma.user.findMany({
       where: {
         municipalityId,
@@ -698,9 +881,7 @@ export class HelpRequestsService {
       },
       select: { id: true },
     });
-    const ids = admins.map((a) => a.id);
-    if (dept?.headUserId) ids.push(dept.headUserId);
-    return Array.from(new Set(ids));
+    return admins.map((a) => a.id);
   }
 
   /** People to ping when a helper submits their work. */

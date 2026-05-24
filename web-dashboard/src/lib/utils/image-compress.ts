@@ -1,113 +1,135 @@
-/**
- * Client-side image compression for complaint photos.
- *
- * Goal: shrink camera photos (often 5–12 MB) before they leave the
- * browser so we hit the backend's 10 MB ceiling, save bandwidth, and
- * preserve a good visual quality for triage. EXIF metadata is dropped
- * by virtue of canvas re-encoding.
- *
- * - Skips files smaller than `skipBelowBytes` (no point compressing).
- * - Caps the output to `maxLongEdge` pixels on the longest side.
- * - Re-encodes as WebP if the browser supports it, otherwise JPEG.
- *
- * Errors surface as the original file unchanged — never throw.
- */
-export interface CompressOptions {
-  /** Hard ceiling for the longer side of the image (px). */
+/** KYC accepts JPEG/PNG only (see backend). */
+const KYC_MIMES = new Set(['image/jpeg', 'image/png']);
+
+const MAX_KYC_BYTES = 10 * 1024 * 1024;
+
+export type CompressImagesOptions = {
   maxLongEdge?: number;
-  /** Output JPEG/WebP quality 0–1. */
   quality?: number;
-  /** Files smaller than this are returned untouched. */
-  skipBelowBytes?: number;
-}
+};
 
-export async function compressImage(
-  file: File,
-  opts: CompressOptions = {},
-): Promise<File> {
-  if (typeof window === 'undefined') return file;
-  if (!file.type.startsWith('image/')) return file;
-  if (file.type === 'image/svg+xml') return file;
-
-  const maxLongEdge = opts.maxLongEdge ?? 1920;
-  const quality = opts.quality ?? 0.82;
-  const skipBelowBytes = opts.skipBelowBytes ?? 600 * 1024; // 600 KB
-
-  if (file.size < skipBelowBytes) return file;
-
-  try {
-    const dataUrl: string = await new Promise((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(r.result as string);
-      r.onerror = () => reject(new Error('read_failed'));
-      r.readAsDataURL(file);
-    });
-    const img: HTMLImageElement = await new Promise((resolve, reject) => {
-      const i = new Image();
-      i.onload = () => resolve(i);
-      i.onerror = () => reject(new Error('image_failed'));
-      i.src = dataUrl;
-    });
-
-    const { width, height } = scaleSize(img.width, img.height, maxLongEdge);
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return file;
-    ctx.drawImage(img, 0, 0, width, height);
-
-    const supportsWebp = await canvasSupportsWebp();
-    const outType = supportsWebp ? 'image/webp' : 'image/jpeg';
-    const ext = supportsWebp ? 'webp' : 'jpg';
-
-    const blob: Blob | null = await new Promise((resolve) => {
-      canvas.toBlob((b) => resolve(b), outType, quality);
-    });
-    if (!blob) return file;
-    if (blob.size >= file.size) return file; // No win — keep original.
-
-    const baseName = file.name.replace(/\.[^.]+$/, '') || 'photo';
-    return new File([blob], `${baseName}.${ext}`, {
-      type: outType,
-      lastModified: Date.now(),
-    });
-  } catch {
-    return file;
-  }
-}
-
+/**
+ * Compress complaint attachment images before upload.
+ * Returns originals for any file that cannot be compressed.
+ */
 export async function compressImages(
   files: File[],
-  opts: CompressOptions = {},
+  options: CompressImagesOptions = {},
 ): Promise<File[]> {
-  return Promise.all(files.map((f) => compressImage(f, opts)));
-}
-
-function scaleSize(w: number, h: number, maxLong: number): { width: number; height: number } {
-  const long = Math.max(w, h);
-  if (long <= maxLong) return { width: w, height: h };
-  const r = maxLong / long;
-  return { width: Math.round(w * r), height: Math.round(h * r) };
-}
-
-let webpProbe: Promise<boolean> | null = null;
-function canvasSupportsWebp(): Promise<boolean> {
-  if (!webpProbe) {
-    webpProbe = new Promise((resolve) => {
-      const c = document.createElement('canvas');
-      c.width = 1;
-      c.height = 1;
-      try {
-        c.toBlob(
-          (b) => resolve(!!b && b.type === 'image/webp'),
-          'image/webp',
-          0.5,
-        );
-      } catch {
-        resolve(false);
-      }
-    });
+  const maxLongEdge = options.maxLongEdge ?? 1920;
+  const quality = options.quality ?? 0.82;
+  const results: File[] = [];
+  for (const file of files) {
+    try {
+      results.push(await compressImageFile(file, maxLongEdge, quality));
+    } catch {
+      results.push(file);
+    }
   }
-  return webpProbe;
+  return results;
+}
+
+async function compressImageFile(
+  file: File,
+  maxLongEdge: number,
+  quality: number,
+): Promise<File> {
+  if (!file.type.startsWith('image/')) return file;
+  if (file.size < 2 * 1024 * 1024) return file;
+
+  const dataUrl = await readFileAsDataUrl(file);
+  const img = await loadImage(dataUrl);
+
+  const scale = Math.min(1, maxLongEdge / Math.max(img.width, img.height));
+  const w = Math.max(1, Math.round(img.width * scale));
+  const h = Math.max(1, Math.round(img.height * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return file;
+  ctx.drawImage(img, 0, 0, w, h);
+
+  const mime =
+    file.type === 'image/png' || file.type === 'image/webp' ? 'image/jpeg' : file.type;
+  const blob = await canvasToBlob(canvas, mime, quality);
+  if (!blob) return file;
+
+  const ext = mime === 'image/jpeg' ? 'jpg' : 'bin';
+  const base = file.name.replace(/\.[^.]+$/, '') || 'image';
+  return new File([blob], `${base}.${ext}`, { type: mime, lastModified: Date.now() });
+}
+
+/**
+ * Downscale large photos before upload. Returns the original file when already small enough.
+ */
+export async function compressImageForKyc(file: File, maxEdge = 1920): Promise<File> {
+  if (!KYC_MIMES.has(file.type)) {
+    throw new Error('INVALID_TYPE');
+  }
+  if (file.size <= MAX_KYC_BYTES && file.size < 2 * 1024 * 1024) {
+    return file;
+  }
+
+  const dataUrl = await readFileAsDataUrl(file);
+  const img = await loadImage(dataUrl);
+
+  const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
+  const w = Math.max(1, Math.round(img.width * scale));
+  const h = Math.max(1, Math.round(img.height * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return file;
+  ctx.drawImage(img, 0, 0, w, h);
+
+  const mime = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+  const quality = mime === 'image/jpeg' ? 0.85 : undefined;
+
+  const blob = await canvasToBlob(canvas, mime, quality);
+  if (!blob || blob.size > MAX_KYC_BYTES) {
+    if (file.size <= MAX_KYC_BYTES) return file;
+    throw new Error('TOO_LARGE');
+  }
+
+  const ext = mime === 'image/png' ? 'png' : 'jpg';
+  const base = file.name.replace(/\.[^.]+$/, '') || 'kyc';
+  return new File([blob], `${base}.${ext}`, { type: mime, lastModified: Date.now() });
+}
+
+export function validateKycImageFile(file: File): string | null {
+  if (!KYC_MIMES.has(file.type)) return 'INVALID_TYPE';
+  if (file.size > MAX_KYC_BYTES) return 'TOO_LARGE';
+  return null;
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error('read_failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new window.Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('image_load_failed'));
+    img.src = src;
+  });
+}
+
+function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  type: string,
+  quality?: number,
+): Promise<Blob | null> {
+  return new Promise((resolve) => {
+    canvas.toBlob((b) => resolve(b), type, quality);
+  });
 }

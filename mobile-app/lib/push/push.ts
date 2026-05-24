@@ -1,30 +1,21 @@
 /**
  * Mobile push (FCM) bootstrap.
  *
- * Flow:
- *   1. Caller invokes `registerPushNotifications()` after a successful
- *      login (or whenever the auth user changes).
- *   2. We ask the OS for notification permission.
- *   3. We fetch the device's FCM registration token via Expo's
- *      `getDevicePushTokenAsync()`. On Android this returns the raw FCM
- *      token; on iOS it returns the APNs token (firebase-admin handles
- *      both).
- *   4. We POST it to `/device-tokens` so the backend can target this
- *      device. The backend keeps multiple tokens per user (one per
- *      device).
- *   5. On logout, the caller invokes `unregisterPushNotifications()`
- *      which deletes the stored token and clears any local cache.
- *
- * The flow is best-effort: every step that can fail is wrapped so we
- * never block the auth flow.
+ * Invoked from the auth store after login, register, or session restore.
+ * On logout, unregister removes the token from the backend while JWT is
+ * still valid, then clears local state.
  */
 import * as Notifications from 'expo-notifications';
+import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { deviceTokensApi } from '../api/endpoints';
 
 const STORAGE_KEY = 'baladi.fcmToken';
+const REGISTERED_USER_KEY = 'baladi.fcmRegisteredUserId';
 
 let cachedToken: string | null = null;
+let cachedUserId: string | null = null;
+let registerInFlight: Promise<string | null> | null = null;
 
 /** Set how foreground notifications should appear by default. */
 Notifications.setNotificationHandler({
@@ -65,14 +56,44 @@ async function requestPermission(): Promise<boolean> {
   }
 }
 
-/**
- * Register the current device for push notifications and ship the FCM
- * token to the backend so the platform can deliver pushes for the
- * signed-in user.
- *
- * Safe to call multiple times. Returns the token (if obtained).
- */
-export async function registerPushNotifications(): Promise<string | null> {
+async function loadPersistedState(): Promise<{ token: string | null; userId: string | null }> {
+  try {
+    const [token, userId] = await Promise.all([
+      SecureStore.getItemAsync(STORAGE_KEY),
+      SecureStore.getItemAsync(REGISTERED_USER_KEY),
+    ]);
+    return { token, userId };
+  } catch {
+    return { token: null, userId: null };
+  }
+}
+
+async function persistRegisteredState(token: string, userId: string) {
+  cachedToken = token;
+  cachedUserId = userId;
+  await Promise.all([
+    SecureStore.setItemAsync(STORAGE_KEY, token),
+    SecureStore.setItemAsync(REGISTERED_USER_KEY, userId),
+  ]);
+}
+
+async function clearRegisteredState() {
+  cachedToken = null;
+  cachedUserId = null;
+  await Promise.all([
+    SecureStore.deleteItemAsync(STORAGE_KEY),
+    SecureStore.deleteItemAsync(REGISTERED_USER_KEY),
+  ]);
+}
+
+async function resolveTokenForUnregister(): Promise<string | null> {
+  if (cachedToken) return cachedToken;
+  const { token } = await loadPersistedState();
+  if (token) cachedToken = token;
+  return token;
+}
+
+async function doRegister(userId: string): Promise<string | null> {
   try {
     await ensureChannel();
     const granted = await requestPermission();
@@ -82,31 +103,66 @@ export async function registerPushNotifications(): Promise<string | null> {
     const token = typeof result?.data === 'string' ? result.data : null;
     if (!token) return null;
 
-    if (cachedToken !== token) {
-      const platform = Platform.OS === 'ios' ? 'IOS' : 'ANDROID';
-      try {
-        await deviceTokensApi.register(token, platform);
-      } catch (e) {
-        // Don't bubble — it's OK if the network is down right now;
-        // the next login will retry.
-      }
+    const persisted = await loadPersistedState();
+    const alreadyRegistered =
+      token === (cachedToken ?? persisted.token) &&
+      userId === (cachedUserId ?? persisted.userId);
+
+    if (alreadyRegistered) {
       cachedToken = token;
+      cachedUserId = userId;
+      return token;
     }
+
+    const platform = Platform.OS === 'ios' ? 'IOS' : 'ANDROID';
+    try {
+      await deviceTokensApi.register(token, platform);
+      await persistRegisteredState(token, userId);
+    } catch {
+      // Network/backend failure — don't block auth; retry on next session.
+    }
+
     return token;
-  } catch (e) {
+  } catch {
     return null;
   }
 }
 
 /**
- * Drop the registered FCM token from the backend (call on logout).
+ * Register this device for push notifications and associate the FCM token
+ * with the signed-in user on the backend.
+ *
+ * Safe to call multiple times; skips duplicate backend registration when
+ * the same user already registered the same token. Returns null when
+ * permission is denied or the token cannot be obtained.
+ */
+export async function registerPushNotifications(userId: string): Promise<string | null> {
+  if (!userId) return null;
+  if (registerInFlight) return registerInFlight;
+
+  registerInFlight = doRegister(userId).finally(() => {
+    registerInFlight = null;
+  });
+
+  return registerInFlight;
+}
+
+/**
+ * Remove the device token from the backend (call before clearing auth).
+ * Best-effort when the session is already invalid.
  */
 export async function unregisterPushNotifications(): Promise<void> {
-  if (!cachedToken) return;
-  try {
-    await deviceTokensApi.remove(cachedToken);
-  } catch {
-    // ignore
+  const token = await resolveTokenForUnregister();
+  if (!token) {
+    await clearRegisteredState();
+    return;
   }
-  cachedToken = null;
+
+  try {
+    await deviceTokensApi.remove(token);
+  } catch {
+    // Session may already be expired — still clear local state.
+  }
+
+  await clearRegisteredState();
 }

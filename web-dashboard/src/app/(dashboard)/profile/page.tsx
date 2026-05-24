@@ -21,10 +21,13 @@ import {
   AlertTriangle,
   Mail,
 } from 'lucide-react';
-import { useTranslate } from '@/lib/i18n';
+import { useTranslate, pickName, useLocale } from '@/lib/i18n';
+import { isCitizenAccount } from '@/lib/auth/user';
+import { CitizenKycCard } from '@/components/kyc/citizen-kyc-card';
 
 export default function ProfilePage() {
   const t = useTranslate();
+  const locale = useLocale();
   const queryClient = useQueryClient();
   const setUser = useAuthStore((s) => s.setUser);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -51,6 +54,7 @@ export default function ProfilePage() {
   const [twoFaCode, setTwoFaCode] = useState('');
   const [show2faDisable, setShow2faDisable] = useState(false);
   const [disableForm, setDisableForm] = useState({ password: '', code: '' });
+  const [disableEmailOtpSent, setDisableEmailOtpSent] = useState(false);
   // Email-2FA enrolment dialog state
   const [showEmail2faModal, setShowEmail2faModal] = useState(false);
   const [emailEnablePassword, setEmailEnablePassword] = useState('');
@@ -135,7 +139,7 @@ export default function ProfilePage() {
   const verify2faMutation = useMutation({
     mutationFn: () => authApi.verifyTwoFactor(twoFaCode),
     onSuccess: async () => {
-      toast.success('Two-factor authentication enabled');
+      toast.success(t('profile.2fa.setup.success'));
       setShow2faSetup(false);
       setTwoFaSetupData(null);
       setTwoFaCode('');
@@ -150,9 +154,37 @@ export default function ProfilePage() {
     mutationFn: () =>
       authApi.disableTwoFactor({ password: disableForm.password, code: disableForm.code }),
     onSuccess: async () => {
-      toast.success('Two-factor authentication disabled');
+      toast.success(t('profile.2fa.disable.success'));
       setShow2faDisable(false);
       setDisableForm({ password: '', code: '' });
+      setDisableEmailOtpSent(false);
+      const fresh = await authApi.getProfile();
+      setUser(fresh);
+      queryClient.invalidateQueries({ queryKey: ['profile'] });
+    },
+    onError: (err: ApiError) => toast.error(err.message),
+  });
+
+  const requestDisableEmail2faMutation = useMutation({
+    mutationFn: () => authApi.requestDisableEmailTwoFactor(disableForm.password),
+    onSuccess: () => {
+      setDisableEmailOtpSent(true);
+      toast.success(t('profile.2fa.disable.codeSent'));
+    },
+    onError: (err: ApiError) => toast.error(err.message),
+  });
+
+  const confirmDisableEmail2faMutation = useMutation({
+    mutationFn: () =>
+      authApi.confirmDisableEmailTwoFactor({
+        password: disableForm.password,
+        code: disableForm.code,
+      }),
+    onSuccess: async () => {
+      toast.success(t('profile.2fa.disable.success'));
+      setShow2faDisable(false);
+      setDisableForm({ password: '', code: '' });
+      setDisableEmailOtpSent(false);
       const fresh = await authApi.getProfile();
       setUser(fresh);
       queryClient.invalidateQueries({ queryKey: ['profile'] });
@@ -191,8 +223,9 @@ export default function ProfilePage() {
   const avatarUrl = (profile as any).avatarUrl ? getFileUrl((profile as any).avatarUrl) : null;
   const twoFaEnabled = !!(profile as any).twoFactorEnabled;
   const twoFaMethod = ((profile as any).twoFactorMethod as 'TOTP' | 'EMAIL' | null) ?? null;
-  const emailVerified = !!(profile as any).verifiedAt || !!(profile as any).emailVerifiedAt;
+  const emailVerified = !!(profile as any).emailVerifiedAt;
   const mustEnroll2fa = !!(profile as any).mustEnrollTwoFactor;
+  const isCitizenProfile = isCitizenAccount(profile as any);
 
   return (
     <div className="mx-auto max-w-3xl space-y-4">
@@ -201,24 +234,17 @@ export default function ProfilePage() {
         <p className="mt-0.5 text-sm text-gray-500">{t('profile.subtitle')}</p>
       </div>
 
-      {mustEnroll2fa && !twoFaEnabled && (
+      {mustEnroll2fa && !twoFaEnabled && !isCitizenProfile && (
         <div className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4">
           <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-600" />
           <div className="text-sm text-amber-900">
-            <p className="font-semibold">
-              Two-factor authentication is required for all staff accounts.
-            </p>
-            <p className="mt-1">
-              The Super Admin has enforced platform-wide 2FA. You must enrol in
-              2FA below before you can use any other part of the application.
-              Until then you&apos;ll keep being redirected back to this page.
-            </p>
+            <p className="font-semibold">{t('profile.2fa.mustEnrollTitle')}</p>
+            <p className="mt-1">{t('profile.2fa.mustEnrollBody')}</p>
           </div>
         </div>
       )}
 
-      {/* === IDENTITY VERIFICATION (citizens only) === */}
-      <IdentityVerificationCard profile={profile} />
+      <CitizenKycCard />
 
       {/* === USER INFO === */}
       <div className="gov-card overflow-hidden">
@@ -292,15 +318,58 @@ export default function ProfilePage() {
           </form>
         ) : (
           <dl className="grid gap-3 sm:grid-cols-2">
-            <div><dt className="text-xs text-gray-500">{t('profile.form.phone')}</dt><dd className="text-sm font-medium text-gray-900">{profile.phone || '—'}</dd></div>
             <div>
-              <dt className="text-xs text-gray-500">{t('common.role')}</dt>
-              <dd className="flex flex-wrap gap-1">
-                {profile.roles?.length ? profile.roles.map((r: any) => { const name = typeof r === 'string' ? r : r.name; const key = typeof r === 'string' ? r : r.id; return <span key={key} className="rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">{name}</span>; }) : '—'}
+              <dt className="text-xs text-gray-500">{t('profile.form.phone')}</dt>
+              <dd className="text-sm font-medium text-gray-900">{profile.phone || '—'}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-gray-500">{t('common.municipality')}</dt>
+              <dd className="text-sm font-medium text-gray-900">
+                {profile.municipality
+                  ? pickName(profile.municipality as any, locale) || profile.municipality.name
+                  : '—'}
               </dd>
             </div>
-            <div><dt className="text-xs text-gray-500">{t('common.municipality')}</dt><dd className="text-sm font-medium text-gray-900">{profile.municipality?.name || '—'}</dd></div>
-            <div><dt className="text-xs text-gray-500">{t('common.department')}</dt><dd className="text-sm font-medium text-gray-900">{profile.department?.name || '—'}</dd></div>
+            {isCitizenProfile ? (
+              <div>
+                <dt className="text-xs text-gray-500">{t('profile.emailVerification.label')}</dt>
+                <dd className="text-sm font-medium text-gray-900">
+                  {emailVerified
+                    ? t('profile.emailVerification.verified')
+                    : t('profile.emailVerification.pending')}
+                </dd>
+              </div>
+            ) : (
+              <>
+                <div>
+                  <dt className="text-xs text-gray-500">{t('common.role')}</dt>
+                  <dd className="flex flex-wrap gap-1">
+                    {profile.roles?.length
+                      ? profile.roles.map((r: any) => {
+                          const name = typeof r === 'string' ? r : r.name;
+                          const key = typeof r === 'string' ? r : r.id;
+                          return (
+                            <span
+                              key={key}
+                              className="rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600"
+                            >
+                              {name}
+                            </span>
+                          );
+                        })
+                      : '—'}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-gray-500">{t('common.department')}</dt>
+                  <dd className="text-sm font-medium text-gray-900">
+                    {profile.department
+                      ? pickName(profile.department as any, locale) || profile.department.name
+                      : '—'}
+                  </dd>
+                </div>
+              </>
+            )}
           </dl>
         )}
         </div>
@@ -342,14 +411,35 @@ export default function ProfilePage() {
                   )}
                 </p>
                 <p className="text-xs text-gray-500">
-                  {twoFaEnabled ? t('profile.2fa.enabled') : t('profile.2fa.disabled')}
+                  {twoFaEnabled
+                    ? twoFaMethod === 'EMAIL'
+                      ? t('profile.2fa.enabledEmail')
+                      : t('profile.2fa.enabledTotp')
+                    : t('profile.2fa.disabled')}
                 </p>
               </div>
             </div>
             {twoFaEnabled ? (
-              <button onClick={() => setShow2faDisable(true)} className="btn-gov-danger text-xs">
-                {t('profile.2fa.disable')}
-              </button>
+              <div className="flex gap-2">
+                {twoFaMethod === 'EMAIL' && (
+                  <button
+                    onClick={() => { setShow2faSetup(true); setup2faMutation.mutate(); }}
+                    className="btn-gov-secondary text-xs"
+                  >
+                    {t('profile.2fa.switchTotp')}
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    setDisableEmailOtpSent(false);
+                    setDisableForm({ password: '', code: '' });
+                    setShow2faDisable(true);
+                  }}
+                  className="btn-gov-danger text-xs"
+                >
+                  {t('profile.2fa.disable')}
+                </button>
+              </div>
             ) : (
               <button onClick={() => { setShow2faSetup(true); setup2faMutation.mutate(); }} className="btn-gov-primary text-xs">
                 {t('profile.2fa.enable')}
@@ -509,8 +599,8 @@ export default function ProfilePage() {
                 <Shield className="h-6 w-6 text-emerald-600" />
               </div>
               <div>
-                <h3 className="text-lg font-bold text-gray-900">Enable 2FA</h3>
-                <p className="text-sm text-gray-500">Scan with Google Authenticator or similar</p>
+                <h3 className="text-lg font-bold text-gray-900">{t('profile.2fa.setup.title')}</h3>
+                <p className="text-sm text-gray-500">{t('profile.2fa.setup.subtitle')}</p>
               </div>
             </div>
 
@@ -532,7 +622,7 @@ export default function ProfilePage() {
                 </div>
                 <details className="mb-4 rounded-lg border border-gray-200 px-3 py-2 text-sm">
                   <summary className="cursor-pointer text-gray-700">
-                    Can&apos;t scan? Enter this key manually
+                    {t('profile.2fa.setup.manualKey')}
                   </summary>
                   <code className="mt-2 block break-all rounded bg-gray-50 p-2 text-xs">
                     {twoFaSetupData.secret}
@@ -540,7 +630,7 @@ export default function ProfilePage() {
                 </details>
 
                 <label className="mb-1 block text-sm font-medium text-gray-700">
-                  Enter the 6-digit code from your app
+                  {t('profile.2fa.setup.enterCode')}
                 </label>
                 <input
                   type="text"
@@ -558,7 +648,7 @@ export default function ProfilePage() {
                     onClick={() => setShow2faSetup(false)}
                     className="rounded-lg border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50"
                   >
-                    Cancel
+                    {t('common.cancel')}
                   </button>
                   <button
                     onClick={() => verify2faMutation.mutate()}
@@ -566,7 +656,7 @@ export default function ProfilePage() {
                     className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
                   >
                     {verify2faMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-                    Verify & Enable
+                    {t('profile.2fa.setup.verify')}
                   </button>
                 </div>
               </>
@@ -579,7 +669,12 @@ export default function ProfilePage() {
       {show2faDisable && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-          onClick={() => !disable2faMutation.isPending && setShow2faDisable(false)}
+          onClick={() =>
+            !disable2faMutation.isPending &&
+            !confirmDisableEmail2faMutation.isPending &&
+            !requestDisableEmail2faMutation.isPending &&
+            setShow2faDisable(false)
+          }
         >
           <div
             className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl"
@@ -590,23 +685,29 @@ export default function ProfilePage() {
                 <AlertTriangle className="h-6 w-6 text-red-600" />
               </div>
               <div>
-                <h3 className="text-lg font-bold text-gray-900">Disable 2FA</h3>
-                <p className="text-sm text-gray-500">
-                  This will reduce your account security
-                </p>
+                <h3 className="text-lg font-bold text-gray-900">{t('profile.2fa.disable.title')}</h3>
+                <p className="text-sm text-gray-500">{t('profile.2fa.disable.subtitle')}</p>
               </div>
             </div>
 
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                disable2faMutation.mutate();
+                if (twoFaMethod === 'EMAIL') {
+                  if (!disableEmailOtpSent) {
+                    requestDisableEmail2faMutation.mutate();
+                  } else {
+                    confirmDisableEmail2faMutation.mutate();
+                  }
+                } else {
+                  disable2faMutation.mutate();
+                }
               }}
               className="space-y-4"
             >
               <div>
                 <label className="mb-1 block text-sm font-medium text-gray-700">
-                  Current Password
+                  {t('profile.2fa.disable.password')}
                 </label>
                 <input
                   type="password"
@@ -614,43 +715,65 @@ export default function ProfilePage() {
                   value={disableForm.password}
                   onChange={(e) => setDisableForm({ ...disableForm, password: e.target.value })}
                   className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+                  autoComplete="current-password"
                 />
               </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium text-gray-700">
-                  Current 6-digit Code
-                </label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="\d{6}"
-                  maxLength={6}
-                  required
-                  value={disableForm.code}
-                  onChange={(e) =>
-                    setDisableForm({
-                      ...disableForm,
-                      code: e.target.value.replace(/\D/g, '').slice(0, 6),
-                    })
-                  }
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-center font-mono text-2xl tracking-widest focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
-                />
-              </div>
+              {(twoFaMethod !== 'EMAIL' || disableEmailOtpSent) && (
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-gray-700">
+                    {twoFaMethod === 'EMAIL'
+                      ? t('profile.2fa.disable.emailCode')
+                      : t('profile.2fa.disable.totpCode')}
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="\d{6}"
+                    maxLength={6}
+                    required={twoFaMethod !== 'EMAIL' || disableEmailOtpSent}
+                    value={disableForm.code}
+                    onChange={(e) =>
+                      setDisableForm({
+                        ...disableForm,
+                        code: e.target.value.replace(/\D/g, '').slice(0, 6),
+                      })
+                    }
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-center font-mono text-2xl tracking-widest focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+                  />
+                </div>
+              )}
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setShow2faDisable(false)}
+                  onClick={() => {
+                    setShow2faDisable(false);
+                    setDisableEmailOtpSent(false);
+                    setDisableForm({ password: '', code: '' });
+                  }}
                   className="rounded-lg border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50"
                 >
-                  Cancel
+                  {t('common.cancel')}
                 </button>
                 <button
                   type="submit"
-                  disabled={disable2faMutation.isPending}
+                  disabled={
+                    disable2faMutation.isPending ||
+                    confirmDisableEmail2faMutation.isPending ||
+                    requestDisableEmail2faMutation.isPending ||
+                    (twoFaMethod === 'EMAIL' &&
+                      disableEmailOtpSent &&
+                      disableForm.code.length !== 6)
+                  }
                   className="flex items-center gap-1.5 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
                 >
-                  {disable2faMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-                  Disable 2FA
+                  {(disable2faMutation.isPending ||
+                    confirmDisableEmail2faMutation.isPending ||
+                    requestDisableEmail2faMutation.isPending) && (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  )}
+                  {twoFaMethod === 'EMAIL' && !disableEmailOtpSent
+                    ? t('profile.2fa.disable.requestCode')
+                    : t('profile.2fa.disable.confirm')}
                 </button>
               </div>
             </form>
@@ -725,176 +848,3 @@ export default function ProfilePage() {
   );
 }
 
-// ============================================================
-// Identity Verification (KYC) — for self-registered citizens
-// ============================================================
-function IdentityVerificationCard({ profile }: { profile: any }) {
-  const queryClient = useQueryClient();
-  const [files, setFiles] = useState<{ idFront?: File; idBack?: File; selfie?: File }>({});
-
-  const submitMutation = useMutation({
-    mutationFn: () => {
-      if (!files.idFront || !files.idBack || !files.selfie) {
-        throw new Error('Please upload all three documents');
-      }
-      // dynamic import keeps bundle clean
-      return import('@/lib/api/endpoints/kyc').then(({ kycApi }) =>
-        kycApi.submit({
-          idFront: files.idFront!,
-          idBack: files.idBack!,
-          selfie: files.selfie!,
-        }),
-      );
-    },
-    onSuccess: () => {
-      toast.success("Documents submitted. You'll be notified once reviewed.");
-      setFiles({});
-      queryClient.invalidateQueries({ queryKey: ['profile'] });
-    },
-    onError: (err: any) => toast.error(err?.message || 'Failed to submit'),
-  });
-
-  // Show only for citizens (self-registered). Staff is auto-verified.
-  if (profile?.createdVia !== 'SELF_REGISTRATION') return null;
-
-  const status: string = profile.verificationStatus || 'UNVERIFIED';
-
-  const STATUS: Record<string, { label: string; cls: string; sub: string }> = {
-    VERIFIED: {
-      label: 'Verified',
-      cls: 'bg-green-50 border-green-200 text-green-800',
-      sub: 'Your identity has been verified. You can submit reports.',
-    },
-    PENDING: {
-      label: 'Pending Review',
-      cls: 'bg-orange-50 border-orange-200 text-orange-800',
-      sub: 'Your documents have been submitted and are awaiting review.',
-    },
-    REJECTED: {
-      label: 'Rejected',
-      cls: 'bg-red-50 border-red-200 text-red-800',
-      sub: 'Your previous submission was rejected. Please re-submit corrected documents.',
-    },
-    UNVERIFIED: {
-      label: 'Not Verified',
-      cls: 'bg-gray-50 border-gray-200 text-gray-700',
-      sub: 'Verify your identity to unlock report submission and other features.',
-    },
-  };
-
-  const cfg = STATUS[status] || STATUS.UNVERIFIED;
-  const canSubmit = status === 'UNVERIFIED' || status === 'REJECTED';
-  const allFilesPicked = !!(files.idFront && files.idBack && files.selfie);
-
-  return (
-    <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-      <div className="mb-4 flex items-center justify-between">
-        <h2 className="flex items-center gap-2 text-lg font-semibold text-gray-900">
-          <ShieldCheck className="h-5 w-5 text-brand-600" /> Identity Verification
-        </h2>
-        <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${cfg.cls}`}>
-          {cfg.label}
-        </span>
-      </div>
-
-      <p className="mb-4 text-sm text-gray-600">{cfg.sub}</p>
-
-      {profile.rejectionReason && status === 'REJECTED' && (
-        <div className="mb-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-800">
-          <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
-          <div>
-            <strong>Rejection reason:</strong> {profile.rejectionReason}
-          </div>
-        </div>
-      )}
-
-      {canSubmit && (
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <KycFilePicker
-              label="ID — Front"
-              file={files.idFront}
-              onChange={(f) => setFiles((s) => ({ ...s, idFront: f }))}
-            />
-            <KycFilePicker
-              label="ID — Back"
-              file={files.idBack}
-              onChange={(f) => setFiles((s) => ({ ...s, idBack: f }))}
-            />
-            <KycFilePicker
-              label="Selfie"
-              file={files.selfie}
-              onChange={(f) => setFiles((s) => ({ ...s, selfie: f }))}
-            />
-          </div>
-          <p className="text-xs text-gray-500">
-            JPEG or PNG, max 10 MB each. Your selfie will be used as your profile picture.
-          </p>
-          <div className="flex justify-end">
-            <button
-              onClick={() => submitMutation.mutate()}
-              disabled={!allFilesPicked || submitMutation.isPending}
-              className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-5 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-700 disabled:opacity-50"
-            >
-              {submitMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-              Submit for Review
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function KycFilePicker({
-  label,
-  file,
-  onChange,
-}: {
-  label: string;
-  file?: File;
-  onChange: (f: File | undefined) => void;
-}) {
-  const [preview, setPreview] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!file) { setPreview(null); return; }
-    const url = URL.createObjectURL(file);
-    setPreview(url);
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
-
-  return (
-    <label className="block cursor-pointer">
-      <span className="mb-1 block text-xs font-medium text-gray-700">{label}</span>
-      <div className="flex h-32 flex-col items-center justify-center rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 hover:border-brand-400 hover:bg-brand-50/30 overflow-hidden">
-        {preview ? (
-          // Use plain img for blob preview
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={preview} alt={label} className="h-full w-full object-cover" />
-        ) : (
-          <div className="flex flex-col items-center text-gray-400">
-            <Camera className="h-6 w-6" />
-            <span className="mt-1 text-xs">Click to upload</span>
-          </div>
-        )}
-      </div>
-      <input
-        type="file"
-        accept="image/jpeg,image/png"
-        className="hidden"
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) {
-            if (f.size > 10 * 1024 * 1024) {
-              toast.error(`${label}: file exceeds 10 MB limit`);
-              return;
-            }
-            onChange(f);
-          }
-          e.target.value = '';
-        }}
-      />
-    </label>
-  );
-}

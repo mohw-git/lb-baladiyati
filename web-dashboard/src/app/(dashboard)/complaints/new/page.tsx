@@ -8,6 +8,7 @@ import Image from 'next/image';
 import { toast } from 'sonner';
 import { complaintsApi, categoriesApi, ApiError } from '@/lib/api';
 import { useAuthStore } from '@/lib/auth';
+import { PERMISSIONS } from '@shared/constants/permissions';
 import {
   ArrowLeft,
   MapPin,
@@ -16,6 +17,7 @@ import {
   Loader2,
   Send,
   AlertTriangle,
+  Info,
 } from 'lucide-react';
 import { useTranslate, useLocale, isRtl, pickName } from '@/lib/i18n';
 
@@ -42,7 +44,18 @@ export default function NewComplaintPage() {
   const [previews, setPreviews] = useState<string[]>([]);
 
   const verificationStatus = (user as any)?.verificationStatus;
-  const requiresVerification = verificationStatus && verificationStatus !== 'VERIFIED';
+  const userPerms: string[] = (user as any)?.permissions ?? [];
+  // Staff/admins creating a complaint here are acting ON BEHALF of a citizen
+  // (e.g. the citizen called in or walked into the office). They bypass KYC
+  // because the citizen identity check is the staff member's job; we label
+  // the form accordingly so it never reads like the staff member is filing
+  // a personal complaint.
+  const isStaffCreator =
+    userPerms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL) ||
+    userPerms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
+    userPerms.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED);
+  const requiresVerification =
+    verificationStatus && verificationStatus !== 'VERIFIED' && !isStaffCreator;
 
   const { data: categoriesRaw } = useQuery({
     queryKey: ['categories'],
@@ -149,6 +162,12 @@ export default function NewComplaintPage() {
               <p className="mt-1 text-sm text-amber-800">
                 {t('complaints.new.kycRequired.desc')}
               </p>
+              <Link
+                href="/kyc/submit"
+                className="mt-3 inline-flex rounded-lg bg-amber-700 px-4 py-2 text-sm font-medium text-white hover:bg-amber-800"
+              >
+                {t('profile.kyc.submit')}
+              </Link>
             </div>
           </div>
         </div>
@@ -165,7 +184,15 @@ export default function NewComplaintPage() {
         >
           <ArrowLeft className={rtl ? 'h-4 w-4 rotate-180' : 'h-4 w-4'} /> {t('common.backTo.complaints')}
         </Link>
-        <h1 className="text-xl font-bold text-gray-900">{t('complaints.new.title')}</h1>
+        <h1 className="text-xl font-bold text-gray-900">
+          {isStaffCreator ? t('complaints.createOnBehalf') : t('complaints.new.title')}
+        </h1>
+        {isStaffCreator && (
+          <div className="mt-3 flex items-start gap-2 rounded border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+            <Info className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{t('complaints.createOnBehalf.notice')}</span>
+          </div>
+        )}
       </div>
 
       <form

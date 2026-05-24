@@ -1,16 +1,16 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { toast } from 'sonner';
-import { complaintsApi, transfersApi, ApiError, getFileUrl } from '@/lib/api';
+import { complaintsApi, transfersApi, helpRequestsApi, ApiError, getFileUrl } from '@/lib/api';
 import { TransferModal } from '@/components/transfers/transfer-modal';
 import { TransferTimeline } from '@/components/transfers/transfer-timeline';
 import { RequestHelpModal } from '@/components/help-requests/request-help-modal';
 import { HelpPanel } from '@/components/help-requests/help-panel';
-import { usePermission } from '@/lib/auth';
+import { usePermission, useAnyPermission, useAuthStore } from '@/lib/auth';
 import { PERMISSIONS } from '@shared/constants/permissions';
 import { ComplaintStatus, ComplaintPriority, RejectionReason } from '@shared/types/complaint';
 import { STATUS_LABELS } from '@shared/constants/status';
@@ -19,9 +19,66 @@ import { formatDate, getFullName } from '@/lib/utils';
 import {
   ArrowLeft, MapPin, Calendar, User as UserIcon, Tag, Building,
   Paperclip, History, UserPlus, RefreshCw, Loader2, Trash2, Image, Flag, XCircle, Send,
-  HandHelping,
+  HandHelping, Eye, CheckCircle, RotateCcw,
 } from 'lucide-react';
 import { useTranslate, useLocale, isRtl, pickName } from '@/lib/i18n';
+
+/**
+ * Complaint statuses where new assignment / reassignment is operationally
+ * meaningful. Keep in sync with the backend ASSIGNABLE_STATUSES guard.
+ */
+const ASSIGNABLE_STATUSES = new Set<string>([
+  ComplaintStatus.SUBMITTED,
+  ComplaintStatus.UNDER_REVIEW,
+  ComplaintStatus.ASSIGNED,
+]);
+
+/**
+ * Statuses where a help request is operationally meaningful. Keep in sync
+ * with the backend HELP_REQUESTABLE_STATUSES guard.
+ */
+const HELP_REQUESTABLE_STATUSES = new Set<string>([
+  ComplaintStatus.ASSIGNED,
+  ComplaintStatus.IN_PROGRESS,
+  ComplaintStatus.PENDING_APPROVAL,
+]);
+
+/** Help-request lifecycle statuses considered active (non-terminal). */
+const ACTIVE_HELP_STATUSES = new Set<string>([
+  'PENDING', 'ACCEPTED', 'IN_PROGRESS', 'SUBMITTED',
+]);
+
+/** Transfer lifecycle status considered active (non-terminal). */
+const ACTIVE_TRANSFER_STATUSES = new Set<string>(['PENDING']);
+
+/** Prefer backend `currentAssignment`; fall back to newest active row in `assignments`. */
+function resolveCurrentAssignment(complaint: {
+  currentAssignment?: unknown;
+  assignments?: { isActive?: boolean; createdAt?: string; assignedTo?: unknown }[];
+} | null | undefined) {
+  const ca = complaint?.currentAssignment as {
+    assignedTo?: unknown;
+    isAssigned?: boolean;
+  } | null | undefined;
+  if (ca?.assignedTo) return ca;
+  const list = complaint?.assignments;
+  if (Array.isArray(list) && list.length > 0) {
+    const active = list.filter((a) => a.isActive);
+    if (active.length > 0) {
+      return [...active].sort(
+        (a, b) =>
+          new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime(),
+      )[0];
+    }
+  }
+  return ca?.isAssigned ? ca : null;
+}
+
+const TERMINAL_STATUSES = new Set<string>([
+  ComplaintStatus.COMPLETED,
+  ComplaintStatus.CLOSED,
+  ComplaintStatus.REJECTED,
+]);
 
 export default function ComplaintDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -31,17 +88,25 @@ export default function ComplaintDetailPage() {
   const locale = useLocale();
   const rtl = isRtl(locale);
 
+  const { user } = useAuthStore();
   const canAssign = usePermission(PERMISSIONS.COMPLAINT_ASSIGN);
   const canChangeStatus = usePermission(PERMISSIONS.COMPLAINT_CHANGE_STATUS);
   const canSetPriority = usePermission(PERMISSIONS.COMPLAINT_SET_PRIORITY);
   const canReject = usePermission(PERMISSIONS.COMPLAINT_REJECT);
   const canTransfer = usePermission(PERMISSIONS.TRANSFER_REQUEST);
   const canHelpRequest = usePermission(PERMISSIONS.HELP_REQUEST);
+  const canDelete = usePermission(PERMISSIONS.COMPLAINT_VIEW_ALL);
+  const canApproveClosure = useAnyPermission(
+    PERMISSIONS.COMPLAINT_APPROVE,
+    PERMISSIONS.COMPLAINT_VIEW_ALL,
+  );
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [showHelpModal, setShowHelpModal] = useState(false);
 
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [showStatusModal, setShowStatusModal] = useState(false);
+  const [showReturnModal, setShowReturnModal] = useState(false);
+  const [returnNotes, setReturnNotes] = useState('');
   const [showPriorityModal, setShowPriorityModal] = useState(false);
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [assignUserId, setAssignUserId] = useState('');
@@ -58,11 +123,128 @@ export default function ComplaintDetailPage() {
     queryFn: () => complaintsApi.getById(id),
   });
 
+  // The complaint detail page lives next to the HelpPanel, which already
+  // fetches help-history for this complaint. We do the same fetch here so
+  // the action buttons (Request Help / Transfer) can be properly disabled
+  // when an active request exists — instead of letting the user click the
+  // button and discover via toast that backend rejects it.
+  const { data: helpHistory = [] } = useQuery({
+    queryKey: ['help-requests', 'complaint', id],
+    queryFn: () => helpRequestsApi.historyForComplaint(id),
+    enabled: !!id,
+  });
+  const activeHelpRequest = useMemo(
+    () => helpHistory.find((h: any) => ACTIVE_HELP_STATUSES.has(h.status)),
+    [helpHistory],
+  );
+
+  const { data: transferHistory = [] } = useQuery({
+    queryKey: ['complaint', id, 'transfers'],
+    queryFn: async () => {
+      // Listing scoped to this complaint via the targetType filter; final
+      // narrowing happens client-side because the API doesn't accept
+      // targetId on the list endpoint.
+      const res = await transfersApi.list({ targetType: 'COMPLAINT', limit: 100 });
+      return res.items.filter((t: any) => t.targetId === id);
+    },
+    enabled: !!id,
+  });
+  const activeTransfer = useMemo(
+    () => transferHistory.find((t: any) => ACTIVE_TRANSFER_STATUSES.has(t.status)),
+    [transferHistory],
+  );
+
   const { data: assignableUsers } = useQuery({
     queryKey: ['complaint', id, 'assignable-users'],
     queryFn: () => complaintsApi.listAssignableUsers(id),
     enabled: showAssignModal,
   });
+
+  // Derived UI state. Keep these as plain const so it's obvious which
+  // conditions apply to each button — easier to audit than mixing them
+  // inline in JSX. Each `reason` is shown via `title` for disabled buttons.
+  const activeAssignment = useMemo(
+    () => resolveCurrentAssignment(complaint as any),
+    [complaint],
+  );
+
+  const status = complaint?.status;
+  const isPreview = (complaint as any)?.previewOnly === true;
+  const isTerminal = !!status && TERMINAL_STATUSES.has(status);
+  const isAssigned = !!activeAssignment?.assignedTo || !!(activeAssignment as any)?.isAssigned;
+  const hasDepartment = !!complaint?.department?.id;
+
+  const assignState: { show: boolean; disabled: boolean; reason: string; label: string } = {
+    show: canAssign && !isPreview,
+    disabled: false,
+    reason: '',
+    label: isAssigned ? t('complaints.detail.action.reassign') : t('complaints.detail.action.assign'),
+  };
+  if (assignState.show) {
+    if (!status || !ASSIGNABLE_STATUSES.has(status)) {
+      assignState.disabled = true;
+      assignState.reason = isTerminal
+        ? t('complaints.detail.action.disabled.terminal')
+        : t('complaints.detail.action.disabled.statusLockedForAssign');
+    }
+  }
+
+  const helpState = { show: canHelpRequest && hasDepartment && !isPreview, disabled: false, reason: '' };
+  if (helpState.show) {
+    if (!status || !HELP_REQUESTABLE_STATUSES.has(status)) {
+      helpState.disabled = true;
+      helpState.reason = t('complaints.detail.action.disabled.helpNeedsAssignment');
+    } else if (activeHelpRequest) {
+      helpState.disabled = true;
+      helpState.reason = t('complaints.detail.action.disabled.activeHelpExists');
+    }
+  }
+
+  const transferState = { show: canTransfer && hasDepartment && !isPreview, disabled: false, reason: '' };
+  if (transferState.show) {
+    if (isTerminal) {
+      transferState.disabled = true;
+      transferState.reason = t('complaints.detail.action.disabled.terminal');
+    } else if (activeTransfer) {
+      transferState.disabled = true;
+      transferState.reason = t('complaints.detail.action.disabled.activeTransferExists');
+    }
+  }
+
+  const priorityState = { show: canSetPriority && !isPreview, disabled: isTerminal, reason: isTerminal ? t('complaints.detail.action.disabled.terminal') : '' };
+  const rejectState = { show: canReject && !isPreview && !isTerminal, disabled: false, reason: '' };
+
+  const isPendingApproval = status === ComplaintStatus.PENDING_APPROVAL;
+  const assigneeId = (activeAssignment as { assignedTo?: { id?: string } } | null)?.assignedTo?.id;
+  const userDeptId = user?.department?.id;
+  const complaintDeptId = complaint?.department?.id;
+  const canViewAllComplaints = usePermission(PERMISSIONS.COMPLAINT_VIEW_ALL);
+
+  const approvalState: { show: boolean; enabled: boolean; reason: string } = {
+    show: false,
+    enabled: false,
+    reason: '',
+  };
+  if (isPendingApproval && !isPreview && canApproveClosure) {
+    approvalState.show = true;
+    if (canViewAllComplaints) {
+      approvalState.enabled = true;
+    } else if (!complaintDeptId) {
+      approvalState.reason = t('complaints.detail.action.disabled.approveNoDepartment');
+    } else if (userDeptId !== complaintDeptId) {
+      approvalState.reason = t('complaints.detail.action.disabled.approveWrongDepartment');
+    } else if (assigneeId && assigneeId === user?.id) {
+      approvalState.reason = t('complaints.detail.action.disabled.approveOwnWork');
+    } else {
+      approvalState.enabled = true;
+    }
+  }
+
+  const statusState = {
+    show: canChangeStatus && !isPreview && !isTerminal && !(isPendingApproval && canApproveClosure),
+    disabled: false,
+    reason: '',
+  };
 
   const assignMutation = useMutation({
     mutationFn: () => complaintsApi.assign(id, { assignedToId: assignUserId, notes: assignNotes }),
@@ -83,6 +265,33 @@ export default function ComplaintDetailPage() {
       setShowStatusModal(false);
       setStatusNotes('');
       queryClient.invalidateQueries({ queryKey: ['complaint', id] });
+    },
+    onError: (err: ApiError) => toast.error(err.message),
+  });
+
+  const approveCompletionMutation = useMutation({
+    mutationFn: () =>
+      complaintsApi.changeStatus(id, { status: ComplaintStatus.COMPLETED }),
+    onSuccess: () => {
+      toast.success(t('complaints.toast.approved'));
+      queryClient.invalidateQueries({ queryKey: ['complaint', id] });
+      queryClient.invalidateQueries({ queryKey: ['complaints'] });
+    },
+    onError: (err: ApiError) => toast.error(err.message),
+  });
+
+  const returnForWorkMutation = useMutation({
+    mutationFn: () =>
+      complaintsApi.changeStatus(id, {
+        status: ComplaintStatus.IN_PROGRESS,
+        notes: returnNotes.trim(),
+      }),
+    onSuccess: () => {
+      toast.success(t('complaints.toast.returnedForWork'));
+      setShowReturnModal(false);
+      setReturnNotes('');
+      queryClient.invalidateQueries({ queryKey: ['complaint', id] });
+      queryClient.invalidateQueries({ queryKey: ['complaints'] });
     },
     onError: (err: ApiError) => toast.error(err.message),
   });
@@ -150,44 +359,81 @@ export default function ComplaintDetailPage() {
             <StatusBadge status={complaint.status} />
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          {canAssign && (
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {approvalState.show && (
+            <>
+              <button
+                type="button"
+                onClick={() => approvalState.enabled && approveCompletionMutation.mutate()}
+                disabled={!approvalState.enabled || approveCompletionMutation.isPending}
+                title={!approvalState.enabled ? approvalState.reason : undefined}
+                className="flex items-center gap-1.5 rounded border border-green-600 bg-green-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-green-600"
+              >
+                {approveCompletionMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <CheckCircle className="h-4 w-4" />
+                )}
+                {t('complaints.detail.action.approveCompletion')}
+              </button>
+              <button
+                type="button"
+                onClick={() => approvalState.enabled && setShowReturnModal(true)}
+                disabled={!approvalState.enabled || returnForWorkMutation.isPending}
+                title={!approvalState.enabled ? approvalState.reason : undefined}
+                className="flex items-center gap-1.5 rounded border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm font-semibold text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-amber-50"
+              >
+                <RotateCcw className="h-4 w-4" />
+                {t('complaints.detail.action.returnForWork')}
+              </button>
+            </>
+          )}
+          {assignState.show && (
             <button
-              onClick={() => setShowAssignModal(true)}
-              className="btn-gov-secondary"
+              onClick={() => !assignState.disabled && setShowAssignModal(true)}
+              disabled={assignState.disabled}
+              title={assignState.disabled ? assignState.reason : undefined}
+              className="btn-gov-secondary disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <UserPlus className="h-4 w-4" /> {t('complaints.detail.action.assign')}
+              <UserPlus className="h-4 w-4" /> {assignState.label}
             </button>
           )}
-          {canHelpRequest && complaint.department?.id && (
+          {helpState.show && (
             <button
-              onClick={() => setShowHelpModal(true)}
-              className="flex items-center gap-1.5 rounded border border-amber-200 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-700 hover:bg-amber-100"
+              onClick={() => !helpState.disabled && setShowHelpModal(true)}
+              disabled={helpState.disabled}
+              title={helpState.disabled ? helpState.reason : undefined}
+              className="flex items-center gap-1.5 rounded border border-amber-200 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-700 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-amber-50"
             >
               <HandHelping className="h-4 w-4" /> {t('complaints.detail.action.askHelp')}
             </button>
           )}
-          {canTransfer && complaint.department?.id && (
+          {transferState.show && (
             <button
-              onClick={() => setShowTransferModal(true)}
-              className="flex items-center gap-1.5 rounded border border-purple-200 bg-purple-50 px-3 py-1.5 text-sm font-medium text-purple-700 hover:bg-purple-100"
+              onClick={() => !transferState.disabled && setShowTransferModal(true)}
+              disabled={transferState.disabled}
+              title={transferState.disabled ? transferState.reason : undefined}
+              className="flex items-center gap-1.5 rounded border border-purple-200 bg-purple-50 px-3 py-1.5 text-sm font-medium text-purple-700 hover:bg-purple-100 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-purple-50"
             >
               <Send className="h-4 w-4" /> {t('complaints.detail.action.transfer')}
             </button>
           )}
-          {canSetPriority && (
+          {priorityState.show && (
             <button
               onClick={() => {
+                if (priorityState.disabled) return;
                 setNewPriority(complaint.priority || ComplaintPriority.MEDIUM);
                 setPriorityDueDate(complaint.dueDate ? new Date(complaint.dueDate).toISOString().slice(0, 16) : '');
                 setShowPriorityModal(true);
               }}
-              className="btn-gov-secondary"
+              disabled={priorityState.disabled}
+              title={priorityState.disabled ? priorityState.reason : undefined}
+              className="btn-gov-secondary disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Flag className="h-4 w-4" /> {t('common.priority')}
             </button>
           )}
-          {canReject && complaint.status !== 'REJECTED' && complaint.status !== 'CLOSED' && (
+          {rejectState.show && (
             <button
               onClick={() => setShowRejectModal(true)}
               className="flex items-center gap-1.5 rounded border border-red-200 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50"
@@ -195,7 +441,7 @@ export default function ComplaintDetailPage() {
               <XCircle className="h-4 w-4" /> {t('complaints.detail.action.reject')}
             </button>
           )}
-          {canChangeStatus && (
+          {statusState.show && (
             <button
               onClick={() => setShowStatusModal(true)}
               className="btn-gov-primary"
@@ -203,14 +449,30 @@ export default function ComplaintDetailPage() {
               <RefreshCw className="h-4 w-4" /> {t('common.status')}
             </button>
           )}
-          <button
-            onClick={() => { if (confirm(t('complaints.detail.deleteConfirm'))) deleteMutation.mutate(); }}
-            className="rounded border border-red-200 p-2 text-red-500 hover:bg-red-50"
-          >
-            <Trash2 className="h-4 w-4" />
-          </button>
+          {canDelete && !isPreview && (
+            <button
+              onClick={() => { if (confirm(t('complaints.detail.deleteConfirm'))) deleteMutation.mutate(); }}
+              title={t('common.delete')}
+              className="rounded border border-red-200 p-2 text-red-500 hover:bg-red-50"
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Preview-only banner: receiver HOD/Supervisor reading a complaint
+          they only see because there's a pending transfer/help request
+          aimed at their department. */}
+      {isPreview && (
+        <div className="flex items-start gap-3 rounded border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+          <Eye className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <div className="font-semibold">{t('complaints.detail.preview.title')}</div>
+            <div className="mt-0.5 text-blue-800">{t('complaints.detail.preview.subtitle')}</div>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2 space-y-4">
@@ -356,35 +618,18 @@ export default function ComplaintDetailPage() {
               The backend strips identifiable fields (assignedTo, assignedBy,
               notes) from citizen-facing responses; we only render the panel
               when those fields are present (i.e. for staff). */}
-          {complaint.currentAssignment && (complaint.currentAssignment as any).assignedTo && (
+          {activeAssignment && (activeAssignment as any).assignedTo && (
             <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
               <h2 className="mb-3 text-lg font-semibold text-gray-900">Current Assignment</h2>
               <div className="rounded-lg bg-gray-50 p-3 text-sm">
-                <p className="font-medium text-gray-900">{getFullName((complaint.currentAssignment as any).assignedTo)}</p>
-                {(complaint.currentAssignment as any).notes && (
-                  <p className="text-xs text-gray-500">{(complaint.currentAssignment as any).notes}</p>
+                <p className="font-medium text-gray-900">{getFullName((activeAssignment as any).assignedTo)}</p>
+                {(activeAssignment as any).notes && (
+                  <p className="text-xs text-gray-500">{(activeAssignment as any).notes}</p>
                 )}
                 <p className="mt-1 text-xs text-gray-400">
-                  by {getFullName((complaint.currentAssignment as any).assignedBy)} &middot;{' '}
-                  {formatDate((complaint.currentAssignment as any).createdAt)}
+                  by {getFullName((activeAssignment as any).assignedBy)} &middot;{' '}
+                  {formatDate((activeAssignment as any).createdAt)}
                 </p>
-              </div>
-            </div>
-          )}
-          {/* Legacy: assignments array if present */}
-          {!complaint.currentAssignment && (complaint as any).assignments?.length > 0 && (
-            <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-              <h2 className="mb-3 text-lg font-semibold text-gray-900">Assignments</h2>
-              <div className="space-y-2">
-                {(complaint as any).assignments.filter((a: any) => a.isActive).map((a: any) => (
-                  <div key={a.id} className="rounded-lg bg-gray-50 p-3 text-sm">
-                    <p className="font-medium text-gray-900">{getFullName(a.assignedTo)}</p>
-                    {a.notes && <p className="text-xs text-gray-500">{a.notes}</p>}
-                    <p className="mt-1 text-xs text-gray-400">
-                      by {getFullName(a.assignedBy)} &middot; {formatDate(a.createdAt)}
-                    </p>
-                  </div>
-                ))}
               </div>
             </div>
           )}
@@ -475,6 +720,50 @@ export default function ComplaintDetailPage() {
                   className="rounded-lg bg-brand-600 px-4 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
                 >
                   {assignMutation.isPending ? 'Assigning...' : 'Assign'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Return for more work (PENDING_APPROVAL review) */}
+      {showReturnModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowReturnModal(false)}>
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="mb-2 text-lg font-semibold text-amber-800">{t('complaints.detail.approval.returnTitle')}</h3>
+            <p className="mb-4 text-sm text-gray-600">{t('complaints.detail.approval.returnHint')}</p>
+            <div className="space-y-4">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('complaints.detail.approval.returnNotesLabel')} <span className="text-red-500">*</span>
+                </label>
+                <textarea
+                  value={returnNotes}
+                  onChange={(e) => setReturnNotes(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none"
+                  rows={4}
+                  placeholder={t('complaints.detail.approval.returnNotesPlaceholder')}
+                />
+                {returnNotes.trim().length > 0 && returnNotes.trim().length < 5 && (
+                  <p className="mt-1 text-xs text-red-500">{t('complaints.detail.approval.returnNotesRequired')}</p>
+                )}
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => { setShowReturnModal(false); setReturnNotes(''); }}
+                  className="rounded-lg border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50"
+                >
+                  {t('common.cancel')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => returnForWorkMutation.mutate()}
+                  disabled={returnForWorkMutation.isPending || returnNotes.trim().length < 5}
+                  className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
+                >
+                  {returnForWorkMutation.isPending ? t('common.loading') : t('complaints.detail.action.returnForWork')}
                 </button>
               </div>
             </div>
@@ -596,8 +885,10 @@ export default function ComplaintDetailPage() {
         </div>
       )}
 
-      {/* Transfer history (read-only timeline) */}
-      <ComplaintTransferHistory complaintId={complaint.id} />
+      {/* Transfer history (read-only timeline) — reuses the same query the
+          action buttons already use to decide visibility, so we don't fire
+          a second request just to render the timeline strip. */}
+      {transferHistory.length > 0 && <TransferTimeline transfers={transferHistory} />}
 
       {/* Transfer modal */}
       {showTransferModal && complaint.department?.id && (
@@ -628,17 +919,4 @@ export default function ComplaintDetailPage() {
       )}
     </div>
   );
-}
-
-// Helper component to fetch + render the transfer timeline for a complaint
-function ComplaintTransferHistory({ complaintId }: { complaintId: string }) {
-  const { data } = useQuery({
-    queryKey: ['complaint', complaintId, 'transfers'],
-    queryFn: async () => {
-      const res = await transfersApi.list({ targetType: 'COMPLAINT', limit: 100 });
-      return res.items.filter((t: any) => t.targetId === complaintId);
-    },
-  });
-  if (!data || data.length === 0) return null;
-  return <TransferTimeline transfers={data} />;
 }

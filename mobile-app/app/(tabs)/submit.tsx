@@ -30,31 +30,8 @@ export default function SubmitScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const { user } = useAuthStore();
-
-  // KYC verification gate
   const verificationStatus = user?.verificationStatus;
-  if (verificationStatus !== 'VERIFIED') {
-    return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24, backgroundColor: Colors.white }}>
-        <Ionicons name="shield-checkmark" size={64} color={Colors.orange[500]} />
-        <Text style={{ fontSize: FontSize.xl, fontWeight: '700', color: Colors.gray[900], marginTop: 16, textAlign: 'center' }}>
-          Identity Verification Required
-        </Text>
-        <Text style={{ fontSize: FontSize.md, color: Colors.gray[500], textAlign: 'center', marginTop: 8, lineHeight: 22 }}>
-          You must verify your identity before submitting complaints.
-          This helps ensure accountability and transparency in our municipal services.
-        </Text>
-        <TouchableOpacity
-          onPress={() => router.push('/kyc')}
-          style={{ marginTop: 24, backgroundColor: Colors.brand[600], paddingHorizontal: 32, paddingVertical: 14, borderRadius: BorderRadius.lg }}
-        >
-          <Text style={{ color: '#fff', fontSize: FontSize.md, fontWeight: '700' }}>
-            {verificationStatus === 'PENDING' ? 'View Verification Status' : 'Verify Identity'}
-          </Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
+  const isVerified = verificationStatus === 'VERIFIED';
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -69,6 +46,7 @@ export default function SubmitScreen() {
   const { data: categoriesRaw, isLoading: loadingCats } = useQuery({
     queryKey: ['categories'],
     queryFn: () => categoriesApi.list(),
+    enabled: isVerified,
   });
   const categories: { id: string; name: string; icon?: string }[] = Array.isArray(categoriesRaw)
     ? categoriesRaw
@@ -185,6 +163,29 @@ export default function SubmitScreen() {
   };
 
   const canSubmit = title.trim().length >= 5 && description.trim().length >= 10 && categoryId;
+
+  if (!isVerified) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24, backgroundColor: Colors.white }}>
+        <Ionicons name="shield-checkmark" size={64} color={Colors.orange[500]} />
+        <Text style={{ fontSize: FontSize.xl, fontWeight: '700', color: Colors.gray[900], marginTop: 16, textAlign: 'center' }}>
+          Identity Verification Required
+        </Text>
+        <Text style={{ fontSize: FontSize.md, color: Colors.gray[500], textAlign: 'center', marginTop: 8, lineHeight: 22 }}>
+          You must verify your identity before submitting complaints.
+          This helps ensure accountability and transparency in our municipal services.
+        </Text>
+        <TouchableOpacity
+          onPress={() => router.push('/kyc')}
+          style={{ marginTop: 24, backgroundColor: Colors.brand[600], paddingHorizontal: 32, paddingVertical: 14, borderRadius: BorderRadius.lg }}
+        >
+          <Text style={{ color: '#fff', fontSize: FontSize.md, fontWeight: '700' }}>
+            {verificationStatus === 'PENDING' ? 'View Verification Status' : 'Verify Identity'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">

@@ -250,8 +250,11 @@ export default function ComplaintsPage() {
       {/* ── Page Header ──────────────────────────────────────────── */}
       <div className="flex flex-col gap-3 border-b border-gray-200 pb-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
+          {/* Operations title for staff — makes clear this is the municipal
+              operations queue, not a personal complaints page. Citizens see
+              "My Reports". */}
           <h1 className="text-xl font-bold text-gray-900">
-            {isStaffView ? t('complaints.title') : t('complaints.myReports')}
+            {isStaffView ? t('complaints.title.staff') : t('complaints.myReports')}
           </h1>
           <p className="mt-0.5 text-sm text-gray-500">
             {isStaffView
@@ -286,12 +289,17 @@ export default function ComplaintsPage() {
               {t('complaints.exportCsv')}
             </button>
           )}
+          {/* For staff/admins the button is "Create on behalf of citizen" so it
+              never reads like the admin is filing a personal complaint. For
+              citizens it's "Submit a Report". */}
           <Link
             href="/complaints/new"
             className="btn-gov-primary"
           >
             <Plus className="h-4 w-4" />
-            {isStaffView ? t('complaints.new') : t('complaints.submit')}
+            {isStaffView
+              ? t('complaints.createOnBehalf')
+              : t('complaints.submit')}
           </Link>
         </div>
       </div>

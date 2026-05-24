@@ -81,6 +81,18 @@ export class StatusService {
     return APPROVAL_TRANSITIONS.includes(toStatus);
   }
 
+  /** HOD/Supervisor review while work awaits sign-off (approve or send back). */
+  isPendingApprovalReviewTransition(
+    fromStatus: ComplaintStatus,
+    toStatus: ComplaintStatus,
+  ): boolean {
+    return (
+      fromStatus === ComplaintStatus.PENDING_APPROVAL &&
+      (toStatus === ComplaintStatus.COMPLETED ||
+        toStatus === ComplaintStatus.IN_PROGRESS)
+    );
+  }
+
   requiresProofAttachment(toStatus: ComplaintStatus): boolean {
     return toStatus === ComplaintStatus.PENDING_APPROVAL;
   }

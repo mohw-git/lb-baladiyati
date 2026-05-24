@@ -219,3 +219,12 @@ export const PERMISSION_MODULES: Record<string, { moduleLabelKey: string; items:
     ],
   },
 };
+
+/** Permissions applied client-side for citizen accounts when the API omits them. */
+export const CITIZEN_PERMISSIONS: readonly string[] = [
+  PERMISSIONS.COMPLAINT_CREATE,
+  PERMISSIONS.COMPLAINT_VIEW_OWN,
+  PERMISSIONS.COMPLAINT_UPLOAD_ATTACHMENT,
+  PERMISSIONS.KYC_SUBMIT,
+  PERMISSIONS.KYC_VIEW_OWN,
+];
