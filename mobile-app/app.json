@@ -11,7 +11,11 @@
     "extra": {
       "apiUrl": "http://localhost:3000",
       "sentryDsn": "",
-      "sentryEnvironment": "development"
+      "sentryEnvironment": "development",
+      "router": {},
+      "eas": {
+        "projectId": "98eeb9c7-de00-44f6-b8f9-18eea9d6af87"
+      }
     },
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -36,10 +40,12 @@
       },
       "edgeToEdgeEnabled": true,
       "permissions": [
-        "CAMERA",
-        "ACCESS_FINE_LOCATION",
-        "READ_EXTERNAL_STORAGE",
-        "POST_NOTIFICATIONS"
+        "android.permission.CAMERA",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_COARSE_LOCATION"
       ]
     },
     "web": {
