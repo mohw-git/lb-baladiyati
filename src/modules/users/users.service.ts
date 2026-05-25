@@ -22,6 +22,7 @@ import {
   assertCanAssignRoleToUser,
   assertCanRemoveCitizenRole,
   assertCanSetUserDepartment,
+  assertStaffCreationRoles,
   isProtectedCitizenAccount,
   protectedCitizenListWhere,
 } from '../../core/users/user-governance';
@@ -220,72 +221,69 @@ export class UsersService {
     actor?: { id: string; email: string },
     req?: Request,
   ) {
-    // Check for duplicate email
-    const existing = await this.prisma.user.findFirst({
-      where: {
-        municipalityId,
-        email: dto.email.toLowerCase(),
-      },
-    });
+    const email = dto.email.toLowerCase();
 
+    const existing = await this.prisma.user.findFirst({
+      where: { municipalityId, email },
+    });
     if (existing) {
       throw new ConflictException('Email already registered');
     }
 
-    // Hierarchy: can only seed roles strictly below my own rank
-    if (actor?.id && dto.roleIds?.length) {
-      for (const rid of dto.roleIds) {
+    const roleIds = dto.roleIds ?? [];
+    const roles =
+      roleIds.length > 0
+        ? await this.prisma.role.findMany({
+            where: { id: { in: roleIds }, municipalityId, deletedAt: null },
+          })
+        : [];
+
+    if (roleIds.length && roles.length !== roleIds.length) {
+      throw new BadRequestException('One or more roles were not found');
+    }
+
+    assertStaffCreationRoles(
+      roles.map((r) => ({
+        name: r.name,
+        isSystemManaged: (r as { isSystemManaged?: boolean }).isSystemManaged,
+      })),
+    );
+
+    if (actor?.id) {
+      for (const rid of roleIds) {
         await this.hierarchy.assertCanManageRole(actor.id, rid);
       }
     }
 
     const passwordHash = await hashPassword(dto.password);
 
-    // Staff accounts created by an admin are implicitly KYC-verified — the
-    // admin vouches for them. Only self-registered citizens need to complete
-    // the KYC flow before they can submit complaints.
-    const user = await this.prisma.user.create({
-      data: {
-        municipalityId,
-        email: dto.email.toLowerCase(),
-        passwordHash,
-        firstName: dto.firstName,
-        lastName: dto.lastName,
-        phone: dto.phone,
-        departmentId: dto.departmentId,
-        createdVia: 'ADMIN_PROVISIONED',
-        verificationStatus: 'VERIFIED',
-        verifiedAt: new Date(),
-      },
-    });
+    const userId = await this.prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: {
+          municipalityId,
+          email,
+          passwordHash,
+          firstName: dto.firstName,
+          lastName: dto.lastName,
+          phone: dto.phone,
+          departmentId: dto.departmentId,
+          createdVia: 'ADMIN_PROVISIONED',
+          verificationStatus: 'VERIFIED',
+          verifiedAt: new Date(),
+        },
+      });
 
-    if (dto.roleIds?.length) {
-      const roles = await this.prisma.role.findMany({
-        where: { id: { in: dto.roleIds }, municipalityId, deletedAt: null },
-      });
-      if (roles.length !== dto.roleIds.length) {
-        throw new BadRequestException('One or more roles were not found');
+      if (roleIds.length) {
+        await tx.userRole.createMany({
+          data: roleIds.map((roleId) => ({
+            userId: user.id,
+            roleId,
+          })),
+        });
       }
-      for (const role of roles) {
-        if ((role as any).isSystemManaged) {
-          throw new ForbiddenException(
-            `"${role.name}" is a positional role and cannot be granted at user creation. ` +
-              'Use the department or municipality admin slot flows instead.',
-          );
-        }
-        if (role.name === 'Citizen') {
-          throw new BadRequestException(
-            'Staff accounts cannot be created with the Citizen role. Citizens register via public signup.',
-          );
-        }
-      }
-      await this.prisma.userRole.createMany({
-        data: dto.roleIds.map((roleId) => ({
-          userId: user.id,
-          roleId,
-        })),
-      });
-    }
+
+      return user.id;
+    });
 
     await this.audit.logFromRequest(req, {
       actorId: actor?.id,
@@ -293,11 +291,13 @@ export class UsersService {
       municipalityId,
       action: AUDIT_ACTIONS.USER_CREATE,
       resourceType: 'User',
-      resourceId: user.id,
-      metadata: { email: user.email, roleCount: dto.roleIds?.length ?? 0 },
+      resourceId: userId,
+      metadata: { email, roleCount: roleIds.length },
     });
 
-    return this.findOne(user.id, municipalityId);
+    this.realtime.userUpdated({ id: userId, municipalityId });
+
+    return this.findOne(userId, municipalityId);
   }
 
   async update(

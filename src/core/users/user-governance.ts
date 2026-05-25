@@ -19,10 +19,56 @@ export function isSelfRegisteredCitizen(user: {
   return user.createdVia === 'SELF_REGISTRATION';
 }
 
-/** True when the user holds only the Citizen role (or no roles yet). */
+/**
+ * True when the user holds only the Citizen role.
+ * Users with no roles are NOT citizen-only unless they self-registered
+ * (see isProtectedCitizenAccount) — admin-provisioned staff are created
+ * without roles briefly inside a transaction before staff role attach.
+ */
 export function isCitizenOnlyAccount(user: UserGovernanceSnapshot): boolean {
   const names = getRoleNames(user);
-  return names.length === 0 || names.every((n) => n === 'Citizen');
+  if (names.length === 0) {
+    return false;
+  }
+  return names.every((n) => n === 'Citizen');
+}
+
+/** Staff accounts created by municipality/platform admins (not public signup). */
+export function isAdminProvisionedStaff(user: {
+  createdVia: UserCreatedVia;
+}): boolean {
+  return (
+    user.createdVia === 'ADMIN_PROVISIONED' ||
+    user.createdVia === 'PLATFORM_PROVISIONED' ||
+    user.createdVia === 'PLATFORM_SEEDED'
+  );
+}
+
+const STAFF_CREATE_BLOCKED_ROLE_NAMES = new Set(['Citizen', 'Admin']);
+
+/** Validates role IDs for POST /users staff creation (call before persisting user). */
+export function assertStaffCreationRoles(
+  roles: { name: string; isSystemManaged?: boolean }[],
+): void {
+  if (!roles.length) {
+    throw new BadRequestException(
+      'At least one staff role is required. Citizens register via the public signup page.',
+    );
+  }
+  for (const role of roles) {
+    if (STAFF_CREATE_BLOCKED_ROLE_NAMES.has(role.name)) {
+      throw new BadRequestException(
+        role.name === 'Citizen'
+          ? 'The Citizen role cannot be assigned when creating a staff account. Citizens register via public signup.'
+          : 'The Admin role is assigned via municipality settings, not Add User.',
+      );
+    }
+    if (role.isSystemManaged) {
+      throw new BadRequestException(
+        `"${role.name}" is a positional role. Assign department heads from Department settings.`,
+      );
+    }
+  }
 }
 
 /**
@@ -39,7 +85,14 @@ export function assertCanAssignRoleToUser(
   user: UserGovernanceSnapshot,
   roleName: string,
 ): void {
-  if (roleName !== 'Citizen' && isProtectedCitizenAccount(user)) {
+  if (roleName === 'Citizen') {
+    return;
+  }
+  // Admin-provisioned users without roles yet are mid staff onboarding — allow staff roles.
+  if (isAdminProvisionedStaff(user) && getRoleNames(user).length === 0) {
+    return;
+  }
+  if (isProtectedCitizenAccount(user)) {
     throw new ForbiddenException(
       'Citizen accounts cannot be granted staff roles. Create a separate staff account instead.',
     );

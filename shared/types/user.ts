@@ -33,6 +33,8 @@ export interface CreateUserRequest {
   lastName: string;
   phone?: string;
   departmentId?: string;
+  /** At least one staff role (excludes Citizen / positional roles). */
+  roleIds?: string[];
 }
 
 export interface UpdateUserRequest {

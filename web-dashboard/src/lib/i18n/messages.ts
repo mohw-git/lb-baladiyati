@@ -427,6 +427,11 @@ const en = {
   'users.title': 'User Management',
   'users.subtitle': 'Manage staff accounts and citizen registrations.',
   'users.new': 'Add User',
+  'users.new.staffOnlyHelp':
+    'This form creates staff accounts only. Citizens register from the public signup page.',
+  'users.new.hodAssignHelp':
+    'Department heads (Head of Department) and municipality admins are assigned from Department settings or Platform → Municipalities, not from this form.',
+  'users.new.roleRequired': 'Select a staff role.',
   'users.tab.staff': 'Staff',
   'users.tab.citizens': 'Citizens',
   'users.badge.citizen': 'Citizen account',
@@ -2163,6 +2168,11 @@ const ar: Partial<Record<MessageKey, string>> = {
   'users.title': 'إدارة المستخدمين',
   'users.subtitle': 'إدارة حسابات الموظفين والمواطنين.',
   'users.new': 'إضافة مستخدم',
+  'users.new.staffOnlyHelp':
+    'هذا النموذج لإنشاء حسابات الموظفين فقط. المواطنون يسجلون عبر صفحة التسجيل العامة.',
+  'users.new.hodAssignHelp':
+    'رؤساء الأقسام ومديرو البلدية يُعيَّنون من إعدادات الأقسام أو منصة البلديات، وليس من هذا النموذج.',
+  'users.new.roleRequired': 'اختر دوراً للموظف.',
   'users.tab.staff': 'الموظفون',
   'users.tab.citizens': 'المواطنون',
   'users.badge.citizen': 'حساب مواطن',
@@ -3854,6 +3864,11 @@ const fr: Partial<Record<MessageKey, string>> = {
   'users.title': 'Gestion des utilisateurs',
   'users.subtitle': 'Gérer les comptes du personnel et des citoyens.',
   'users.new': 'Ajouter un utilisateur',
+  'users.new.staffOnlyHelp':
+    'Ce formulaire crée uniquement des comptes du personnel. Les citoyens s\'inscrivent via la page publique.',
+  'users.new.hodAssignHelp':
+    'Les chefs de département et les administrateurs municipaux sont nommés depuis les paramètres des départements ou Plateforme → Municipalités.',
+  'users.new.roleRequired': 'Sélectionnez un rôle du personnel.',
   'users.tab.staff': 'Personnel',
   'users.tab.citizens': 'Citoyens',
   'users.badge.citizen': 'Compte citoyen',
