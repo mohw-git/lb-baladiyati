@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { departmentsApi, usersApi, ApiError } from '@/lib/api';
@@ -54,23 +54,53 @@ export default function DepartmentsPage() {
 
   const vacantCount = departments.filter((d) => !d.headUserId).length;
 
-  // Eligible-head candidates for the open department: members of THIS dept,
-  // not citizens, not the current head.
-  const { data: candidatesData } = useQuery({
-    queryKey: ['users', 'hod-candidates', headTarget?.id],
-    queryFn: () =>
-      usersApi.list({
-        excludeCitizens: true,
-        limit: 200,
-      }),
+  // HOD candidates: staff already in this department + unassigned municipal staff (can be moved in).
+  const { data: hodDeptMembers, isLoading: hodCandidatesLoading } = useQuery({
+    queryKey: ['departments', headTarget?.id, 'members'],
+    queryFn: () => departmentsApi.listMembers(headTarget!.id),
     enabled: !!headTarget,
   });
-  const candidates = ((candidatesData?.items ?? []) as any[]).filter((u: any) => {
-    if (!headTarget) return false;
-    // Either already in this department, or unassigned (so we can move them in)
-    const fits = !u.department?.id || u.department.id === headTarget.id;
-    return fits && u.id !== headTarget.headUserId && u.isActive !== false;
+
+  const { data: hodUnassignedStaff } = useQuery({
+    queryKey: ['users', 'hod-unassigned', headTarget?.id],
+    queryFn: () => usersApi.list({ excludeCitizens: true, limit: 200 }),
+    enabled: !!headTarget,
   });
+
+  const hodCandidates = useMemo(() => {
+    if (!headTarget) return [];
+    const inDept = (hodDeptMembers?.members ?? []).filter(
+      (m) => m.id !== headTarget.headUserId && m.isActive,
+    );
+    const unassigned = (hodUnassignedStaff?.items ?? []).filter(
+      (u) =>
+        !u.department?.id &&
+        u.id !== headTarget.headUserId &&
+        u.isActive !== false,
+    );
+    const byId = new Map<string, { id: string; firstName: string; lastName: string; email: string }>();
+    for (const m of inDept) {
+      byId.set(m.id, {
+        id: m.id,
+        firstName: m.firstName,
+        lastName: m.lastName,
+        email: m.email,
+      });
+    }
+    for (const u of unassigned) {
+      if (!byId.has(u.id)) {
+        byId.set(u.id, {
+          id: u.id,
+          firstName: u.firstName,
+          lastName: u.lastName,
+          email: u.email,
+        });
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) =>
+      `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`),
+    );
+  }, [headTarget, hodDeptMembers, hodUnassignedStaff]);
 
   const buildPayload = () => ({
     name: form.name,
@@ -512,17 +542,20 @@ export default function DepartmentsPage() {
                 className="select-gov"
               >
                 <option value="">—</option>
-                {candidates.map((u: any) => (
+                {hodCandidates.map((u) => (
                   <option key={u.id} value={u.id}>
                     {u.firstName} {u.lastName} ({u.email})
                   </option>
                 ))}
               </select>
-              {candidates.length === 0 && (
-                <p className="mt-2 text-xs text-amber-700">
-                  {t('departments.member.empty')}
-                </p>
-              )}
+              {hodCandidatesLoading ? (
+                <p className="mt-2 text-xs text-gray-500">{t('common.loading')}</p>
+              ) : hodCandidates.length === 0 ? (
+                <div className="mt-2 space-y-1 text-xs text-amber-700">
+                  <p>{t('departments.hod.emptyEligible')}</p>
+                  <p className="text-amber-600">{t('departments.hod.emptyHint')}</p>
+                </div>
+              ) : null}
             </div>
 
             <div className="mt-4 flex justify-end gap-2">

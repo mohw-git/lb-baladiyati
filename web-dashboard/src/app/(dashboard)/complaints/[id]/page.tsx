@@ -17,6 +17,7 @@ import { STATUS_LABELS } from '@shared/constants/status';
 import { StatusBadge } from '@/components/features/complaints/status-badge';
 import { UnverifiedSubmitterBadge } from '@/components/features/complaints/unverified-submitter-badge';
 import { PriorityBadge } from '@/components/features/complaints/priority-badge';
+import { WorkerWorkPanel } from '@/components/features/complaints/worker-work-panel';
 import type { ComplaintRiskReason } from '@shared/types/complaint';
 import { formatDate, getFullName } from '@/lib/utils';
 import {
@@ -262,8 +263,20 @@ export default function ComplaintDetailPage() {
     }
   }
 
+  const isActiveAssignee =
+    !!user?.id && !!assigneeId && assigneeId === user.id;
+  const workerControlsStatus =
+    isActiveAssignee &&
+    (status === ComplaintStatus.ASSIGNED ||
+      status === ComplaintStatus.IN_PROGRESS);
+
   const statusState = {
-    show: canChangeStatus && !isPreview && !isTerminal && !(isPendingApproval && canApproveClosure),
+    show:
+      canChangeStatus &&
+      !isPreview &&
+      !isTerminal &&
+      !(isPendingApproval && canApproveClosure) &&
+      !workerControlsStatus,
     disabled: false,
     reason: '',
   };
@@ -275,6 +288,7 @@ export default function ComplaintDetailPage() {
     if (err instanceof ApiError && err.status === 409) {
       queryClient.invalidateQueries({ queryKey: ['complaint', id] });
       queryClient.invalidateQueries({ queryKey: ['complaints'] });
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
     }
   };
 
@@ -482,6 +496,15 @@ export default function ComplaintDetailPage() {
               <XCircle className="h-4 w-4" /> {t('complaints.detail.action.reject')}
             </button>
           )}
+          <WorkerWorkPanel
+            complaintId={id}
+            status={status ?? ''}
+            assigneeId={assigneeId}
+            currentUserId={user?.id}
+            canChangeStatus={canChangeStatus}
+            isPreview={isPreview}
+            onActionError={handleActionError}
+          />
           {statusState.show && (
             <button
               onClick={() => setShowStatusModal(true)}
@@ -524,10 +547,24 @@ export default function ComplaintDetailPage() {
         </div>
       )}
 
+      {/* Worker assigned but waiting on supervisor — no worker actions left */}
+      {isPendingApproval &&
+        !isPreview &&
+        isActiveAssignee &&
+        !approvalState.show && (
+        <div className="flex items-start gap-3 rounded border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+          <Send className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <div className="font-semibold">{t('complaints.worker.awaitingReviewTitle')}</div>
+            <div className="mt-0.5 text-blue-800">{t('complaints.worker.awaitingReviewBody')}</div>
+          </div>
+        </div>
+      )}
+
       {/* PENDING_APPROVAL banner for users who can view but cannot approve
           (e.g. workers, other-dept staff). Avoids the silent dead-end where
           they see no action buttons and no explanation. */}
-      {isPendingApproval && !isPreview && !approvalState.show && (
+      {isPendingApproval && !isPreview && !approvalState.show && !isActiveAssignee && (
         <div className="flex items-start gap-3 rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
           <RotateCcw className="mt-0.5 h-4 w-4 shrink-0" />
           <div>

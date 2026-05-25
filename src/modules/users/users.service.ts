@@ -25,6 +25,7 @@ import {
   assertStaffCreationRoles,
   isProtectedCitizenAccount,
   protectedCitizenListWhere,
+  staffMemberWhere,
 } from '../../core/users/user-governance';
 
 @Injectable()
@@ -94,13 +95,16 @@ export class UsersService {
           : [];
       where.AND = [...existingAnd, ...citizenAnd];
     } else if (query.excludeCitizens || !query.includeCitizens) {
-      // Default Staff view: exclude users with only the Citizen role
-      // AND exclude self-registered accounts (defence-in-depth).
-      where.userRoles = {
-        ...(where.userRoles ?? {}),
-        some: { role: { name: { not: 'Citizen' } } },
-      };
-      where.createdVia = { not: 'SELF_REGISTRATION' };
+      const staffFilter = staffMemberWhere();
+      const staffAnd = Array.isArray(staffFilter.AND)
+        ? staffFilter.AND
+        : staffFilter.AND
+          ? [staffFilter.AND]
+          : [];
+      where.AND = [
+        ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
+        ...staffAnd,
+      ];
     }
 
     const [users, total] = await Promise.all([

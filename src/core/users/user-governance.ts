@@ -134,7 +134,19 @@ export function assertEligibleStaffAssignee(
   }
 }
 
-/** Prisma filter: staff eligible for department membership / assignment lists. */
+const PROVISIONED_STAFF_CREATED_VIA: UserCreatedVia[] = [
+  UserCreatedVia.ADMIN_PROVISIONED,
+  UserCreatedVia.PLATFORM_PROVISIONED,
+  UserCreatedVia.PLATFORM_SEEDED,
+];
+
+/**
+ * Prisma filter: municipal staff (not citizens).
+ * - Excludes self-registration and citizen-only accounts.
+ * - Includes users with any non-Citizen role (system/default staff roles count).
+ * - Includes admin-provisioned users with no roles yet (orphan staff onboarding).
+ * `isSystem` on a role does NOT exclude the user from staff lists.
+ */
 export function staffMemberWhere(
   extra?: Prisma.UserWhereInput,
 ): Prisma.UserWhereInput {
@@ -143,9 +155,32 @@ export function staffMemberWhere(
       extra ?? {},
       { createdVia: { not: UserCreatedVia.SELF_REGISTRATION } },
       {
-        userRoles: {
-          some: { role: { name: { not: 'Citizen' } } },
+        NOT: {
+          userRoles: {
+            some: { role: { name: 'Citizen', deletedAt: null } },
+            none: { role: { name: { not: 'Citizen' }, deletedAt: null } },
+          },
         },
+      },
+      {
+        OR: [
+          {
+            userRoles: {
+              some: {
+                role: {
+                  deletedAt: null,
+                  name: { not: 'Citizen' },
+                },
+              },
+            },
+          },
+          {
+            AND: [
+              { createdVia: { in: PROVISIONED_STAFF_CREATED_VIA } },
+              { userRoles: { none: {} } },
+            ],
+          },
+        ],
       },
     ],
   };

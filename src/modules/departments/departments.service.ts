@@ -327,6 +327,7 @@ export class DepartmentsService {
       where: staffMemberWhere({
         municipalityId,
         departmentId,
+        isActive: true,
       }),
       select: {
         id: true,
