@@ -7,7 +7,8 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { hashPassword } from '../../core/common/utils/hash.util';
-import { DEFAULT_ROLES, PERMISSION_SEED_DATA } from '../../core/rbac/permissions.constants';
+import { PERMISSION_SEED_DATA } from '../../core/rbac/permissions.constants';
+import { provisionDefaultMunicipalityRoles } from '../../core/rbac/municipality-roles.provision';
 import { AuditService, AUDIT_ACTIONS } from '../audit/audit.service';
 import { CreateMunicipalityDto } from './dto/create-municipality.dto';
 import { UpdateMunicipalityDto } from './dto/update-municipality.dto';
@@ -206,28 +207,7 @@ export class PlatformService {
           });
         }
       }
-      const permissions = await tx.permission.findMany();
-      const permsByKey = new Map(permissions.map((p) => [p.key, p]));
-
-      const createdRoles: Record<string, string> = {};
-      for (const [, roleConfig] of Object.entries(DEFAULT_ROLES)) {
-        const role = await tx.role.create({
-          data: {
-            municipalityId: muni.id,
-            name: roleConfig.name,
-            description: roleConfig.description,
-          },
-        });
-        createdRoles[roleConfig.name] = role.id;
-        for (const permKey of roleConfig.permissions) {
-          const perm = permsByKey.get(permKey);
-          if (perm) {
-            await tx.rolePermission.create({
-              data: { roleId: role.id, permissionId: perm.id },
-            });
-          }
-        }
-      }
+      const createdRoles = await provisionDefaultMunicipalityRoles(tx, muni.id);
 
       // 2. Default departments
       const defaultDepartments = [

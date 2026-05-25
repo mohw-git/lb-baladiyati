@@ -128,6 +128,8 @@ export default function RoleDetailPage() {
     );
   }
 
+  const isProtectedSystemRole = role.isSystem;
+
   const sysKey = systemRoleLabelKey(role.name);
   const localizedRoleName = sysKey ? t(sysKey) : pickName(role as any, locale);
   const sysDescKey = sysKey ? `${sysKey}.desc` as MessageKey : null;
@@ -158,16 +160,22 @@ export default function RoleDetailPage() {
                 role.isSystem ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'
               }`}
             >
-              {role.isSystem ? t('roles.badge.system') : t('common.user')}
+              {role.isSystem ? t('roles.badge.protected') : t('common.user')}
             </span>
           </div>
         </div>
       </div>
 
+      {isProtectedSystemRole && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          {t('roles.protectedNotice')}
+        </div>
+      )}
+
       <div className="gov-card p-4">
         <div className="mb-3 flex items-center justify-between">
           <div className="gov-section-header">{t('roles.detail.title')}</div>
-          {!role.isSystem && !editing && (
+          {!isProtectedSystemRole && !editing && (
             <button
               onClick={() => setEditing(true)}
               className="text-sm text-brand-600 hover:text-brand-700"
@@ -266,7 +274,7 @@ export default function RoleDetailPage() {
         )}
       </div>
 
-      {!role.isSystem && (
+      {!isProtectedSystemRole && (
         <div className="gov-card p-4">
           <div className="mb-3 flex items-center justify-between">
             <div className="gov-section-header">{t('roles.detail.permissions')}</div>
@@ -314,7 +322,24 @@ export default function RoleDetailPage() {
         </div>
       )}
 
-      {!role.isSystem && (
+      {isProtectedSystemRole && role.permissions && role.permissions.length > 0 && (
+        <div className="gov-card p-4">
+          <div className="gov-section-header mb-3">{t('roles.detail.permissions')}</div>
+          <p className="text-xs text-gray-500">{t('roles.protectedNotice')}</p>
+          <ul className="mt-3 flex flex-wrap gap-2">
+            {role.permissions.map((perm) => (
+              <li
+                key={perm.id}
+                className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-700"
+              >
+                {t(permissionLabelKey(perm.key))}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {!isProtectedSystemRole && (
         <div className="gov-card p-4">
           <div className="gov-section-header">{t('roles.detail.dangerZone')}</div>
           <button

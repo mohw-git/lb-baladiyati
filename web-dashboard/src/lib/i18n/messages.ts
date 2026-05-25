@@ -529,6 +529,9 @@ const en = {
   'roles.badge.positional': 'Positional',
   'roles.badge.positional.hint': 'Positional role — granted only by assigning the matching org-chart slot',
   'roles.badge.system': 'System',
+  'roles.badge.protected': 'Protected',
+  'roles.protectedNotice':
+    'System roles are managed by the platform and cannot be modified by municipality admins.',
   'roles.badge.yes': 'Yes',
   'roles.badge.no': 'No',
   'roles.view': 'View',
@@ -2256,6 +2259,9 @@ const ar: Partial<Record<MessageKey, string>> = {
   'roles.badge.positional': 'مُرتبط بمنصب',
   'roles.badge.positional.hint': 'دور مُرتبط بمنصب تنظيمي — يُمنح عبر تعيين الشخص في الهيكل التنظيمي فقط',
   'roles.badge.system': 'نظام',
+  'roles.badge.protected': 'محمي',
+  'roles.protectedNotice':
+    'الأدوار النظامية تُدار من المنصة ولا يمكن لمدير البلدية تعديلها.',
   'roles.badge.yes': 'نعم',
   'roles.badge.no': 'لا',
   'roles.view': 'عرض',
@@ -3944,6 +3950,9 @@ const fr: Partial<Record<MessageKey, string>> = {
   'roles.badge.positional': 'Positionnel',
   'roles.badge.positional.hint': 'Rôle positionnel — accordé uniquement par affectation au poste correspondant dans l\'organigramme',
   'roles.badge.system': 'Système',
+  'roles.badge.protected': 'Protégé',
+  'roles.protectedNotice':
+    'Les rôles système sont gérés par la plateforme et ne peuvent pas être modifiés par les administrateurs municipaux.',
   'roles.badge.yes': 'Oui',
   'roles.badge.no': 'Non',
   'roles.view': 'Voir',

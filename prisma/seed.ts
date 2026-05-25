@@ -374,113 +374,11 @@ async function seedPermissions() {
 
 async function createRolesForMunicipality(municipalityId: string) {
   console.log('Creating roles...');
-  const permissions = await prisma.permission.findMany();
-  const permissionMap = new Map(permissions.map(p => [p.key, p.id]));
-  
-  for (const [, roleConfig] of Object.entries(DEFAULT_ROLES)) {
-    // Check if role already exists
-    const existingRole = await prisma.role.findUnique({
-      where: {
-        municipalityId_name: {
-          municipalityId,
-          name: roleConfig.name,
-        },
-      },
-    });
-
-    if (existingRole) {
-      // Make sure the system-managed flag is set correctly on existing rows
-      const shouldBeSystemManaged =
-        roleConfig.name === 'Admin' || roleConfig.name === 'Head of Department';
-      const updates: any = {};
-      if ((existingRole as any).isSystemManaged !== shouldBeSystemManaged) {
-        updates.isSystemManaged = shouldBeSystemManaged;
-      }
-      if ((existingRole as any).priority !== roleConfig.priority) {
-        updates.priority = roleConfig.priority;
-      }
-      // Always backfill multilingual fields so existing system roles get
-      // Arabic/French translations on next seed run.
-      if (!existingRole.nameAr && (roleConfig as any).nameAr) updates.nameAr = (roleConfig as any).nameAr;
-      if (!existingRole.nameFr && (roleConfig as any).nameFr) updates.nameFr = (roleConfig as any).nameFr;
-      if (!existingRole.descriptionAr && (roleConfig as any).descriptionAr) updates.descriptionAr = (roleConfig as any).descriptionAr;
-      if (!existingRole.descriptionFr && (roleConfig as any).descriptionFr) updates.descriptionFr = (roleConfig as any).descriptionFr;
-      if (Object.keys(updates).length) {
-        await prisma.role.update({
-          where: { id: existingRole.id },
-          data: updates,
-        });
-      }
-
-      const desiredPermIds = new Set(
-        roleConfig.permissions.map(k => permissionMap.get(k)).filter(Boolean) as string[]
-      );
-
-      // Add missing permissions
-      for (const permKey of roleConfig.permissions) {
-        const permId = permissionMap.get(permKey);
-        if (permId) {
-          const exists = await prisma.rolePermission.findUnique({
-            where: { roleId_permissionId: { roleId: existingRole.id, permissionId: permId } },
-          });
-          if (!exists) {
-            await prisma.rolePermission.create({
-              data: { roleId: existingRole.id, permissionId: permId },
-            });
-            console.log(`    + Added permission "${permKey}" to "${roleConfig.name}"`);
-          }
-        }
-      }
-
-      // Remove permissions that should NOT be on this role anymore
-      const currentRolePerms = await prisma.rolePermission.findMany({
-        where: { roleId: existingRole.id },
-        include: { permission: { select: { key: true } } },
-      });
-      for (const rp of currentRolePerms) {
-        if (!desiredPermIds.has(rp.permissionId)) {
-          await prisma.rolePermission.delete({
-            where: { roleId_permissionId: { roleId: existingRole.id, permissionId: rp.permissionId } },
-          });
-          console.log(`    - Removed permission "${rp.permission.key}" from "${roleConfig.name}"`);
-        }
-      }
-
-      console.log(`  - Role "${roleConfig.name}" already exists (permissions synced)`);
-      continue;
-    }
-
-    const role = await prisma.role.create({
-      data: {
-        municipalityId,
-        name: roleConfig.name,
-        nameAr: (roleConfig as any).nameAr ?? null,
-        nameFr: (roleConfig as any).nameFr ?? null,
-        description: roleConfig.description,
-        descriptionAr: (roleConfig as any).descriptionAr ?? null,
-        descriptionFr: (roleConfig as any).descriptionFr ?? null,
-        isSystem: true,
-        priority: roleConfig.priority,
-        isSystemManaged:
-          roleConfig.name === 'Admin' || roleConfig.name === 'Head of Department',
-      } as any,
-    });
-
-    // Assign permissions to role
-    for (const permKey of roleConfig.permissions) {
-      const permId = permissionMap.get(permKey);
-      if (permId) {
-        await prisma.rolePermission.create({
-          data: {
-            roleId: role.id,
-            permissionId: permId,
-          },
-        });
-      }
-    }
-
-    console.log(`  ✓ Created role: ${roleConfig.name} (${roleConfig.permissions.length} permissions)`);
-  }
+  const { provisionDefaultMunicipalityRoles } = await import(
+    '../src/core/rbac/municipality-roles.provision'
+  );
+  await provisionDefaultMunicipalityRoles(prisma, municipalityId);
+  console.log('  ✓ Default municipal roles provisioned (priority, isSystem, permissions)');
 }
 
 async function seedDepartments(municipalityId: string) {

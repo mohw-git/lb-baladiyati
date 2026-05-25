@@ -81,6 +81,7 @@ export default function RolesPage() {
                           ? 'bg-amber-100 text-amber-700'
                           : 'bg-gray-100 text-gray-600'
                       }`}
+                      title={role.isSystem ? t('roles.protectedNotice') : undefined}
                     >
                       {role.isSystem ? t('roles.badge.yes') : t('roles.badge.no')}
                     </span>
