@@ -10,6 +10,11 @@ export default function TabLayout() {
   const { user, isLoading } = useAuthStore();
   const userRole = useUserRole();
   const t = useTranslate();
+  // Must run on every render — never call hooks after conditional returns below.
+  const canSeeInbox = useHasAnyPermission(
+    PERMISSIONS.HELP_VIEW,
+    PERMISSIONS.TRANSFER_VIEW,
+  );
 
   if (isLoading) {
     return (
@@ -29,12 +34,6 @@ export default function TabLayout() {
 
   const isWorkerOrAbove = userRole === 'worker' || userRole === 'supervisor' || userRole === 'admin';
   const isCitizen = userRole === 'citizen';
-  // Inbox tab: anyone who can read cross-department transfers OR help requests.
-  // Workers can raise (and view) help, supervisors/HODs/admins handle the receiving side.
-  const canSeeInbox = useHasAnyPermission(
-    PERMISSIONS.HELP_VIEW,
-    PERMISSIONS.TRANSFER_VIEW,
-  );
 
   return (
     <Tabs

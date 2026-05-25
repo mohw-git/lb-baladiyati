@@ -25,6 +25,21 @@ import {
   HandHelping, Eye, CheckCircle, RotateCcw,
 } from 'lucide-react';
 import { useTranslate, useLocale, isRtl, pickName } from '@/lib/i18n';
+import type { MessageKey } from '@/lib/i18n';
+
+/**
+ * Translate a backend error to a user-friendly toast. 409 race-conflict
+ * codes get a dedicated "already updated" message and refetch so the user
+ * sees the new state instead of just an error.
+ */
+function complaintActionErrorMessage(err: unknown, t: (k: any) => string): string {
+  if (err instanceof ApiError) {
+    if (err.status === 409) {
+      return t('complaints.toast.alreadyUpdated');
+    }
+  }
+  return err instanceof Error ? err.message : t('common.error');
+}
 
 /**
  * Complaint statuses where new assignment / reassignment is operationally
@@ -48,7 +63,11 @@ const HELP_REQUESTABLE_STATUSES = new Set<string>([
 
 /** Help-request lifecycle statuses considered active (non-terminal). */
 const ACTIVE_HELP_STATUSES = new Set<string>([
-  'PENDING', 'ACCEPTED', 'IN_PROGRESS', 'SUBMITTED',
+  'PENDING_SOURCE_APPROVAL',
+  'PENDING',
+  'ACCEPTED',
+  'IN_PROGRESS',
+  'SUBMITTED',
 ]);
 
 /** Transfer lifecycle status considered active (non-terminal). */
@@ -249,6 +268,16 @@ export default function ComplaintDetailPage() {
     reason: '',
   };
 
+  const handleActionError = (err: unknown) => {
+    toast.error(complaintActionErrorMessage(err, t));
+    // 409 means we lost the race — refetch the canonical state so the UI
+    // doesn't keep showing the old action buttons.
+    if (err instanceof ApiError && err.status === 409) {
+      queryClient.invalidateQueries({ queryKey: ['complaint', id] });
+      queryClient.invalidateQueries({ queryKey: ['complaints'] });
+    }
+  };
+
   const assignMutation = useMutation({
     mutationFn: () => complaintsApi.assign(id, { assignedToId: assignUserId, notes: assignNotes }),
     onSuccess: () => {
@@ -258,7 +287,7 @@ export default function ComplaintDetailPage() {
       setAssignNotes('');
       queryClient.invalidateQueries({ queryKey: ['complaint', id] });
     },
-    onError: (err: ApiError) => toast.error(err.message),
+    onError: handleActionError,
   });
 
   const statusMutation = useMutation({
@@ -269,7 +298,7 @@ export default function ComplaintDetailPage() {
       setStatusNotes('');
       queryClient.invalidateQueries({ queryKey: ['complaint', id] });
     },
-    onError: (err: ApiError) => toast.error(err.message),
+    onError: handleActionError,
   });
 
   const approveCompletionMutation = useMutation({
@@ -280,7 +309,7 @@ export default function ComplaintDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['complaint', id] });
       queryClient.invalidateQueries({ queryKey: ['complaints'] });
     },
-    onError: (err: ApiError) => toast.error(err.message),
+    onError: handleActionError,
   });
 
   const returnForWorkMutation = useMutation({
@@ -296,7 +325,7 @@ export default function ComplaintDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['complaint', id] });
       queryClient.invalidateQueries({ queryKey: ['complaints'] });
     },
-    onError: (err: ApiError) => toast.error(err.message),
+    onError: handleActionError,
   });
 
   const deleteMutation = useMutation({
@@ -332,7 +361,7 @@ export default function ComplaintDetailPage() {
       setRejectNotes('');
       queryClient.invalidateQueries({ queryKey: ['complaint', id] });
     },
-    onError: (err: ApiError) => toast.error(err.message),
+    onError: handleActionError,
   });
 
   if (isLoading) {
@@ -479,9 +508,52 @@ export default function ComplaintDetailPage() {
       {isPreview && (
         <div className="flex items-start gap-3 rounded border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
           <Eye className="mt-0.5 h-4 w-4 shrink-0" />
-          <div>
+          <div className="flex-1">
             <div className="font-semibold">{t('complaints.detail.preview.title')}</div>
             <div className="mt-0.5 text-blue-800">{t('complaints.detail.preview.subtitle')}</div>
+            {activeHelpRequest && (
+              <Link
+                href={`/help-requests/${activeHelpRequest.id}`}
+                className="mt-2 inline-flex items-center gap-1 font-medium text-blue-700 underline hover:text-blue-900"
+              >
+                <HandHelping className="h-4 w-4" />
+                {t('helpRequests.action.openWorkspace')}
+              </Link>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* PENDING_APPROVAL banner for users who can view but cannot approve
+          (e.g. workers, other-dept staff). Avoids the silent dead-end where
+          they see no action buttons and no explanation. */}
+      {isPendingApproval && !isPreview && !approvalState.show && (
+        <div className="flex items-start gap-3 rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          <RotateCcw className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <div className="font-semibold">
+              {t('complaints.detail.pendingApproval.title')}
+            </div>
+            <div className="mt-0.5 text-amber-800">
+              {t('complaints.detail.pendingApproval.body')}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Terminal banner — explains why action buttons are hidden once a
+          complaint is Resolved / Rejected / Closed. Citizens see a softer
+          version (status badge already conveys the state). */}
+      {isTerminal && !isPreview && (
+        <div className="flex items-start gap-3 rounded border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
+          <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-gray-500" />
+          <div>
+            <div className="font-semibold text-gray-800">
+              {t('complaints.detail.terminal.title')}
+            </div>
+            <div className="mt-0.5 text-gray-600">
+              {t('complaints.detail.terminal.body')}
+            </div>
           </div>
         </div>
       )}
@@ -524,23 +596,58 @@ export default function ComplaintDetailPage() {
                 <History className="h-4 w-4" /> {t('complaints.detail.section.timeline')}
               </div>
               <div className="mt-3 space-y-3">
-                {(complaint.statusHistory || (complaint as any).statusLogs).map((log: any) => (
-                  <div key={log.id} className="flex items-start gap-3 rounded bg-gray-50 p-3">
-                    <div className="mt-0.5 h-2 w-2 rounded-full bg-brand-400" />
-                    <div className="flex-1">
-                      <p className="text-sm text-gray-900">
-                        {log.fromStatus && (
-                          <><StatusBadge status={log.fromStatus} /> &rarr; </>
-                        )}
-                        <StatusBadge status={log.toStatus} />
-                      </p>
-                      {log.notes && <p className="mt-1 text-xs text-gray-500">{log.notes}</p>}
-                      <p className="mt-1 text-xs text-gray-400">
-                        {getFullName(log.changedBy)} · {formatDate(log.createdAt, 'MMM d, yyyy HH:mm')}
-                      </p>
+                {(complaint.statusHistory || (complaint as any).statusLogs).map((log: any) => {
+                  // Event-kind rows are help/transfer/reassign events written
+                  // to the same table. We render them as event chips so the
+                  // timeline doesn't display misleading SAME → SAME status
+                  // transitions for things like "Help submitted".
+                  const eventKind: string | null = log.eventKind ?? null;
+                  if (eventKind) {
+                    const labelKey = `complaints.detail.timeline.event.${eventKind}` as MessageKey;
+                    const fallback = eventKind.replace(/_/g, ' ').toLowerCase();
+                    const label = t(labelKey) === labelKey ? fallback : t(labelKey);
+                    const tone = eventKind.startsWith('HELP_')
+                      ? 'bg-amber-400'
+                      : eventKind.startsWith('TRANSFER_')
+                      ? 'bg-purple-400'
+                      : 'bg-gray-400';
+                    return (
+                      <div key={log.id} className="flex items-start gap-3 rounded bg-gray-50 p-3">
+                        <div className={`mt-1.5 h-2 w-2 rounded-full ${tone}`} />
+                        <div className="flex-1">
+                          <p className="text-sm font-medium text-gray-900">{label}</p>
+                          {log.notes && (
+                            <p className="mt-1 text-xs text-gray-600">{log.notes}</p>
+                          )}
+                          <p className="mt-1 text-xs text-gray-400">
+                            {getFullName(log.changedBy)} ·{' '}
+                            {formatDate(log.createdAt, 'MMM d, yyyy HH:mm')}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div key={log.id} className="flex items-start gap-3 rounded bg-gray-50 p-3">
+                      <div className="mt-1.5 h-2 w-2 rounded-full bg-brand-400" />
+                      <div className="flex-1">
+                        <p className="flex flex-wrap items-center gap-1.5 text-sm text-gray-900">
+                          {log.fromStatus && (
+                            <>
+                              <StatusBadge status={log.fromStatus} />
+                              <span className="text-gray-400">&rarr;</span>
+                            </>
+                          )}
+                          <StatusBadge status={log.toStatus} />
+                        </p>
+                        {log.notes && <p className="mt-1 text-xs text-gray-500">{log.notes}</p>}
+                        <p className="mt-1 text-xs text-gray-400">
+                          {getFullName(log.changedBy)} · {formatDate(log.createdAt, 'MMM d, yyyy HH:mm')}
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}

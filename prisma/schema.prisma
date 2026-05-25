@@ -155,20 +155,21 @@ enum UserLocale {
 
 // ==================== HELP REQUEST ENUM ====================
 
-// Lifecycle for ComplaintHelpRequest. Models the "I need another department's
-// help to solve this complaint" scenario without transferring ownership.
+// Lifecycle for ComplaintHelpRequest. Models cross-dept help without transfer.
 //
-//   PENDING   → original dept asked, helper dept hasn't replied
-//   ACCEPTED  → helper HOD agreed to help (will be assigned to a worker)
-//   IN_PROGRESS → helper HOD assigned a worker who is doing the work
-//   SUBMITTED → helper worker uploaded proof; helper HOD reviewing
-//   COMPLETED → original HOD approved the helper contribution. Original
-//               department can now finish closing the complaint.
-//   DECLINED  → helper HOD refused to take this on (terminal)
-//   REJECTED  → original HOD rejected helper's submission (terminal; original
-//               team has to find another way)
-//   CANCELLED → requester withdrew the request before acceptance (terminal)
+//   PENDING_SOURCE_APPROVAL → worker asked; source Supervisor/HOD must approve
+//   SOURCE_REJECTED         → source declined before sending (terminal)
+//   PENDING                 → source approved; receiver HOD hasn't replied
+//   ACCEPTED                → receiver HOD agreed; will assign helper
+//   IN_PROGRESS             → helper assigned and working
+//   SUBMITTED               → helper submitted proof; source reviews
+//   COMPLETED               → source approved helper work (terminal)
+//   DECLINED                → receiver HOD refused (terminal)
+//   REJECTED                → source rejected helper submission (terminal)
+//   CANCELLED               → withdrawn before completion (terminal)
 enum HelpRequestStatus {
+  PENDING_SOURCE_APPROVAL
+  SOURCE_REJECTED
   PENDING
   ACCEPTED
   IN_PROGRESS
@@ -327,6 +328,7 @@ model User {
   passwordResetTokens   PasswordResetToken[]
   emailOtps             EmailOtp[]
   newsPosts             NewsPost[]             @relation("Author")
+  platformAnnouncements PlatformAnnouncement[] @relation("PlatformAnnouncementAuthor")
   feedbackGiven         ComplaintFeedback[]    @relation("FeedbackBy")
   refreshTokens         RefreshToken[]
   kycSubmissions        KycSubmission[]
@@ -339,11 +341,13 @@ model User {
   transfersResponded    TransferRequest[]      @relation("TransferRespondedBy")
   transfersAssigned     TransferRequest[]      @relation("TransferNewAssignee")
   // Cross-dept help requests
-  helpRequestsRequested ComplaintHelpRequest[] @relation("HelpRequestRequestedBy")
-  helpRequestsResponded ComplaintHelpRequest[] @relation("HelpRequestRespondedBy")
-  helpRequestsHelping   ComplaintHelpRequest[] @relation("HelpRequestHelperAssignee")
-  helpRequestsSubmitted ComplaintHelpRequest[] @relation("HelpRequestSubmittedBy")
-  helpRequestsClosed    ComplaintHelpRequest[] @relation("HelpRequestClosedBy")
+  helpRequestsRequested      ComplaintHelpRequest[] @relation("HelpRequestRequestedBy")
+  helpRequestsSourceApproved ComplaintHelpRequest[] @relation("HelpRequestSourceApprovedBy")
+  helpRequestsSourceRejected ComplaintHelpRequest[] @relation("HelpRequestSourceRejectedBy")
+  helpRequestsResponded      ComplaintHelpRequest[] @relation("HelpRequestRespondedBy")
+  helpRequestsHelping        ComplaintHelpRequest[] @relation("HelpRequestHelperAssignee")
+  helpRequestsSubmitted      ComplaintHelpRequest[] @relation("HelpRequestSubmittedBy")
+  helpRequestsClosed         ComplaintHelpRequest[] @relation("HelpRequestClosedBy")
 
   @@unique([email]) // Global unique email (prevents login ambiguity across municipalities)
   @@index([municipalityId])
@@ -404,6 +408,14 @@ model PlatformBranding {
   bannerOverlayColor    String?  @map("banner_overlay_color")
   // 0.0 – 1.0 overlay opacity (default 0.65)
   bannerOverlayOpacity  Float?   @map("banner_overlay_opacity")
+  // Homepage hero focal point (0–100), maps to CSS object-position %
+  bannerFocalX          Float?   @default(50) @map("banner_focal_x")
+  bannerFocalY          Float?   @default(50) @map("banner_focal_y")
+  // Optional background for login/register/forgot/reset/verify (falls back to banner)
+  authBackgroundImageUrl       String?  @map("auth_background_image_url")
+  authBackgroundFocalX         Float?   @default(50) @map("auth_background_focal_x")
+  authBackgroundFocalY         Float?   @default(50) @map("auth_background_focal_y")
+  authBackgroundOverlayOpacity Float?   @map("auth_background_overlay_opacity")
   // Platform name (shown next to logo in public header)
   platformName          String?  @default("Baladi") @map("platform_name")
   platformNameAr        String?  @default("بلدي") @map("platform_name_ar")
@@ -435,6 +447,44 @@ model PlatformBranding {
   updatedAt             DateTime @updatedAt @map("updated_at")
 
   @@map("platform_branding")
+}
+
+enum PlatformAnnouncementStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+/// Platform-wide public announcements (Super Admin). Separate from municipality NewsPost.
+model PlatformAnnouncement {
+  id          String                       @id @default(uuid())
+  title       String
+  titleAr     String?                      @map("title_ar")
+  titleFr     String?                      @map("title_fr")
+  summary     String                       @db.Text
+  summaryAr   String?                      @map("summary_ar") @db.Text
+  summaryFr   String?                      @map("summary_fr") @db.Text
+  content     String                       @db.Text
+  contentAr   String?                      @map("content_ar") @db.Text
+  contentFr   String?                      @map("content_fr") @db.Text
+  imageUrl    String?                      @map("image_url")
+  status      PlatformAnnouncementStatus   @default(DRAFT)
+  isPinned    Boolean                      @default(false) @map("is_pinned")
+  priority    Int                          @default(0)
+  publishAt   DateTime?                    @map("publish_at")
+  expiresAt   DateTime?                    @map("expires_at")
+  createdById String                       @map("created_by_id")
+  deletedAt   DateTime?                    @map("deleted_at")
+  createdAt   DateTime                     @default(now()) @map("created_at")
+  updatedAt   DateTime                     @updatedAt @map("updated_at")
+
+  createdBy User @relation("PlatformAnnouncementAuthor", fields: [createdById], references: [id])
+
+  @@index([status])
+  @@index([publishAt])
+  @@index([expiresAt])
+  @@index([isPinned, priority])
+  @@map("platform_announcements")
 }
 
 // ==================== RBAC ====================
@@ -623,7 +673,14 @@ model ComplaintHelpRequest {
   requestedById    String @map("requested_by_id")
   reason           String
 
-  status HelpRequestStatus @default(PENDING)
+  status HelpRequestStatus @default(PENDING_SOURCE_APPROVAL)
+
+  // Source department approval (worker-initiated requests)
+  sourceApprovedById String?   @map("source_approved_by_id")
+  sourceApprovedAt   DateTime? @map("source_approved_at")
+  sourceRejectedById String?   @map("source_rejected_by_id")
+  sourceRejectedAt   DateTime? @map("source_rejected_at")
+  sourceRejectReason String?   @map("source_reject_reason")
 
   // Helper-side response (decline or accept)
   respondedById  String?   @map("responded_by_id")
@@ -651,8 +708,10 @@ model ComplaintHelpRequest {
   complaint      Complaint    @relation(fields: [complaintId], references: [id], onDelete: Cascade)
   fromDepartment Department   @relation("HelpRequestFrom", fields: [fromDepartmentId], references: [id])
   toDepartment   Department   @relation("HelpRequestTo", fields: [toDepartmentId], references: [id])
-  requestedBy    User         @relation("HelpRequestRequestedBy", fields: [requestedById], references: [id])
-  respondedBy    User?        @relation("HelpRequestRespondedBy", fields: [respondedById], references: [id])
+  requestedBy      User  @relation("HelpRequestRequestedBy", fields: [requestedById], references: [id])
+  sourceApprovedBy User? @relation("HelpRequestSourceApprovedBy", fields: [sourceApprovedById], references: [id])
+  sourceRejectedBy User? @relation("HelpRequestSourceRejectedBy", fields: [sourceRejectedById], references: [id])
+  respondedBy      User? @relation("HelpRequestRespondedBy", fields: [respondedById], references: [id])
   helperAssignee User?        @relation("HelpRequestHelperAssignee", fields: [helperAssigneeId], references: [id])
   submittedBy    User?        @relation("HelpRequestSubmittedBy", fields: [submittedById], references: [id])
   closedBy       User?        @relation("HelpRequestClosedBy", fields: [closedById], references: [id])
@@ -708,6 +767,19 @@ model ComplaintStatusLog {
   fromStatus  ComplaintStatus? @map("from_status")
   toStatus    ComplaintStatus  @map("to_status")
   notes       String?
+  /// Discriminator for non-status-change events written to the same table
+  /// (help workflow steps, transfer accepted/rejected, reassignments, …).
+  /// When null this row is a real status transition (fromStatus → toStatus).
+  /// When set the row should be rendered as an event in the timeline, not
+  /// as a fake same-status transition.
+  ///
+  /// Known values (kept as free text so future events don't need a migration):
+  ///   HELP_REQUESTED, HELP_SOURCE_APPROVED, HELP_SOURCE_REJECTED,
+  ///   HELP_ACCEPTED, HELP_DECLINED, HELP_ASSIGNED, HELP_SUBMITTED,
+  ///   HELP_APPROVED, HELP_REJECTED, HELP_CANCELLED,
+  ///   TRANSFER_REQUESTED, TRANSFER_ACCEPTED, TRANSFER_REJECTED,
+  ///   TRANSFER_CANCELLED, REASSIGNED.
+  eventKind   String?          @map("event_kind")
   createdAt   DateTime         @default(now()) @map("created_at")
 
   complaint Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)

@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { usersApi } from '@/lib/api';
 import { formatDate, getFullName } from '@/lib/utils';
@@ -23,7 +24,13 @@ const STATUS_BADGE: Record<string, string> = {
 
 export default function UsersPage() {
   const t = useTranslate();
+  const searchParams = useSearchParams();
   const [tab, setTab] = useState<Tab>('staff');
+
+  useEffect(() => {
+    const q = searchParams.get('tab');
+    if (q === 'citizens' || q === 'staff') setTab(q);
+  }, [searchParams]);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const limit = 15;

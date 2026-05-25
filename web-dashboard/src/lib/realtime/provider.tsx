@@ -66,13 +66,17 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       'transfer:updated': () => {
         queryClient.invalidateQueries({ queryKey: ['transfers'] });
         queryClient.invalidateQueries({ queryKey: ['org-chart'] });
+        queryClient.invalidateQueries({ queryKey: ['complaints'] });
+        queryClient.invalidateQueries({ queryKey: ['complaint'] });
       },
       'help-request:created': () => {
         queryClient.invalidateQueries({ queryKey: ['help-requests'] });
+        queryClient.invalidateQueries({ queryKey: ['help-request'] });
         queryClient.invalidateQueries({ queryKey: ['complaint'] });
       },
       'help-request:updated': () => {
         queryClient.invalidateQueries({ queryKey: ['help-requests'] });
+        queryClient.invalidateQueries({ queryKey: ['help-request'] });
         queryClient.invalidateQueries({ queryKey: ['complaint'] });
       },
       'kyc:updated': () => {

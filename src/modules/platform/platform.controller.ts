@@ -439,6 +439,27 @@ export class PlatformController {
     return result;
   }
 
+  @Post('branding/auth-background')
+  @RequirePermissions(PERMISSIONS.PLATFORM_MANAGE_MUNICIPALITIES)
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Upload platform auth page background (super admin)' })
+  @UseInterceptors(FileInterceptor('image', multerConfig))
+  async uploadPlatformAuthBackground(
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() user: CurrentUserData,
+  ) {
+    const result = await this.platformService.uploadPlatformBrandingImage(
+      'authBackgroundImageUrl',
+      file,
+    );
+    await this.auditService.log({
+      actorId: user.id,
+      actorEmail: user.email,
+      action: 'PLATFORM_BRANDING_AUTH_BACKGROUND_UPLOADED',
+    });
+    return result;
+  }
+
   // ============================================================
   // MAIL DIAGNOSTICS (super admin only)
   // ============================================================

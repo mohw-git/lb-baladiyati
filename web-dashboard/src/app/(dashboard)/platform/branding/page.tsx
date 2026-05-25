@@ -1,15 +1,37 @@
 'use client';
 
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { platformApi, PlatformBranding, UpdatePlatformBrandingRequest } from '@/lib/api/endpoints/platform';
+import {
+  platformApi,
+  PlatformBranding,
+  UpdatePlatformBrandingRequest,
+} from '@/lib/api/endpoints/platform';
 import { useTranslate, useLocale } from '@/lib/i18n';
 import { toast } from 'sonner';
 import { ImageUploadCropper } from '@/components/ui/image-upload-cropper';
+import { BrandHeader } from '@/components/brand/brand-header';
+import { BannerFocalControl } from '@/components/brand/banner-focal-control';
+import { HomepageHeroPreview } from '@/components/brand/homepage-hero-preview';
+import { AuthBackgroundPreview } from '@/components/brand/auth-background-preview';
+import {
+  AUTH_BACKGROUND_CROP_ASPECT,
+  DEFAULT_AUTH_BACKGROUND_OVERLAY_OPACITY,
+  resolveAuthPageBackground,
+} from '@/lib/platform-branding';
+import {
+  DEFAULT_BANNER_FOCAL,
+  DEFAULT_BANNER_OVERLAY_COLOR,
+  DEFAULT_BANNER_OVERLAY_OPACITY,
+  DEFAULT_PRIMARY_COLOR,
+  HERO_BANNER_CROP_ASPECT,
+  normalizeBannerFocal,
+  normalizeOverlayOpacity,
+  sanitizeHexColor,
+} from '@/lib/municipality-branding';
 import {
   Landmark,
   Save,
-  Image as ImageIcon,
   Phone,
   Mail,
   MapPin,
@@ -17,106 +39,249 @@ import {
   Smartphone,
   Globe,
   Building2,
-  ChevronDown,
-  ChevronUp,
+  Palette,
+  Loader2,
+  Image,
+  Info,
+  KeyRound,
 } from 'lucide-react';
 
-type SectionKey = 'identity' | 'hero' | 'operator' | 'contact' | 'apps';
+type PlatformBrandingForm = {
+  platformName: string;
+  platformNameAr: string;
+  platformNameFr: string;
+  platformDescription: string;
+  platformDescriptionAr: string;
+  platformDescriptionFr: string;
+  logoUrl: string;
+  bannerImageUrl: string;
+  bannerOverlayColor: string;
+  bannerOverlayOpacity: number;
+  bannerFocalX: number;
+  bannerFocalY: number;
+  authBackgroundImageUrl: string;
+  authBackgroundFocalX: number;
+  authBackgroundFocalY: number;
+  authBackgroundOverlayOpacity: number;
+  operatorName: string;
+  operatorNameAr: string;
+  operatorNameFr: string;
+  supportEmail: string;
+  supportPhone: string;
+  supportWhatsApp: string;
+  officeAddress: string;
+  officeAddressAr: string;
+  officeAddressFr: string;
+  openingHours: string;
+  openingHoursAr: string;
+  openingHoursFr: string;
+  appStoreUrl: string;
+  googlePlayUrl: string;
+  apkUrl: string;
+};
 
-function SectionHeader({
-  title,
-  icon,
-  open,
-  onToggle,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  open: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      className="flex w-full items-center justify-between border-b border-gray-200 pb-2 text-start"
-    >
-      <div className="flex items-center gap-2 text-sm font-semibold text-gray-800">
-        <span className="text-brand-600">{icon}</span>
-        {title}
-      </div>
-      {open ? <ChevronUp className="h-4 w-4 text-gray-400" /> : <ChevronDown className="h-4 w-4 text-gray-400" />}
-    </button>
-  );
+const EMPTY_FORM: PlatformBrandingForm = {
+  platformName: '',
+  platformNameAr: '',
+  platformNameFr: '',
+  platformDescription: '',
+  platformDescriptionAr: '',
+  platformDescriptionFr: '',
+  logoUrl: '',
+  bannerImageUrl: '',
+  bannerOverlayColor: DEFAULT_BANNER_OVERLAY_COLOR,
+  bannerOverlayOpacity: DEFAULT_BANNER_OVERLAY_OPACITY,
+  bannerFocalX: DEFAULT_BANNER_FOCAL,
+  bannerFocalY: DEFAULT_BANNER_FOCAL,
+  authBackgroundImageUrl: '',
+  authBackgroundFocalX: DEFAULT_BANNER_FOCAL,
+  authBackgroundFocalY: DEFAULT_BANNER_FOCAL,
+  authBackgroundOverlayOpacity: DEFAULT_AUTH_BACKGROUND_OVERLAY_OPACITY,
+  operatorName: '',
+  operatorNameAr: '',
+  operatorNameFr: '',
+  supportEmail: '',
+  supportPhone: '',
+  supportWhatsApp: '',
+  officeAddress: '',
+  officeAddressAr: '',
+  officeAddressFr: '',
+  openingHours: '',
+  openingHoursAr: '',
+  openingHoursFr: '',
+  appStoreUrl: '',
+  googlePlayUrl: '',
+  apkUrl: '',
+};
+
+function brandingToForm(b: PlatformBranding): PlatformBrandingForm {
+  return {
+    platformName: b.platformName || '',
+    platformNameAr: b.platformNameAr || '',
+    platformNameFr: b.platformNameFr || '',
+    platformDescription: b.platformDescription || '',
+    platformDescriptionAr: b.platformDescriptionAr || '',
+    platformDescriptionFr: b.platformDescriptionFr || '',
+    logoUrl: b.logoUrl || '',
+    bannerImageUrl: b.bannerImageUrl || '',
+    bannerOverlayColor: sanitizeHexColor(
+      b.bannerOverlayColor,
+      DEFAULT_BANNER_OVERLAY_COLOR,
+    ),
+    bannerOverlayOpacity: normalizeOverlayOpacity(b.bannerOverlayOpacity),
+    bannerFocalX: normalizeBannerFocal(b.bannerFocalX),
+    bannerFocalY: normalizeBannerFocal(b.bannerFocalY),
+    authBackgroundImageUrl: b.authBackgroundImageUrl || '',
+    authBackgroundFocalX: normalizeBannerFocal(b.authBackgroundFocalX),
+    authBackgroundFocalY: normalizeBannerFocal(b.authBackgroundFocalY),
+    authBackgroundOverlayOpacity: normalizeOverlayOpacity(
+      b.authBackgroundOverlayOpacity,
+      DEFAULT_AUTH_BACKGROUND_OVERLAY_OPACITY,
+    ),
+    operatorName: b.operatorName || '',
+    operatorNameAr: b.operatorNameAr || '',
+    operatorNameFr: b.operatorNameFr || '',
+    supportEmail: b.supportEmail || '',
+    supportPhone: b.supportPhone || '',
+    supportWhatsApp: b.supportWhatsApp || '',
+    officeAddress: b.officeAddress || '',
+    officeAddressAr: b.officeAddressAr || '',
+    officeAddressFr: b.officeAddressFr || '',
+    openingHours: b.openingHours || '',
+    openingHoursAr: b.openingHoursAr || '',
+    openingHoursFr: b.openingHoursFr || '',
+    appStoreUrl: b.appStoreUrl || '',
+    googlePlayUrl: b.googlePlayUrl || '',
+    apkUrl: b.apkUrl || '',
+  };
 }
 
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="space-y-1">
-      <label className="block text-xs font-semibold text-gray-700">{label}</label>
-      {hint && <p className="text-[11px] text-gray-500">{hint}</p>}
-      {children}
-    </div>
-  );
+function formToPayload(form: PlatformBrandingForm): UpdatePlatformBrandingRequest {
+  return {
+    platformName: form.platformName || undefined,
+    platformNameAr: form.platformNameAr || undefined,
+    platformNameFr: form.platformNameFr || undefined,
+    platformDescription: form.platformDescription || undefined,
+    platformDescriptionAr: form.platformDescriptionAr || undefined,
+    platformDescriptionFr: form.platformDescriptionFr || undefined,
+    logoUrl: form.logoUrl || undefined,
+    bannerImageUrl: form.bannerImageUrl || undefined,
+    bannerOverlayColor: form.bannerImageUrl
+      ? sanitizeHexColor(form.bannerOverlayColor, DEFAULT_BANNER_OVERLAY_COLOR)
+      : undefined,
+    bannerOverlayOpacity: form.bannerImageUrl
+      ? normalizeOverlayOpacity(form.bannerOverlayOpacity)
+      : undefined,
+    bannerFocalX: form.bannerImageUrl
+      ? normalizeBannerFocal(form.bannerFocalX)
+      : undefined,
+    bannerFocalY: form.bannerImageUrl
+      ? normalizeBannerFocal(form.bannerFocalY)
+      : undefined,
+    authBackgroundImageUrl: form.authBackgroundImageUrl || undefined,
+    authBackgroundFocalX: form.authBackgroundImageUrl
+      ? normalizeBannerFocal(form.authBackgroundFocalX)
+      : undefined,
+    authBackgroundFocalY: form.authBackgroundImageUrl
+      ? normalizeBannerFocal(form.authBackgroundFocalY)
+      : undefined,
+    authBackgroundOverlayOpacity: form.authBackgroundImageUrl
+      ? normalizeOverlayOpacity(form.authBackgroundOverlayOpacity)
+      : undefined,
+    operatorName: form.operatorName || undefined,
+    operatorNameAr: form.operatorNameAr || undefined,
+    operatorNameFr: form.operatorNameFr || undefined,
+    supportEmail: form.supportEmail || undefined,
+    supportPhone: form.supportPhone || undefined,
+    supportWhatsApp: form.supportWhatsApp || undefined,
+    officeAddress: form.officeAddress || undefined,
+    officeAddressAr: form.officeAddressAr || undefined,
+    officeAddressFr: form.officeAddressFr || undefined,
+    openingHours: form.openingHours || undefined,
+    openingHoursAr: form.openingHoursAr || undefined,
+    openingHoursFr: form.openingHoursFr || undefined,
+    appStoreUrl: form.appStoreUrl || undefined,
+    googlePlayUrl: form.googlePlayUrl || undefined,
+    apkUrl: form.apkUrl || undefined,
+  };
 }
 
 export default function PlatformBrandingPage() {
   const t = useTranslate();
   const locale = useLocale();
   const qc = useQueryClient();
-  const [open, setOpen] = useState<Record<SectionKey, boolean>>({
-    identity: true,
-    hero: true,
-    operator: false,
-    contact: false,
-    apps: false,
-  });
+  const dirtyRef = useRef(false);
 
-  const { data: branding, isLoading } = useQuery({
+  const { data: branding, isPending } = useQuery({
     queryKey: ['platform-branding'],
     queryFn: () => platformApi.getBranding(),
+    staleTime: 5 * 60 * 1000,
+    placeholderData: (previousData) => previousData,
+    refetchOnWindowFocus: false,
   });
 
-  const [form, setForm] = useState<UpdatePlatformBrandingRequest>({});
+  const [form, setForm] = useState<PlatformBrandingForm>(() => {
+    const cached = qc.getQueryData<PlatformBranding>(['platform-branding']);
+    return cached ? brandingToForm(cached) : EMPTY_FORM;
+  });
 
-  const set = (field: keyof UpdatePlatformBrandingRequest, value: string | number | null) => {
-    setForm((prev) => ({ ...prev, [field]: value === '' ? null : value }));
+  useLayoutEffect(() => {
+    if (!branding || dirtyRef.current) return;
+    setForm(brandingToForm(branding));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sync when server record changes, not on every refetch identity
+  }, [branding?.updatedAt]);
+
+  const updateForm = (patch: Partial<PlatformBrandingForm>) => {
+    dirtyRef.current = true;
+    setForm((prev) => ({ ...prev, ...patch }));
   };
-
-  const val = (field: keyof PlatformBranding) => {
-    if (field in form) return (form as Record<string, unknown>)[field] ?? '';
-    return branding?.[field] ?? '';
-  };
-
-  const toggleSection = (key: SectionKey) =>
-    setOpen((prev) => ({ ...prev, [key]: !prev[key] }));
 
   const saveMut = useMutation({
-    mutationFn: () => platformApi.updateBranding(form),
+    mutationFn: () => platformApi.updateBranding(formToPayload(form)),
     onSuccess: (saved) => {
-      // Use the server response directly so the form reflects what was
-      // actually persisted. This avoids the race between `invalidate -> refetch`
-      // and `setForm({})`, which previously caused fields to appear blank.
+      dirtyRef.current = false;
       qc.setQueryData(['platform-branding'], saved);
       qc.invalidateQueries({ queryKey: ['public-platform-branding'] });
+      setForm(brandingToForm(saved));
       toast.success(t('platform.branding.saved'));
-      setForm({});
     },
     onError: () => toast.error(t('common.error')),
   });
 
+  const refreshMedia = (saved: PlatformBranding) => {
+    qc.setQueryData(['platform-branding'], saved);
+    qc.invalidateQueries({ queryKey: ['public-platform-branding'] });
+    setForm((prev) => ({
+      ...prev,
+      logoUrl: saved.logoUrl || '',
+      bannerImageUrl: saved.bannerImageUrl || '',
+      bannerOverlayColor: sanitizeHexColor(
+        saved.bannerOverlayColor,
+        prev.bannerOverlayColor,
+      ),
+      bannerOverlayOpacity: normalizeOverlayOpacity(saved.bannerOverlayOpacity),
+      bannerFocalX: normalizeBannerFocal(saved.bannerFocalX, prev.bannerFocalX),
+      bannerFocalY: normalizeBannerFocal(saved.bannerFocalY, prev.bannerFocalY),
+      authBackgroundImageUrl: saved.authBackgroundImageUrl || '',
+      authBackgroundFocalX: normalizeBannerFocal(
+        saved.authBackgroundFocalX,
+        prev.authBackgroundFocalX,
+      ),
+      authBackgroundFocalY: normalizeBannerFocal(
+        saved.authBackgroundFocalY,
+        prev.authBackgroundFocalY,
+      ),
+      authBackgroundOverlayOpacity: normalizeOverlayOpacity(
+        saved.authBackgroundOverlayOpacity,
+        prev.authBackgroundOverlayOpacity,
+      ),
+    }));
+  };
+
   const uploadLogo = async (file: File) => {
     try {
       const saved = await platformApi.uploadBrandingLogo(file);
-      qc.setQueryData(['platform-branding'], saved);
-      qc.invalidateQueries({ queryKey: ['public-platform-branding'] });
+      refreshMedia(saved);
       toast.success(t('upload.success'));
     } catch {
       toast.error(t('upload.error.uploadFailed'));
@@ -127,8 +292,7 @@ export default function PlatformBrandingPage() {
   const uploadBanner = async (file: File) => {
     try {
       const saved = await platformApi.uploadBrandingBanner(file);
-      qc.setQueryData(['platform-branding'], saved);
-      qc.invalidateQueries({ queryKey: ['public-platform-branding'] });
+      refreshMedia(saved);
       toast.success(t('upload.success'));
     } catch {
       toast.error(t('upload.error.uploadFailed'));
@@ -137,321 +301,657 @@ export default function PlatformBrandingPage() {
   };
 
   const removeLogo = async () => {
-    const saved = await platformApi.updateBranding({ logoUrl: null as any });
-    qc.setQueryData(['platform-branding'], saved);
-    qc.invalidateQueries({ queryKey: ['public-platform-branding'] });
+    const saved = await platformApi.updateBranding({ logoUrl: null as never });
+    refreshMedia(saved);
     toast.success(t('upload.removed'));
   };
 
   const removeBanner = async () => {
-    const saved = await platformApi.updateBranding({ bannerImageUrl: null as any });
-    qc.setQueryData(['platform-branding'], saved);
-    qc.invalidateQueries({ queryKey: ['public-platform-branding'] });
+    const saved = await platformApi.updateBranding({ bannerImageUrl: null as never });
+    refreshMedia(saved);
     toast.success(t('upload.removed'));
   };
 
-  const overlayColor = (val('bannerOverlayColor') as string) || '#0c1a2e';
-  const overlayOpacity = Number(val('bannerOverlayOpacity') || 0.65);
-  const bannerUrl = val('bannerImageUrl') as string;
-  const logoUrl = val('logoUrl') as string;
-  const platformName = (locale === 'ar'
-    ? val('platformNameAr')
-    : locale === 'fr'
-    ? val('platformNameFr')
-    : val('platformName')) as string || 'Baladi';
+  const uploadAuthBackground = async (file: File) => {
+    try {
+      const saved = await platformApi.uploadBrandingAuthBackground(file);
+      refreshMedia(saved);
+      toast.success(t('upload.success'));
+    } catch {
+      toast.error(t('upload.error.uploadFailed'));
+      throw new Error('upload_failed');
+    }
+  };
 
-  const dirtyCount = Object.keys(form).length;
+  const removeAuthBackground = async () => {
+    const saved = await platformApi.updateBranding({ authBackgroundImageUrl: null as never });
+    refreshMedia(saved);
+    toast.success(t('upload.removed'));
+  };
+
+  const localizedName =
+    (locale === 'ar' && form.platformNameAr) ||
+    (locale === 'fr' && form.platformNameFr) ||
+    form.platformName ||
+    branding?.platformName ||
+    'Baladi';
+
+  const localizedDescription =
+    (locale === 'ar' && form.platformDescriptionAr) ||
+    (locale === 'fr' && form.platformDescriptionFr) ||
+    form.platformDescription ||
+    '';
+
+  const authPreviewBg = resolveAuthPageBackground({
+    authBackgroundImageUrl: form.authBackgroundImageUrl || null,
+    bannerImageUrl: form.bannerImageUrl || null,
+    authBackgroundFocalX: form.authBackgroundFocalX,
+    authBackgroundFocalY: form.authBackgroundFocalY,
+    bannerFocalX: form.bannerFocalX,
+    bannerFocalY: form.bannerFocalY,
+    authBackgroundOverlayOpacity: form.authBackgroundOverlayOpacity,
+    bannerOverlayOpacity: form.bannerOverlayOpacity,
+    bannerOverlayColor: form.bannerOverlayColor,
+  });
+
+  if (isPending && !branding) {
+    return (
+      <div className="flex justify-center py-12">
+        <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
+      </div>
+    );
+  }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5 p-4 pb-20 sm:p-6">
-      {/* Page header — institutional, single line */}
-      <header className="border-b border-gray-200 pb-3">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h1 className="text-base font-bold text-navy-950">{t('platform.branding.title')}</h1>
-            <p className="mt-0.5 text-xs text-gray-500">{t('platform.branding.subtitle')}</p>
-          </div>
-          {dirtyCount > 0 && (
-            <span className="hidden items-center gap-1 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-800 sm:inline-flex">
-              {t('platform.branding.unsaved', { n: String(dirtyCount) })}
-            </span>
-          )}
+    <div className="space-y-4">
+      <div className="flex items-center justify-between border-b border-gray-200 pb-4">
+        <div>
+          <h1 className="flex items-center gap-2 text-xl font-bold text-gray-900">
+            <Landmark className="h-5 w-5" />
+            {t('platform.branding.title')}
+          </h1>
+          <p className="mt-0.5 text-sm text-gray-500">{t('platform.branding.subtitle')}</p>
         </div>
-      </header>
+        <button
+          type="button"
+          onClick={() => saveMut.mutate()}
+          disabled={saveMut.isPending}
+          className="btn-gov-primary"
+        >
+          {saveMut.isPending ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Save className="h-4 w-4" />
+          )}
+          {t('platform.branding.save')}
+        </button>
+      </div>
 
-      {/* Live banner preview */}
-      <div className="gov-card overflow-hidden p-0">
-        <div className="border-b border-gray-200 px-4 py-2.5">
-          <p className="text-xs font-semibold text-gray-600">{t('platform.branding.previewBanner')}</p>
-          <p className="text-[11px] text-gray-400">{t('platform.branding.previewNote')}</p>
-        </div>
-        <div className="relative h-36 bg-navy-950">
-          {bannerUrl && (
-            <img
-              src={bannerUrl}
-              alt="Banner preview"
-              className="absolute inset-0 h-full w-full object-cover"
-            />
-          )}
-          <div
-            className="absolute inset-0"
-            style={{ backgroundColor: overlayColor, opacity: overlayOpacity }}
-          />
-          <div className="relative flex h-full items-center gap-3 px-6">
-            {logoUrl ? (
-              <img src={logoUrl} alt="Logo" className="h-10 w-10 rounded object-contain" />
-            ) : (
-              <div className="flex h-10 w-10 items-center justify-center rounded bg-white/15">
-                <Landmark className="h-5 w-5 text-white/80" />
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <div className="space-y-4 xl:col-span-2">
+          {/* Identity */}
+          <div className="gov-card p-4">
+            <div className="gov-section-header">
+              <Globe className="h-4 w-4" />
+              {t('platform.branding.section.identity')}
+            </div>
+            <div className="mt-3 space-y-3">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('platform.branding.platformName')}
+                </label>
+                <input
+                  className="input-gov"
+                  value={form.platformName}
+                  onChange={(e) => updateForm({ platformName: e.target.value })}
+                />
               </div>
-            )}
-            <div>
-              <p className="text-base font-bold text-white">{platformName}</p>
-              <p className="text-[11px] text-white/60">{t('common.tagline')}</p>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-gray-700">
+                    {t('platform.branding.platformNameAr')}
+                  </label>
+                  <input
+                    className="input-gov text-right"
+                    dir="rtl"
+                    value={form.platformNameAr}
+                    onChange={(e) => updateForm({ platformNameAr: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-gray-700">
+                    {t('platform.branding.platformNameFr')}
+                  </label>
+                  <input
+                    className="input-gov"
+                    value={form.platformNameFr}
+                    onChange={(e) => updateForm({ platformNameFr: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('platform.branding.platformDescription')}
+                </label>
+                <textarea
+                  className="input-gov resize-none"
+                  rows={2}
+                  value={form.platformDescription}
+                  onChange={(e) =>
+                    updateForm({ platformDescription: e.target.value })
+                  }
+                />
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-gray-700">
+                    {t('platform.branding.platformDescriptionAr')}
+                  </label>
+                  <textarea
+                    className="input-gov resize-none text-right"
+                    dir="rtl"
+                    rows={2}
+                    value={form.platformDescriptionAr}
+                    onChange={(e) =>
+                      updateForm({ platformDescriptionAr: e.target.value })
+                    }
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-gray-700">
+                    {t('platform.branding.platformDescriptionFr')}
+                  </label>
+                  <textarea
+                    className="input-gov resize-none"
+                    rows={2}
+                    value={form.platformDescriptionFr}
+                    onChange={(e) =>
+                      updateForm({ platformDescriptionFr: e.target.value })
+                    }
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Visual branding */}
+          <div className="gov-card p-4">
+            <div className="gov-section-header">
+              <Palette className="h-4 w-4" />
+              {t('platform.branding.section.branding')}
+            </div>
+            <div className="mt-3 space-y-4">
+              <div className="rounded-md border border-blue-100 bg-blue-50/60 p-3 text-xs text-blue-950">
+                <div className="flex gap-2">
+                  <Info className="mt-0.5 h-4 w-4 shrink-0 text-blue-700" />
+                  <p>{t('platform.branding.visualGuide')}</p>
+                </div>
+              </div>
+
+              <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
+                <p className="text-sm font-semibold text-gray-800">
+                  {t('platform.branding.logoRole')}
+                </p>
+                <p className="mt-1 text-xs text-gray-600">{t('platform.branding.logoUrl.hint')}</p>
+                <p className="mt-1 text-[11px] text-gray-500">{t('platform.branding.logoSizeHint')}</p>
+              </div>
+              <ImageUploadCropper
+                label={t('platform.branding.logoUrl')}
+                hint={t('platform.branding.logoUrl.shortHint')}
+                value={form.logoUrl}
+                onCropped={uploadLogo}
+                onRemove={removeLogo}
+                aspect={1}
+                circular={false}
+                previewSize={72}
+              />
+
+              <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
+                <p className="text-sm font-semibold text-gray-800">
+                  {t('platform.branding.bannerRole')}
+                </p>
+                <p className="mt-1 text-xs text-gray-600">{t('platform.branding.bannerImageUrl.hint')}</p>
+                <p className="mt-1 text-[11px] text-gray-500">{t('platform.branding.bannerSizeHint')}</p>
+                <p className="mt-1 text-[11px] font-medium text-amber-800">
+                  {t('platform.branding.bannerAvoidHint')}
+                </p>
+              </div>
+              <ImageUploadCropper
+                label={t('platform.branding.bannerImageUrl')}
+                hint={t('platform.branding.bannerImageUrl.shortHint')}
+                value={form.bannerImageUrl}
+                onCropped={uploadBanner}
+                onRemove={removeBanner}
+                aspect={HERO_BANNER_CROP_ASPECT}
+                circular={false}
+                previewSize={140}
+              />
+              {form.bannerImageUrl ? (
+                <>
+                <BannerFocalControl
+                  bannerImageUrl={form.bannerImageUrl}
+                  focalX={form.bannerFocalX}
+                  focalY={form.bannerFocalY}
+                  onChange={(bannerFocalX, bannerFocalY) =>
+                    updateForm({ bannerFocalX, bannerFocalY })
+                  }
+                  labels={{
+                    title: t('platform.branding.focal.title'),
+                    hint: t('platform.branding.focal.hint'),
+                    horizontal: t('platform.branding.focal.horizontal'),
+                    vertical: t('platform.branding.focal.vertical'),
+                    center: t('platform.branding.focal.center'),
+                    top: t('platform.branding.focal.top'),
+                    bottom: t('platform.branding.focal.bottom'),
+                    left: t('platform.branding.focal.left'),
+                    right: t('platform.branding.focal.right'),
+                  }}
+                />
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">
+                      {t('platform.branding.overlayColor')}
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="color"
+                        value={form.bannerOverlayColor}
+                        onChange={(e) =>
+                          updateForm({ bannerOverlayColor: e.target.value })
+                        }
+                        className="h-9 w-14 cursor-pointer rounded border border-gray-300 p-0.5"
+                      />
+                      <input
+                        type="text"
+                        value={form.bannerOverlayColor}
+                        onChange={(e) =>
+                          updateForm({ bannerOverlayColor: e.target.value })
+                        }
+                        maxLength={7}
+                        className="input-gov w-32 font-mono"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">
+                      {t('platform.branding.overlayOpacity', {
+                        percent: Math.round(form.bannerOverlayOpacity * 100),
+                      })}
+                    </label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={form.bannerOverlayOpacity}
+                      onChange={(e) =>
+                        updateForm({
+                          bannerOverlayOpacity: Number(e.target.value),
+                        })
+                      }
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+                </>
+              ) : null}
+            </div>
+          </div>
+
+          {/* Auth pages background */}
+          <div className="gov-card p-4">
+            <div className="gov-section-header">
+              <KeyRound className="h-4 w-4" />
+              {t('platform.branding.section.authBackground')}
+            </div>
+            <div className="mt-3 space-y-4">
+              <p className="text-xs text-gray-600">{t('platform.branding.authBackground.desc')}</p>
+              <p className="text-[11px] text-gray-500">{t('platform.branding.authBackground.sizeHint')}</p>
+              <p className="text-[11px] font-medium text-amber-800">
+                {t('platform.branding.authBackground.calmHint')}
+              </p>
+              {!form.authBackgroundImageUrl ? (
+                <p className="rounded-md border border-dashed border-gray-300 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                  {t('platform.branding.authBackground.fallbackNote')}
+                </p>
+              ) : null}
+
+              <ImageUploadCropper
+                label={t('platform.branding.authBackground.image')}
+                hint={t('platform.branding.authBackground.imageHint')}
+                value={form.authBackgroundImageUrl}
+                onCropped={uploadAuthBackground}
+                onRemove={removeAuthBackground}
+                aspect={AUTH_BACKGROUND_CROP_ASPECT}
+                circular={false}
+                previewSize={120}
+              />
+
+              {form.authBackgroundImageUrl ? (
+                <>
+                  <BannerFocalControl
+                    bannerImageUrl={form.authBackgroundImageUrl}
+                    focalX={form.authBackgroundFocalX}
+                    focalY={form.authBackgroundFocalY}
+                    onChange={(authBackgroundFocalX, authBackgroundFocalY) =>
+                      updateForm({ authBackgroundFocalX, authBackgroundFocalY })
+                    }
+                    labels={{
+                      title: t('platform.branding.authBackground.focal.title'),
+                      hint: t('platform.branding.authBackground.focal.hint'),
+                      horizontal: t('platform.branding.focal.horizontal'),
+                      vertical: t('platform.branding.focal.vertical'),
+                      center: t('platform.branding.focal.center'),
+                      top: t('platform.branding.focal.top'),
+                      bottom: t('platform.branding.focal.bottom'),
+                      left: t('platform.branding.focal.left'),
+                      right: t('platform.branding.focal.right'),
+                    }}
+                  />
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">
+                      {t('platform.branding.authBackground.darkOverlayOpacity', {
+                        percent: Math.round(form.authBackgroundOverlayOpacity * 100),
+                      })}
+                    </label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={form.authBackgroundOverlayOpacity}
+                      onChange={(e) =>
+                        updateForm({
+                          authBackgroundOverlayOpacity: Number(e.target.value),
+                        })
+                      }
+                      className="w-full"
+                    />
+                  </div>
+                </>
+              ) : null}
+            </div>
+          </div>
+
+          {/* Operator */}
+          <div className="gov-card p-4">
+            <div className="gov-section-header">
+              <Building2 className="h-4 w-4" />
+              {t('platform.branding.section.operator')}
+            </div>
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('platform.branding.operatorName')}
+                </label>
+                <input
+                  className="input-gov"
+                  value={form.operatorName}
+                  onChange={(e) => updateForm({ operatorName: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('platform.branding.operatorNameAr')}
+                </label>
+                <input
+                  className="input-gov text-right"
+                  dir="rtl"
+                  value={form.operatorNameAr}
+                  onChange={(e) => updateForm({ operatorNameAr: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('platform.branding.operatorNameFr')}
+                </label>
+                <input
+                  className="input-gov"
+                  value={form.operatorNameFr}
+                  onChange={(e) => updateForm({ operatorNameFr: e.target.value })}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Contact */}
+          <div className="gov-card p-4">
+            <div className="gov-section-header">
+              <Phone className="h-4 w-4" />
+              {t('platform.branding.section.contact')}
+            </div>
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('platform.branding.supportEmail')}
+                </label>
+                <div className="relative">
+                  <Mail className="pointer-events-none absolute start-2.5 top-2 h-4 w-4 text-gray-400" />
+                  <input
+                    type="email"
+                    className="input-gov ps-8"
+                    value={form.supportEmail}
+                    onChange={(e) => updateForm({ supportEmail: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('platform.branding.supportPhone')}
+                </label>
+                <div className="relative">
+                  <Phone className="pointer-events-none absolute start-2.5 top-2 h-4 w-4 text-gray-400" />
+                  <input
+                    type="tel"
+                    className="input-gov ps-8"
+                    value={form.supportPhone}
+                    onChange={(e) => updateForm({ supportPhone: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('platform.branding.supportWhatsApp')}
+                </label>
+                <input
+                  type="tel"
+                  className="input-gov"
+                  value={form.supportWhatsApp}
+                  onChange={(e) => updateForm({ supportWhatsApp: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('platform.branding.officeAddress')}
+                </label>
+                <div className="relative">
+                  <MapPin className="pointer-events-none absolute start-2.5 top-2 h-4 w-4 text-gray-400" />
+                  <input
+                    className="input-gov ps-8"
+                    value={form.officeAddress}
+                    onChange={(e) => updateForm({ officeAddress: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('platform.branding.officeAddressAr')}
+                </label>
+                <input
+                  className="input-gov text-right"
+                  dir="rtl"
+                  value={form.officeAddressAr}
+                  onChange={(e) => updateForm({ officeAddressAr: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('platform.branding.officeAddressFr')}
+                </label>
+                <input
+                  className="input-gov"
+                  value={form.officeAddressFr}
+                  onChange={(e) => updateForm({ officeAddressFr: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('platform.branding.openingHours')}
+                </label>
+                <div className="relative">
+                  <Clock className="pointer-events-none absolute start-2.5 top-2 h-4 w-4 text-gray-400" />
+                  <input
+                    className="input-gov ps-8"
+                    value={form.openingHours}
+                    onChange={(e) => updateForm({ openingHours: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('platform.branding.openingHoursAr')}
+                </label>
+                <input
+                  className="input-gov text-right"
+                  dir="rtl"
+                  value={form.openingHoursAr}
+                  onChange={(e) => updateForm({ openingHoursAr: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('platform.branding.openingHoursFr')}
+                </label>
+                <input
+                  className="input-gov"
+                  value={form.openingHoursFr}
+                  onChange={(e) => updateForm({ openingHoursFr: e.target.value })}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* App downloads */}
+          <div className="gov-card p-4">
+            <div className="gov-section-header">
+              <Smartphone className="h-4 w-4" />
+              {t('platform.branding.section.apps')}
+            </div>
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('platform.branding.appStoreUrl')}
+                </label>
+                <div className="relative">
+                  <Globe className="pointer-events-none absolute start-2.5 top-2 h-4 w-4 text-gray-400" />
+                  <input
+                    className="input-gov ps-8"
+                    placeholder="https://apps.apple.com/..."
+                    value={form.appStoreUrl}
+                    onChange={(e) => updateForm({ appStoreUrl: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('platform.branding.googlePlayUrl')}
+                </label>
+                <div className="relative">
+                  <Globe className="pointer-events-none absolute start-2.5 top-2 h-4 w-4 text-gray-400" />
+                  <input
+                    className="input-gov ps-8"
+                    placeholder="https://play.google.com/..."
+                    value={form.googlePlayUrl}
+                    onChange={(e) => updateForm({ googlePlayUrl: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('platform.branding.apkUrl')}
+                </label>
+                <div className="relative">
+                  <Globe className="pointer-events-none absolute start-2.5 top-2 h-4 w-4 text-gray-400" />
+                  <input
+                    className="input-gov ps-8"
+                    placeholder="https://..."
+                    value={form.apkUrl}
+                    onChange={(e) => updateForm({ apkUrl: e.target.value })}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Live preview */}
+        <div className="xl:sticky xl:top-4 xl:self-start">
+          <div className="gov-card p-4">
+            <div className="gov-section-header">
+              <Image className="h-4 w-4" />
+              {t('platform.branding.preview')}
+            </div>
+            <p className="mt-1 text-xs text-gray-500">{t('platform.branding.previewNote')}</p>
+
+            <div className="mt-4">
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+                {t('platform.branding.previewHomepage')}
+              </p>
+              <HomepageHeroPreview
+                platformName={localizedName}
+                platformDescription={localizedDescription}
+                officialPortalLabel={t('public.topbar.officialPortal')}
+                submitLabel={t('public.hero.submitComplaint')}
+                trackLabel={t('public.hero.trackComplaint')}
+                emergencyLabel={t('public.hero.emergency')}
+                bannerImageUrl={form.bannerImageUrl}
+                bannerOverlayColor={form.bannerOverlayColor}
+                bannerOverlayOpacity={form.bannerOverlayOpacity}
+                bannerFocalX={form.bannerFocalX}
+                bannerFocalY={form.bannerFocalY}
+              />
+            </div>
+
+            <div className="mt-4">
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+                {t('platform.branding.previewAuthBackground')}
+              </p>
+              <AuthBackgroundPreview
+                imageUrl={authPreviewBg.imageUrl}
+                overlayColor={authPreviewBg.overlayColor}
+                overlayOpacity={authPreviewBg.overlayOpacity}
+                focalX={authPreviewBg.focalX}
+                focalY={authPreviewBg.focalY}
+                loginLabel={t('auth.login.title')}
+              />
+              {!form.authBackgroundImageUrl ? (
+                <p className="mt-1 text-[10px] italic text-gray-500">
+                  {t('platform.branding.authBackground.previewUsingBanner')}
+                </p>
+              ) : null}
+            </div>
+
+            <div className="mt-4">
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+                {t('platform.branding.previewSidebar')}
+              </p>
+              <BrandHeader
+                className="rounded"
+                variant="sidebar"
+                name={localizedName}
+                subtitle={t('common.tagline')}
+                logoUrl={form.logoUrl}
+                bannerImageUrl={form.bannerImageUrl}
+                bannerOverlayColor={form.bannerOverlayColor}
+                bannerOverlayOpacity={form.bannerOverlayOpacity}
+                bannerFocalX={form.bannerFocalX}
+                bannerFocalY={form.bannerFocalY}
+                primaryColor={DEFAULT_PRIMARY_COLOR}
+              />
             </div>
           </div>
         </div>
       </div>
-
-      {isLoading ? (
-        <div className="gov-card py-10 text-center text-sm text-gray-500">{t('common.loading')}</div>
-      ) : (
-        <div className="space-y-5">
-          {/* ── Identity ── */}
-          <div className="gov-card space-y-4">
-            <SectionHeader
-              title={t('platform.branding.section.identity')}
-              icon={<Landmark className="h-4 w-4" />}
-              open={open.identity}
-              onToggle={() => toggleSection('identity')}
-            />
-            {open.identity && (
-              <div className="space-y-4">
-                <ImageUploadCropper
-                  label={t('platform.branding.logoUrl')}
-                  hint={t('platform.branding.logoUrl.hint')}
-                  value={(val('logoUrl') as string) || branding?.logoUrl}
-                  onCropped={uploadLogo}
-                  onRemove={removeLogo}
-                  aspect={1}
-                  circular={false}
-                  previewSize={72}
-                />
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                <Field label={t('platform.branding.platformName')}>
-                  <input className="input-gov" value={val('platformName') as string} onChange={(e) => set('platformName', e.target.value)} />
-                </Field>
-                <Field label={t('platform.branding.platformNameAr')}>
-                  <input className="input-gov text-right" dir="rtl" value={val('platformNameAr') as string} onChange={(e) => set('platformNameAr', e.target.value)} />
-                </Field>
-                <Field label={t('platform.branding.platformNameFr')}>
-                  <input className="input-gov" value={val('platformNameFr') as string} onChange={(e) => set('platformNameFr', e.target.value)} />
-                </Field>
-                <Field label={t('platform.branding.platformDescription')}>
-                  <textarea className="input-gov resize-none" rows={2} value={val('platformDescription') as string} onChange={(e) => set('platformDescription', e.target.value)} />
-                </Field>
-                <Field label={t('platform.branding.platformDescriptionAr')}>
-                  <textarea className="input-gov resize-none text-right" dir="rtl" rows={2} value={val('platformDescriptionAr') as string} onChange={(e) => set('platformDescriptionAr', e.target.value)} />
-                </Field>
-                <Field label={t('platform.branding.platformDescriptionFr')}>
-                  <textarea className="input-gov resize-none" rows={2} value={val('platformDescriptionFr') as string} onChange={(e) => set('platformDescriptionFr', e.target.value)} />
-                </Field>
-              </div>
-              </div>
-            )}
-          </div>
-
-          {/* ── Hero / Banner ── */}
-          <div className="gov-card space-y-4">
-            <SectionHeader
-              title={t('platform.branding.section.hero')}
-              icon={<ImageIcon className="h-4 w-4" />}
-              open={open.hero}
-              onToggle={() => toggleSection('hero')}
-            />
-            {open.hero && (
-              <div className="space-y-4">
-                <ImageUploadCropper
-                  label={t('platform.branding.bannerImageUrl')}
-                  hint={t('platform.branding.bannerImageUrl.hint')}
-                  value={(val('bannerImageUrl') as string) || branding?.bannerImageUrl}
-                  onCropped={uploadBanner}
-                  onRemove={removeBanner}
-                  aspect={16 / 6}
-                  circular={false}
-                  previewSize={120}
-                />
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <Field label={t('platform.branding.overlayColor')}>
-                    <div className="flex gap-2">
-                      <input
-                        type="color"
-                        className="h-9 w-14 cursor-pointer rounded border border-gray-300 bg-white p-0.5"
-                        value={(val('bannerOverlayColor') as string) || '#0c1a2e'}
-                        onChange={(e) => set('bannerOverlayColor', e.target.value)}
-                      />
-                      <input
-                        className="input-gov flex-1"
-                        placeholder="#0c1a2e"
-                        value={val('bannerOverlayColor') as string}
-                        onChange={(e) => set('bannerOverlayColor', e.target.value)}
-                      />
-                    </div>
-                  </Field>
-                  <Field label={`${t('platform.branding.overlayOpacity')} (0–1)`}>
-                    <input
-                      type="number"
-                      min={0}
-                      max={1}
-                      step={0.05}
-                      className="input-gov"
-                      value={val('bannerOverlayOpacity') as string}
-                      onChange={(e) => set('bannerOverlayOpacity', parseFloat(e.target.value))}
-                    />
-                  </Field>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* ── Operator / Ministry ── */}
-          <div className="gov-card space-y-4">
-            <SectionHeader
-              title={t('platform.branding.section.operator')}
-              icon={<Building2 className="h-4 w-4" />}
-              open={open.operator}
-              onToggle={() => toggleSection('operator')}
-            />
-            {open.operator && (
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                <Field label={t('platform.branding.operatorName')}>
-                  <input className="input-gov" value={val('operatorName') as string} onChange={(e) => set('operatorName', e.target.value)} />
-                </Field>
-                <Field label={t('platform.branding.operatorNameAr')}>
-                  <input className="input-gov text-right" dir="rtl" value={val('operatorNameAr') as string} onChange={(e) => set('operatorNameAr', e.target.value)} />
-                </Field>
-                <Field label={t('platform.branding.operatorNameFr')}>
-                  <input className="input-gov" value={val('operatorNameFr') as string} onChange={(e) => set('operatorNameFr', e.target.value)} />
-                </Field>
-              </div>
-            )}
-          </div>
-
-          {/* ── Contact ── */}
-          <div className="gov-card space-y-4">
-            <SectionHeader
-              title={t('platform.branding.section.contact')}
-              icon={<Phone className="h-4 w-4" />}
-              open={open.contact}
-              onToggle={() => toggleSection('contact')}
-            />
-            {open.contact && (
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <Field label={t('platform.branding.supportEmail')}>
-                  <div className="relative">
-                    <Mail className="pointer-events-none absolute start-2.5 top-2 h-4 w-4 text-gray-400" />
-                    <input className="input-gov ps-8" type="email" value={val('supportEmail') as string} onChange={(e) => set('supportEmail', e.target.value)} />
-                  </div>
-                </Field>
-                <Field label={t('platform.branding.supportPhone')}>
-                  <div className="relative">
-                    <Phone className="pointer-events-none absolute start-2.5 top-2 h-4 w-4 text-gray-400" />
-                    <input className="input-gov ps-8" type="tel" value={val('supportPhone') as string} onChange={(e) => set('supportPhone', e.target.value)} />
-                  </div>
-                </Field>
-                <Field label={t('platform.branding.supportWhatsApp')}>
-                  <input className="input-gov" type="tel" value={val('supportWhatsApp') as string} onChange={(e) => set('supportWhatsApp', e.target.value)} />
-                </Field>
-                <Field label={t('platform.branding.officeAddress')}>
-                  <div className="relative">
-                    <MapPin className="pointer-events-none absolute start-2.5 top-2 h-4 w-4 text-gray-400" />
-                    <input className="input-gov ps-8" value={val('officeAddress') as string} onChange={(e) => set('officeAddress', e.target.value)} />
-                  </div>
-                </Field>
-                <Field label={t('platform.branding.officeAddressAr')}>
-                  <input className="input-gov text-right" dir="rtl" value={val('officeAddressAr') as string} onChange={(e) => set('officeAddressAr', e.target.value)} />
-                </Field>
-                <Field label={t('platform.branding.officeAddressFr')}>
-                  <input className="input-gov" value={val('officeAddressFr') as string} onChange={(e) => set('officeAddressFr', e.target.value)} />
-                </Field>
-                <Field label={t('platform.branding.openingHours')}>
-                  <div className="relative">
-                    <Clock className="pointer-events-none absolute start-2.5 top-2 h-4 w-4 text-gray-400" />
-                    <input className="input-gov ps-8" value={val('openingHours') as string} onChange={(e) => set('openingHours', e.target.value)} />
-                  </div>
-                </Field>
-                <Field label={t('platform.branding.openingHoursAr')}>
-                  <input className="input-gov text-right" dir="rtl" value={val('openingHoursAr') as string} onChange={(e) => set('openingHoursAr', e.target.value)} />
-                </Field>
-                <Field label={t('platform.branding.openingHoursFr')}>
-                  <input className="input-gov" value={val('openingHoursFr') as string} onChange={(e) => set('openingHoursFr', e.target.value)} />
-                </Field>
-              </div>
-            )}
-          </div>
-
-          {/* ── App Downloads ── */}
-          <div className="gov-card space-y-4">
-            <SectionHeader
-              title={t('platform.branding.section.apps')}
-              icon={<Smartphone className="h-4 w-4" />}
-              open={open.apps}
-              onToggle={() => toggleSection('apps')}
-            />
-            {open.apps && (
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                <Field label={t('platform.branding.appStoreUrl')}>
-                  <div className="relative">
-                    <Globe className="pointer-events-none absolute start-2.5 top-2 h-4 w-4 text-gray-400" />
-                    <input className="input-gov ps-8" placeholder="https://apps.apple.com/..." value={val('appStoreUrl') as string} onChange={(e) => set('appStoreUrl', e.target.value)} />
-                  </div>
-                </Field>
-                <Field label={t('platform.branding.googlePlayUrl')}>
-                  <div className="relative">
-                    <Globe className="pointer-events-none absolute start-2.5 top-2 h-4 w-4 text-gray-400" />
-                    <input className="input-gov ps-8" placeholder="https://play.google.com/..." value={val('googlePlayUrl') as string} onChange={(e) => set('googlePlayUrl', e.target.value)} />
-                  </div>
-                </Field>
-                <Field label={t('platform.branding.apkUrl')}>
-                  <div className="relative">
-                    <Globe className="pointer-events-none absolute start-2.5 top-2 h-4 w-4 text-gray-400" />
-                    <input className="input-gov ps-8" placeholder="https://..." value={val('apkUrl') as string} onChange={(e) => set('apkUrl', e.target.value)} />
-                  </div>
-                </Field>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Sticky save bar — only when there are unsaved changes */}
-      {dirtyCount > 0 && (
-        <div className="fixed inset-x-0 bottom-0 z-40 border-t border-amber-300 bg-amber-50/95 backdrop-blur-sm">
-          <div className="mx-auto flex max-w-4xl items-center justify-between gap-3 px-4 py-2.5 sm:px-6">
-            <p className="text-xs font-semibold text-amber-900">
-              {t('platform.branding.unsaved', { n: String(dirtyCount) })}
-            </p>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setForm({})}
-                className="btn-gov-secondary text-xs"
-              >
-                {t('common.cancel')}
-              </button>
-              <button
-                type="button"
-                onClick={() => saveMut.mutate()}
-                disabled={saveMut.isPending}
-                className="btn-gov-primary text-xs"
-              >
-                <Save className="h-3.5 w-3.5" />
-                {saveMut.isPending ? t('common.loading') : t('platform.branding.save')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -8,6 +8,7 @@ import { useAuthStore } from '@/lib/auth';
 import { useTranslate, useLocale } from '@/lib/i18n';
 import { LanguageSwitcher } from '@/components/layout/language-switcher';
 import { platformApi, PlatformBranding } from '@/lib/api/endpoints/platform';
+import { getFileUrl } from '@/lib/api/client';
 import {
   Landmark,
   Phone,
@@ -59,7 +60,7 @@ export default function PublicLayout({ children }: { children: React.ReactNode }
   const openingHours = localizedField(branding, 'openingHours', locale);
   const supportPhone = branding?.supportPhone;
   const supportEmail = branding?.supportEmail;
-  const logoUrl = branding?.logoUrl;
+  const logoUrl = branding?.logoUrl ? getFileUrl(branding.logoUrl) : '';
   const year = new Date().getFullYear();
   const appLinks = [branding?.appStoreUrl, branding?.googlePlayUrl, branding?.apkUrl].filter(Boolean);
 

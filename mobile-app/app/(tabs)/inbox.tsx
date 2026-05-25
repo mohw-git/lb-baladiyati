@@ -31,6 +31,18 @@ export default function InboxScreen() {
   const [view, setView] = useState<InboxView>('inbox');
   const queryClient = useQueryClient();
 
+  const canRespondHelp = useHasAnyPermission(PERMISSIONS.HELP_RESPOND);
+
+  const helpParams = useMemo(() => {
+    if (view === 'inbox') {
+      if (canRespondHelp) {
+        return { queue: 'incoming' as const, limit: 50 };
+      }
+      return { queue: 'myAssignments' as const, limit: 50 };
+    }
+    return { queue: 'sourceApproval' as const, limit: 50 };
+  }, [view, canRespondHelp]);
+
   const params = useMemo(
     () => (view === 'inbox' ? { inbox: true } : { outgoing: true }),
     [view],
@@ -43,8 +55,22 @@ export default function InboxScreen() {
   });
 
   const helpQuery = useQuery({
-    queryKey: ['helpRequests', view],
-    queryFn: () => helpRequestsApi.list(params),
+    queryKey: ['helpRequests', view, canRespondHelp],
+    queryFn: async () => {
+      if (canRespondHelp && view === 'inbox') {
+        const [incoming, needs, inProg] = await Promise.all([
+          helpRequestsApi.list({ queue: 'incoming', limit: 50 }),
+          helpRequestsApi.list({ queue: 'needsAssignment', limit: 50 }),
+          helpRequestsApi.list({ queue: 'inProgress', limit: 50 }),
+        ]);
+        const items = [...incoming.items, ...needs.items, ...inProg.items];
+        return { items, total: items.length, page: 1, limit: 50, totalPages: 1 };
+      }
+      if (!canRespondHelp && view === 'outgoing') {
+        return helpRequestsApi.list({ queue: 'sourceApproval', limit: 50 });
+      }
+      return helpRequestsApi.list(helpParams);
+    },
     enabled: channel === 'help' && canViewHelp,
   });
 
@@ -86,7 +112,10 @@ export default function InboxScreen() {
           <ChannelButton
             label="Help"
             active={channel === 'help'}
-            badge={helpCount.data?.count}
+            badge={
+              (helpCount.data?.receiverCount ?? helpCount.data?.count ?? 0) +
+              (view === 'outgoing' ? helpCount.data?.sourceCount ?? 0 : 0)
+            }
             onPress={() => setChannel('help')}
           />
         )}
@@ -240,8 +269,8 @@ function HelpRow({ item }: { item: any }) {
     <TouchableOpacity
       style={styles.card}
       onPress={() => {
-        if (item.complaintId) {
-          router.push(`/complaint/${item.complaintId}`);
+        if (item.id) {
+          router.push(`/help-request/${item.id}`);
         }
       }}
     >

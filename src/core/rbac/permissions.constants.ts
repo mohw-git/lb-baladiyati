@@ -67,6 +67,7 @@ export const PERMISSIONS = {
   PLATFORM_VIEW_AUDIT: 'platform.view_audit',
   PLATFORM_IMPERSONATE: 'platform.impersonate',
   PLATFORM_VIEW_STATS: 'platform.view_stats',
+  PLATFORM_MANAGE_ANNOUNCEMENTS: 'platform.manage_announcements',
 
   // Internal Tasks (8) — staff-only work items, separate from citizen complaints
   TASK_VIEW_ALL: 'task.view_all',
@@ -113,6 +114,7 @@ export const PLATFORM_ONLY_PERMISSIONS: string[] = [
   PERMISSIONS.PLATFORM_VIEW_AUDIT,
   PERMISSIONS.PLATFORM_IMPERSONATE,
   PERMISSIONS.PLATFORM_VIEW_STATS,
+  PERMISSIONS.PLATFORM_MANAGE_ANNOUNCEMENTS,
 ];
 
 /** Permissions safe to grant to a municipality-level Admin (everything except platform.*) */
@@ -183,6 +185,7 @@ export const PERMISSION_SEED_DATA = [
   { key: PERMISSIONS.PLATFORM_VIEW_AUDIT, name: 'View System Audit Log', nameAr: 'عرض سجل تدقيق النظام', nameFr: 'Consulter le journal d\'audit système', module: 'platform' },
   { key: PERMISSIONS.PLATFORM_IMPERSONATE, name: 'Impersonate Users', nameAr: 'انتحال هوية المستخدمين', nameFr: 'Emprunter l\'identité d\'utilisateurs', module: 'platform' },
   { key: PERMISSIONS.PLATFORM_VIEW_STATS, name: 'View Platform Statistics', nameAr: 'عرض إحصاءات المنصة', nameFr: 'Consulter les statistiques de la plateforme', module: 'platform' },
+  { key: PERMISSIONS.PLATFORM_MANAGE_ANNOUNCEMENTS, name: 'Manage Platform Announcements', nameAr: 'إدارة إعلانات المنصة', nameFr: 'Gérer les annonces de la plateforme', module: 'platform' },
   // Internal Tasks
   { key: PERMISSIONS.TASK_VIEW_ALL, name: 'View All Internal Tasks', nameAr: 'عرض جميع المهام الداخلية', nameFr: 'Consulter toutes les tâches internes', module: 'tasks' },
   { key: PERMISSIONS.TASK_VIEW_DEPARTMENT, name: 'View Department Tasks', nameAr: 'عرض مهام القسم', nameFr: 'Consulter les tâches du département', module: 'tasks' },

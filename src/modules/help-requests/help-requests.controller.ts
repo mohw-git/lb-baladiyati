@@ -51,8 +51,7 @@ export class HelpRequestsController {
     summary: 'Number of pending help requests for the caller\'s department',
   })
   async pendingCount(@CurrentUser() user: CurrentUserData) {
-    const count = await this.help.pendingCount(user.id, user.municipalityId);
-    return { count };
+    return this.help.pendingCount(user.id, user.municipalityId);
   }
 
   @Get('complaint/:complaintId')
@@ -95,6 +94,46 @@ export class HelpRequestsController {
     return this.help.create(
       { id: user.id, email: user.email, municipalityId: user.municipalityId },
       complaintId,
+      dto,
+      req,
+    );
+  }
+
+  @Post(':id/approve-source')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.HELP_REQUEST, PERMISSIONS.HELP_RESPOND)
+  @ApiOperation({
+    summary: 'Source Supervisor/HOD approves outgoing help request',
+  })
+  async approveSource(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentUserData,
+    @Body() dto: RespondHelpRequestDto,
+    @Req() req: Request,
+  ) {
+    return this.help.approveSource(
+      id,
+      { id: user.id, email: user.email, municipalityId: user.municipalityId },
+      dto,
+      req,
+    );
+  }
+
+  @Post(':id/reject-source')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.HELP_REQUEST, PERMISSIONS.HELP_RESPOND)
+  @ApiOperation({
+    summary: 'Source Supervisor/HOD rejects outgoing help request',
+  })
+  async rejectSource(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentUserData,
+    @Body() dto: RespondHelpRequestDto,
+    @Req() req: Request,
+  ) {
+    return this.help.rejectSource(
+      id,
+      { id: user.id, email: user.email, municipalityId: user.municipalityId },
       dto,
       req,
     );

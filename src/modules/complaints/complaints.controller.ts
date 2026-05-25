@@ -166,6 +166,18 @@ export class ComplaintsController {
     return this.complaintsService.getBuckets(user.id, user.municipalityId);
   }
 
+  @Get('stats/department-workload')
+  @ApiOperation({
+    summary: 'Active complaint workload per department (dashboard)',
+  })
+  @RequirePermissions(
+    PERMISSIONS.COMPLAINT_VIEW_ALL,
+    PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT,
+  )
+  async getDepartmentWorkload(@CurrentUser() user: CurrentUserData) {
+    return this.complaintsService.getDepartmentWorkload(user.municipalityId);
+  }
+
   /**
    * Dashboard charts data (complaints over time, by category, by priority)
    */

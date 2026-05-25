@@ -2,6 +2,12 @@
 // User management types
 // ============================================================
 
+export type UserCreatedVia =
+  | 'SELF_REGISTRATION'
+  | 'ADMIN_PROVISIONED'
+  | 'PLATFORM_PROVISIONED'
+  | 'PLATFORM_SEEDED';
+
 export interface User {
   id: string;
   email: string;
@@ -13,6 +19,10 @@ export interface User {
   roles: { id: string; name: string; priority?: number }[];
   /** Maximum priority across all assigned roles (Discord-style hierarchy rank). */
   effectiveRank?: number;
+  createdVia?: UserCreatedVia;
+  verificationStatus?: string;
+  /** Server-computed: public signup / citizen-only accounts. */
+  isProtectedCitizen?: boolean;
   createdAt: string;
 }
 

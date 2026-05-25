@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { complaintsApi } from '../../lib/api/endpoints';
-import { getFileUrl } from '../../lib/api/client';
+import { getFileUrl, ApiError } from '../../lib/api/client';
 import { useCanChangeStatus, useHasPermission, PERMISSIONS } from '../../lib/hooks/usePermission';
 import { useAuthStore } from '../../lib/auth/store';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../constants/theme';
@@ -17,7 +17,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; 
   ASSIGNED: { label: 'Assigned', color: Colors.orange[700], bg: Colors.orange[100], icon: 'person-add' },
   IN_PROGRESS: { label: 'In Progress', color: Colors.yellow[700], bg: Colors.yellow[100], icon: 'construct' },
   PENDING_APPROVAL: { label: 'Pending Approval', color: Colors.purple[700], bg: Colors.purple[100], icon: 'hourglass' },
-  COMPLETED: { label: 'Completed', color: Colors.green[700], bg: Colors.green[100], icon: 'checkmark-circle' },
+  COMPLETED: { label: 'Resolved', color: Colors.green[700], bg: Colors.green[100], icon: 'checkmark-circle' },
   REJECTED: { label: 'Rejected', color: Colors.red[700], bg: Colors.red[100], icon: 'close-circle' },
   CLOSED: { label: 'Closed', color: Colors.gray[600], bg: Colors.gray[100], icon: 'lock-closed' },
 };
@@ -77,7 +77,23 @@ export default function ComplaintDetailScreen() {
       Alert.alert('Success', 'Status updated successfully');
     },
     onError: (err: any) => {
-      Alert.alert('Error', err.message || 'Failed to update status');
+      // 409 = someone else updated this complaint while we were typing. Show
+      // a clean message and force a refetch so the UI re-renders against
+      // the new state (action buttons may now be hidden, etc.).
+      if (err instanceof ApiError && err.status === 409) {
+        Alert.alert(
+          'Already updated',
+          'This complaint was just updated by someone else. Refreshing…',
+        );
+        setShowProofModal(false);
+        queryClient.invalidateQueries({ queryKey: ['complaint', id] });
+        queryClient.invalidateQueries({ queryKey: ['assigned-tasks'] });
+        queryClient.invalidateQueries({ queryKey: ['my-complaints'] });
+        queryClient.invalidateQueries({ queryKey: ['assigned-tasks', 'recent'] });
+        queryClient.invalidateQueries({ queryKey: ['my-complaints', 'recent'] });
+        return;
+      }
+      Alert.alert('Error', err?.message || 'Failed to update status');
     },
   });
 
@@ -161,14 +177,27 @@ export default function ComplaintDetailScreen() {
   }
 
   if (isError || !complaint) {
+    const apiErr = error as ApiError | undefined;
+    const is403 = apiErr?.status === 403;
+    const is404 = apiErr?.status === 404;
     return (
       <View style={styles.center}>
-        <Ionicons name="cloud-offline-outline" size={48} color={Colors.red[400]} />
+        <Ionicons
+          name={is403 ? 'lock-closed-outline' : is404 ? 'document-outline' : 'cloud-offline-outline'}
+          size={48}
+          color={Colors.red[400]}
+        />
         <Text style={styles.emptyText}>
-          {isError ? 'Could not load complaint' : 'Complaint not found'}
+          {is403
+            ? 'You do not have access to this complaint'
+            : is404
+              ? 'Complaint not found'
+              : isError
+                ? 'Could not load complaint'
+                : 'Complaint not found'}
         </Text>
-        {isError && (
-          <Text style={styles.errorDetail}>{(error as any)?.message || 'Check your connection.'}</Text>
+        {isError && !is403 && !is404 && (
+          <Text style={styles.errorDetail}>{apiErr?.message || 'Check your connection.'}</Text>
         )}
         <TouchableOpacity style={styles.retryBtn} onPress={() => refetch()}>
           <Ionicons name="refresh" size={16} color={Colors.white} />

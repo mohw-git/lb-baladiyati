@@ -10,6 +10,7 @@ export { categoriesApi } from './endpoints/categories';
 export { newsApi } from './endpoints/news';
 export { notificationsApi } from './endpoints/notifications';
 export { platformApi } from './endpoints/platform';
+export { platformAnnouncementsApi } from './endpoints/platform-announcements';
 export { tasksApi } from './endpoints/tasks';
 export { transfersApi } from './endpoints/transfers';
 export { helpRequestsApi } from './endpoints/help-requests';

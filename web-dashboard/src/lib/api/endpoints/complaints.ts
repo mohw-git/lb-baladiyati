@@ -24,6 +24,10 @@ export interface ComplaintBuckets {
   all: number;
   overdue: number;
   myReports: number;
+  completed: number;
+  rejected: number;
+  closed: number;
+  history: number;
 }
 
 export interface AssignableUser {
@@ -71,6 +75,26 @@ export const complaintsApi = {
 
   getBuckets: () =>
     get<ComplaintBuckets>('/complaints/stats/buckets'),
+
+  getDepartmentWorkload: () =>
+    get<
+      {
+        id: string;
+        name: string;
+        nameAr?: string | null;
+        nameFr?: string | null;
+        head?: {
+          id: string;
+          firstName: string;
+          lastName: string;
+          email?: string;
+          avatarUrl?: string | null;
+          isActive?: boolean;
+        } | null;
+        staffCount: number;
+        activeComplaints: number;
+      }[]
+    >('/complaints/stats/department-workload'),
 
   getCharts: () =>
     get<{

@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
-import { complaintsApi, departmentsApi } from '@/lib/api';
+import { complaintsApi } from '@/lib/api';
 import { useAuth, usePermission } from '@/lib/auth';
 import { useTranslate, useLocale } from '@/lib/i18n';
 import { PERMISSIONS } from '@shared/constants/permissions';
@@ -141,27 +141,33 @@ export default function DashboardPage() {
     enabled: canViewAny,
   });
 
-  // Main operational queue — 20 items, all open
+  const openQueueBucket = canViewComplaints ? 'all' : 'myDepartment';
+
+  // Main operational queue — active complaints only
   const { data: queueData, isLoading: queueLoading } = useQuery({
-    queryKey: ['complaints', 'queue'],
-    queryFn: () => complaintsApi.list({ page: 1, limit: 20, openOnly: true }),
+    queryKey: ['complaints', 'queue', openQueueBucket],
+    queryFn: () =>
+      complaintsApi.list({ page: 1, limit: 20, bucket: openQueueBucket }),
     enabled: canViewAny,
-    refetchInterval: 30_000,
+    staleTime: 60_000,
+    refetchOnWindowFocus: true,
   });
 
-  // Overdue queue — separate, critical section
+  // Overdue queue — active overdue only
   const { data: overdueData, isLoading: overdueLoading } = useQuery({
     queryKey: ['complaints', 'overdue-queue'],
-    queryFn: () => complaintsApi.list({ page: 1, limit: 8, overdue: true }),
+    queryFn: () => complaintsApi.list({ page: 1, limit: 8, bucket: 'overdue' }),
     enabled: canViewAny,
-    refetchInterval: 30_000,
+    staleTime: 60_000,
+    refetchOnWindowFocus: true,
   });
 
-  // Departments for workload panel
-  const { data: deptData } = useQuery({
-    queryKey: ['departments', 'list'],
-    queryFn: () => departmentsApi.list(),
+  const { data: deptWorkload } = useQuery({
+    queryKey: ['complaints', 'department-workload'],
+    queryFn: () => complaintsApi.getDepartmentWorkload(),
     enabled: canViewAny,
+    staleTime: 120_000,
+    refetchOnWindowFocus: true,
   });
 
   // Citizen own complaints
@@ -182,7 +188,7 @@ export default function DashboardPage() {
     (stats?.byStatus?.UNDER_REVIEW ?? 0) +
     (stats?.byStatus?.ASSIGNED ?? 0);
   const resolvedCount: number =
-    (stats?.byStatus?.COMPLETED ?? 0) + (stats?.byStatus?.CLOSED ?? 0);
+    buckets?.completed ?? stats?.byStatus?.COMPLETED ?? 0;
 
   // ── CITIZEN VIEW ─────────────────────────────────────────────────────────────
   if (!canViewAny) {
@@ -263,7 +269,7 @@ export default function DashboardPage() {
             </span>
           </div>
           <Link
-            href="/complaints?overdue=true"
+            href="/complaints?bucket=overdue"
             className="flex items-center gap-1 rounded border border-alert-400 px-2.5 py-1 text-xs font-semibold hover:bg-alert-600"
           >
             {t('dashboard.alert.reviewNow')}
@@ -294,7 +300,10 @@ export default function DashboardPage() {
 
         {/* Compact stat strip — NOT cards, NOT equal boxes */}
         <div className="flex items-stretch divide-x divide-gray-100 overflow-x-auto">
-          <StatCell label={t('dashboard.stats.totalComplaints')} value={stats?.total ?? '—'} />
+          <StatCell
+            label={t('dashboard.stats.totalFiled')}
+            value={stats?.total ?? '—'}
+          />
           <StatCell
             label={t('dashboard.stats.pendingReview')}
             value={pendingCount}
@@ -343,7 +352,7 @@ export default function DashboardPage() {
             <div className="border-b border-alert-200 bg-alert-50">
               <SectionHeader
                 action={
-                  <Link href="/complaints?overdue=true" className="flex items-center gap-0.5 text-alert-700 hover:underline">
+                  <Link href="/complaints?bucket=overdue" className="flex items-center gap-0.5 text-alert-700 hover:underline">
                     {t('common.viewAll')} <ArrowRight className={`h-3 w-3 ${isRtl ? 'rotate-180' : ''}`} />
                   </Link>
                 }
@@ -401,7 +410,7 @@ export default function DashboardPage() {
           <SectionHeader
             action={
               <Link
-                href="/complaints"
+                href={`/complaints?bucket=${openQueueBucket}`}
                 className="flex items-center gap-0.5 hover:underline"
               >
                 {t('common.viewAll')} <ArrowRight className={`h-3 w-3 ${isRtl ? 'rotate-180' : ''}`} />
@@ -530,11 +539,11 @@ export default function DashboardPage() {
                 {t('dashboard.section.deptWorkload')}
               </span>
             </SectionHeader>
-            {!deptData ? (
+            {!deptWorkload ? (
               <div className="flex justify-center py-6">
                 <Loader2 className="h-4 w-4 animate-spin text-gray-300" />
               </div>
-            ) : deptData.length === 0 ? (
+            ) : deptWorkload.length === 0 ? (
               <p className="px-3 py-4 text-xs text-gray-400">{t('common.noData')}</p>
             ) : (
               <div className="overflow-x-auto">
@@ -545,7 +554,7 @@ export default function DashboardPage() {
                         {t('common.department')}
                       </th>
                       <th className="px-2 py-2 text-center font-semibold uppercase tracking-wide text-gray-500">
-                        {t('dashboard.col.complaints')}
+                        {t('dashboard.col.activeComplaints')}
                       </th>
                       <th className="px-2 py-2 text-center font-semibold uppercase tracking-wide text-gray-500">
                         {t('dashboard.col.staff')}
@@ -553,12 +562,9 @@ export default function DashboardPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {deptData
+                    {deptWorkload
                       .slice()
-                      .sort(
-                        (a, b) =>
-                          (b._count?.complaints ?? 0) - (a._count?.complaints ?? 0),
-                      )
+                      .sort((a, b) => b.activeComplaints - a.activeComplaints)
                       .map((dept) => (
                         <tr key={dept.id} className="hover:bg-gray-50">
                           <td className="max-w-[130px] px-3 py-2">
@@ -577,18 +583,18 @@ export default function DashboardPage() {
                           <td className="px-2 py-2 text-center">
                             <span
                               className={`font-bold ${
-                                (dept._count?.complaints ?? 0) > 10
+                                dept.activeComplaints > 10
                                   ? 'text-alert-700'
-                                  : (dept._count?.complaints ?? 0) > 5
+                                  : dept.activeComplaints > 5
                                   ? 'text-warn-700'
                                   : 'text-gray-700'
                               }`}
                             >
-                              {dept._count?.complaints ?? 0}
+                              {dept.activeComplaints}
                             </span>
                           </td>
                           <td className="px-2 py-2 text-center text-gray-500">
-                            {dept._count?.users ?? 0}
+                            {dept.staffCount ?? 0}
                           </td>
                         </tr>
                       ))}
@@ -610,21 +616,49 @@ export default function DashboardPage() {
               {canViewAny && (
                 <>
                   <Link
-                    href="/complaints"
+                    href="/complaints?bucket=needsAttention"
                     className="flex items-center justify-between px-3 py-2.5 text-xs text-gray-700 hover:bg-gray-50"
                   >
                     <span className="flex items-center gap-2">
-                      <MessageSquareWarning className="h-3.5 w-3.5 text-gray-400" />
-                      {t('complaints.title')}
+                      <Inbox className="h-3.5 w-3.5 text-gray-400" />
+                      {t('complaints.bucket.needsAttention')}
                     </span>
                     {bucketsData && (
                       <span className="rounded bg-gray-100 px-1.5 py-0.5 text-gray-600">
-                        {(bucketsData as any).all ?? 0}
+                        {(bucketsData as any).needsAttention ?? 0}
                       </span>
                     )}
                   </Link>
                   <Link
-                    href="/complaints?overdue=true"
+                    href={`/complaints?bucket=${openQueueBucket}`}
+                    className="flex items-center justify-between px-3 py-2.5 text-xs text-gray-700 hover:bg-gray-50"
+                  >
+                    <span className="flex items-center gap-2">
+                      <MessageSquareWarning className="h-3.5 w-3.5 text-gray-400" />
+                      {t('complaints.bucket.allActive')}
+                    </span>
+                    {bucketsData && (
+                      <span className="rounded bg-gray-100 px-1.5 py-0.5 text-gray-600">
+                        {(bucketsData as any)[openQueueBucket] ?? 0}
+                      </span>
+                    )}
+                  </Link>
+                  <Link
+                    href="/complaints?bucket=completed"
+                    className="flex items-center justify-between px-3 py-2.5 text-xs text-gray-700 hover:bg-gray-50"
+                  >
+                    <span className="flex items-center gap-2">
+                      <CheckCircle2 className="h-3.5 w-3.5 text-success-600" />
+                      {t('complaints.bucket.completed')}
+                    </span>
+                    {bucketsData && (
+                      <span className="rounded bg-gray-100 px-1.5 py-0.5 text-gray-600">
+                        {(bucketsData as any).completed ?? 0}
+                      </span>
+                    )}
+                  </Link>
+                  <Link
+                    href="/complaints?bucket=overdue"
                     className="flex items-center justify-between px-3 py-2.5 text-xs hover:bg-gray-50"
                   >
                     <span className="flex items-center gap-2 font-semibold text-alert-700">

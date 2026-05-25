@@ -6,6 +6,12 @@ export interface PlatformBranding {
   bannerImageUrl: string | null;
   bannerOverlayColor: string | null;
   bannerOverlayOpacity: number | null;
+  bannerFocalX: number | null;
+  bannerFocalY: number | null;
+  authBackgroundImageUrl: string | null;
+  authBackgroundFocalX: number | null;
+  authBackgroundFocalY: number | null;
+  authBackgroundOverlayOpacity: number | null;
   platformName: string | null;
   platformNameAr: string | null;
   platformNameFr: string | null;
@@ -226,5 +232,10 @@ export const platformApi = {
     const fd = new FormData();
     fd.append('image', file);
     return postFormData<PlatformBranding>('/platform/branding/banner', fd);
+  },
+  uploadBrandingAuthBackground: (file: File) => {
+    const fd = new FormData();
+    fd.append('image', file);
+    return postFormData<PlatformBranding>('/platform/branding/auth-background', fd);
   },
 };

@@ -135,9 +135,43 @@ export class HelpRequestQueryDto extends PaginationDto {
   outgoing?: boolean;
 
   @ApiPropertyOptional({
+    description:
+      'With outgoing=true: only requests awaiting source Supervisor/HOD approval',
+  })
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  sourceApproval?: boolean;
+
+  @ApiPropertyOptional({
     description: 'Filter to a specific complaint',
   })
   @IsOptional()
   @IsUUID()
   complaintId?: string;
+
+  /**
+   * Workflow queue for the Help Requests hub. Prefer this over legacy
+   * inbox/outgoing booleans when building tabbed UIs.
+   */
+  @ApiPropertyOptional({
+    enum: [
+      'sourceApproval',
+      'incoming',
+      'needsAssignment',
+      'inProgress',
+      'awaitingSourceReview',
+      'myAssignments',
+      'history',
+    ],
+  })
+  @IsOptional()
+  @IsString()
+  queue?:
+    | 'sourceApproval'
+    | 'incoming'
+    | 'needsAssignment'
+    | 'inProgress'
+    | 'awaitingSourceReview'
+    | 'myAssignments'
+    | 'history';
 }

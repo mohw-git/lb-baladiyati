@@ -51,6 +51,7 @@ export class PlatformService {
         },
       },
     });
+    await this.healMunicipalityAdminSlots(munis);
     return { data: munis };
   }
 
@@ -58,13 +59,101 @@ export class PlatformService {
     const muni = await this.prisma.municipality.findUnique({
       where: { id },
       include: {
+        admin: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            avatarUrl: true,
+            isActive: true,
+          },
+        },
         _count: {
           select: { users: true, departments: true, complaints: true, newsPosts: true },
         },
       },
     });
     if (!muni) throw new NotFoundException('Municipality not found');
+    await this.healMunicipalityAdminSlots([muni]);
     return muni;
+  }
+
+  /**
+   * Self-heal municipalities that have an Admin role holder but no adminUserId slot
+   * (e.g. created before the slot was wired on bootstrap).
+   */
+  private async healMunicipalityAdminSlots(
+    munis: Array<{
+      id: string;
+      adminUserId: string | null;
+      admin?: {
+        id: string;
+        firstName: string;
+        lastName: string;
+        email: string;
+        avatarUrl: string | null;
+        isActive: boolean;
+      } | null;
+    }>,
+  ) {
+    const orphanIds = munis.filter((m) => !m.adminUserId).map((m) => m.id);
+    if (!orphanIds.length) return;
+
+    const adminRoles = await this.prisma.role.findMany({
+      where: {
+        municipalityId: { in: orphanIds },
+        name: 'Admin',
+        deletedAt: null,
+      },
+      select: { id: true, municipalityId: true },
+    });
+    if (!adminRoles.length) return;
+
+    const userRoles = await this.prisma.userRole.findMany({
+      where: { roleId: { in: adminRoles.map((r) => r.id) } },
+      select: {
+        roleId: true,
+        user: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            avatarUrl: true,
+            isActive: true,
+          },
+        },
+      },
+    });
+
+    const roleToMuni = new Map(adminRoles.map((r) => [r.id, r.municipalityId]));
+    const muniToUser = new Map<string, (typeof userRoles)[0]['user']>();
+    for (const ur of userRoles) {
+      const muniId = roleToMuni.get(ur.roleId);
+      if (muniId && !muniToUser.has(muniId) && ur.user.isActive) {
+        muniToUser.set(muniId, ur.user);
+      }
+    }
+
+    await Promise.all(
+      [...muniToUser.entries()].map(([muniId, user]) =>
+        this.prisma.municipality.update({
+          where: { id: muniId },
+          data: { adminUserId: user.id },
+        }),
+      ),
+    );
+
+    for (const m of munis) {
+      if (!m.adminUserId) {
+        const user = muniToUser.get(m.id);
+        if (user) {
+          m.adminUserId = user.id;
+          m.admin = user;
+        }
+      }
+    }
   }
 
   /**
@@ -173,7 +262,28 @@ export class PlatformService {
         data: { userId: adminUser.id, roleId: createdRoles['Admin'] },
       });
 
-      return { muni, adminUser };
+      // Positional slot — UI/org chart/list use Municipality.adminUserId + admin relation
+      const muniWithAdmin = await tx.municipality.update({
+        where: { id: muni.id },
+        data: { adminUserId: adminUser.id },
+        include: {
+          admin: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              email: true,
+              avatarUrl: true,
+              isActive: true,
+            },
+          },
+          _count: {
+            select: { users: true, departments: true, complaints: true },
+          },
+        },
+      });
+
+      return { muni: muniWithAdmin, adminUser };
     });
 
     await this.audit.log({
@@ -187,22 +297,26 @@ export class PlatformService {
         name: result.muni.name,
         code: result.muni.code,
         adminEmail: dto.adminEmail,
+        adminUserId: result.adminUser.id,
+      },
+    });
+
+    await this.audit.log({
+      actorId,
+      actorEmail,
+      municipalityId: result.muni.id,
+      action: 'platform.municipality.admin_assigned',
+      resourceType: 'User',
+      resourceId: result.adminUser.id,
+      metadata: {
+        adminEmail: dto.adminEmail,
+        assignedVia: 'municipality_create',
       },
     });
 
     return {
-      municipality: {
-        id: result.muni.id,
-        name: result.muni.name,
-        code: result.muni.code,
-        isActive: result.muni.isActive,
-      },
-      admin: {
-        id: result.adminUser.id,
-        email: result.adminUser.email,
-        firstName: result.adminUser.firstName,
-        lastName: result.adminUser.lastName,
-      },
+      municipality: result.muni,
+      admin: result.adminUser,
     };
   }
 
@@ -1018,6 +1132,12 @@ export class PlatformService {
         bannerImageUrl: null,
         bannerOverlayColor: '#0c1a2e',
         bannerOverlayOpacity: 0.65,
+        bannerFocalX: 50,
+        bannerFocalY: 50,
+        authBackgroundImageUrl: null,
+        authBackgroundFocalX: 50,
+        authBackgroundFocalY: 50,
+        authBackgroundOverlayOpacity: null,
         platformName: 'Baladi',
         platformNameAr: 'بلدي',
         platformNameFr: 'Baladi',
@@ -1049,7 +1169,7 @@ export class PlatformService {
    * the URL on the singleton record.
    */
   async uploadPlatformBrandingImage(
-    field: 'logoUrl' | 'bannerImageUrl',
+    field: 'logoUrl' | 'bannerImageUrl' | 'authBackgroundImageUrl',
     file: Express.Multer.File,
   ) {
     if (!file) throw new BadRequestException('No file provided');
@@ -1059,7 +1179,12 @@ export class PlatformService {
     if (file.size > 5 * 1024 * 1024) {
       throw new BadRequestException('Branding image must be smaller than 5MB');
     }
-    const folder = field === 'logoUrl' ? 'platform/logo' : 'platform/banner';
+    const folder =
+      field === 'logoUrl'
+        ? 'platform/logo'
+        : field === 'bannerImageUrl'
+          ? 'platform/banner'
+          : 'platform/auth-background';
     const url = await this.storage.saveFile(file, folder);
     return this.updatePlatformBranding({ [field]: url } as any);
   }
@@ -1070,6 +1195,12 @@ export class PlatformService {
       bannerImageUrl: string;
       bannerOverlayColor: string;
       bannerOverlayOpacity: number;
+      bannerFocalX: number;
+      bannerFocalY: number;
+      authBackgroundImageUrl: string;
+      authBackgroundFocalX: number;
+      authBackgroundFocalY: number;
+      authBackgroundOverlayOpacity: number;
       platformName: string;
       platformNameAr: string;
       platformNameFr: string;

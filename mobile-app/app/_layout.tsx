@@ -94,6 +94,7 @@ export default function RootLayout() {
         <Stack.Screen name="(auth)" />
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="complaint/[id]" options={{ headerShown: true, title: 'Complaint Details', headerBackTitle: 'Back' }} />
+        <Stack.Screen name="help-request/[id]" options={{ headerShown: true, title: 'Help Request', headerBackTitle: 'Back' }} />
         <Stack.Screen name="news/[id]" options={{ headerShown: true, title: 'News Article', headerBackTitle: 'Back' }} />
         <Stack.Screen name="language" options={{ headerShown: false }} />
         <Stack.Screen name="kyc" options={{ headerShown: true, title: 'Identity Verification', headerBackTitle: 'Back' }} />

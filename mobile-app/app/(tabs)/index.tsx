@@ -29,11 +29,13 @@ export default function HomeScreen() {
   const { data: recentData, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: isWorkerOrAbove ? ['assigned-tasks', 'recent'] : ['my-complaints', 'recent'],
     refetchInterval: 20_000,
-    queryFn: () => complaintsApi.list({ 
-      page: 1, 
-      limit: 5,
-      myAssignments: isWorkerOrAbove ? true : undefined,
-    }),
+    queryFn: () =>
+      complaintsApi.list({
+        page: 1,
+        limit: 5,
+        myAssignments: isWorkerOrAbove ? true : undefined,
+        openOnly: isWorkerOrAbove ? true : undefined,
+      }),
   });
 
   const { data: unread } = useQuery({

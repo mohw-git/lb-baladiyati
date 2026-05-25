@@ -79,12 +79,7 @@ export default function ProfileScreen() {
           if (rt) {
             try { await authApi.logout(rt); } catch {}
           }
-          try {
-            router.replace('/(auth)/login');
-          } catch {
-            // Router may not be ready if the app is recovering from a render error.
-            setTimeout(() => router.replace('/(auth)/login'), 0);
-          }
+          // Tab layout redirects unauthenticated users to login.
         },
       },
     ]);

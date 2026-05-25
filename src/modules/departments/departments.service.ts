@@ -10,6 +10,10 @@ import { PrismaService } from '../../core/prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CreateDepartmentDto } from './dto/create-department.dto';
 import { UpdateDepartmentDto } from './dto/update-department.dto';
+import {
+  isProtectedCitizenAccount,
+  staffMemberWhere,
+} from '../../core/users/user-governance';
 
 @Injectable()
 export class DepartmentsService {
@@ -156,16 +160,19 @@ export class DepartmentsService {
 
     const newHead = await this.prisma.user.findFirst({
       where: { id: newHeadUserId, municipalityId, isActive: true },
+      include: {
+        userRoles: { include: { role: { select: { name: true } } } },
+      },
     });
     if (!newHead) {
       throw new NotFoundException(
         'Target user not found in this municipality (or is inactive)',
       );
     }
-    if (newHead.createdVia === 'SELF_REGISTRATION') {
+    if (isProtectedCitizenAccount(newHead)) {
       throw new BadRequestException(
-        'Self-registered (citizen) accounts cannot be promoted to staff positions. ' +
-          'Provision a fresh staff account instead.',
+        'Citizen accounts cannot be promoted to staff positions. ' +
+          'Create a separate staff account instead.',
       );
     }
 
@@ -317,11 +324,10 @@ export class DepartmentsService {
     if (!dept) throw new NotFoundException('Department not found');
 
     const members = await this.prisma.user.findMany({
-      where: {
+      where: staffMemberWhere({
         municipalityId,
         departmentId,
-        createdVia: { not: 'SELF_REGISTRATION' as any },
-      },
+      }),
       select: {
         id: true,
         email: true,
@@ -377,6 +383,9 @@ export class DepartmentsService {
 
     const user = await this.prisma.user.findFirst({
       where: { email: trimmed, municipalityId },
+      include: {
+        userRoles: { include: { role: { select: { name: true } } } },
+      },
     });
     if (!user) {
       throw new NotFoundException(
@@ -384,10 +393,10 @@ export class DepartmentsService {
           'The user must already be provisioned as a staff member of this municipality.',
       );
     }
-    if (user.createdVia === ('SELF_REGISTRATION' as any)) {
+    if (isProtectedCitizenAccount(user)) {
       throw new BadRequestException(
-        'Self-registered (citizen) accounts cannot be assigned to a department. ' +
-          'Provision a fresh staff account instead.',
+        'Citizen accounts cannot be assigned to a department. ' +
+          'Create a separate staff account instead.',
       );
     }
     if (!user.isActive) {

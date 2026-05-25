@@ -4,8 +4,15 @@ import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslate, useLocale } from '@/lib/i18n';
 import { platformApi, PlatformBranding } from '@/lib/api/endpoints/platform';
+import { PublicAnnouncementsSection } from '@/components/public/public-announcements-section';
 import { municipalitiesApi, MunicipalityPublic } from '@/lib/api/endpoints/municipalities';
 import { pickName } from '@shared/types/locale';
+import { PublicHeroBackground } from '@/components/brand/public-hero-background';
+import {
+  normalizeBannerFocal,
+  resolveBrandMediaUrl,
+  resolveMunicipalityMediaUrl,
+} from '@/lib/municipality-branding';
 import {
   MessageSquareWarning,
   Eye,
@@ -13,6 +20,7 @@ import {
   ChevronRight,
   MapPin,
   Phone,
+  Mail,
   Building2,
   AlertTriangle,
   ShieldCheck,
@@ -60,10 +68,14 @@ export default function HomePage() {
   const platformName = localized(branding, 'platformName', locale) || t('common.appName');
   const platformDescription =
     localized(branding, 'platformDescription', locale) || t('public.hero.fallbackSubtitle');
-  const bannerUrl = branding?.bannerImageUrl;
-  const overlayColor = branding?.bannerOverlayColor || '#0c1a2e';
-  const overlayOpacity = branding?.bannerOverlayOpacity ?? 0.65;
+  const logoUrl = resolveBrandMediaUrl(branding?.logoUrl);
+  const bannerFocalX = normalizeBannerFocal(branding?.bannerFocalX);
+  const bannerFocalY = normalizeBannerFocal(branding?.bannerFocalY);
   const supportPhone = branding?.supportPhone;
+  const supportEmail = branding?.supportEmail;
+  const supportWhatsApp = branding?.supportWhatsApp;
+  const hasPlatformContact =
+    Boolean(supportPhone || supportEmail || supportWhatsApp);
   const appLinks = [branding?.appStoreUrl, branding?.googlePlayUrl, branding?.apkUrl].filter(Boolean);
 
   // Public service categories — generic municipal scope, citizen-relevant.
@@ -86,90 +98,90 @@ export default function HomePage() {
 
   return (
     <>
-      {/* ───────────────────────────── HERO (institutional, dense) ─────────────────────── */}
-      <section className="relative isolate text-white" style={{ minHeight: 280 }}>
-        {/* Banner image OR neutral institutional fallback */}
-        <div className="absolute inset-0 bg-navy-950">
-          {bannerUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={bannerUrl} alt="" className="h-full w-full object-cover" />
-          ) : (
-            <div
-              className="absolute inset-0 opacity-[0.05]"
-              style={{
-                backgroundImage:
-                  "url(\"data:image/svg+xml,%3Csvg width='80' height='80' viewBox='0 0 80 80' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd' stroke='%23ffffff' stroke-opacity='1'%3E%3Cpath d='M0 40h80M40 0v80'/%3E%3Cpath d='M20 20h40v40H20z'/%3E%3C/g%3E%3C/svg%3E\")",
-              }}
-            />
-          )}
-          <div
-            className="absolute inset-0"
-            style={{ backgroundColor: overlayColor, opacity: bannerUrl ? overlayOpacity : 0.45 }}
-          />
-        </div>
+      {/* ───────────────────────────── HERO ─────────────────────── */}
+      <section className="relative isolate min-h-[22rem] text-white sm:min-h-[26rem] lg:min-h-[28rem]">
+        <PublicHeroBackground
+          bannerImageUrl={branding?.bannerImageUrl}
+          bannerOverlayColor={branding?.bannerOverlayColor}
+          bannerOverlayOpacity={branding?.bannerOverlayOpacity}
+          bannerFocalX={bannerFocalX}
+          bannerFocalY={bannerFocalY}
+        />
 
-        <div className="relative mx-auto max-w-7xl px-4 py-10 sm:px-6 sm:py-14 lg:px-8">
-          <div className="grid items-center gap-8 lg:grid-cols-[2fr,1fr]">
-            <div>
-              <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-white/60">
+        <div className="relative z-10 mx-auto max-w-7xl px-4 py-12 sm:px-6 sm:py-16 lg:px-8 lg:py-20">
+          <div className="grid items-center gap-8 lg:grid-cols-[1.65fr,1fr] lg:gap-10">
+            <div className="max-w-2xl">
+              <p className="mb-3 inline-flex items-center gap-2 rounded-sm border border-white/20 bg-white/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-widest text-white/80">
                 {t('public.topbar.officialPortal')}
               </p>
-              <h1 className="text-2xl font-bold leading-tight tracking-tight sm:text-3xl lg:text-4xl">
-                {platformName}
-              </h1>
-              <p className="mt-3 max-w-xl text-sm leading-relaxed text-white/75 sm:text-[15px]">
-                {platformDescription}
-              </p>
+              <div className="flex items-start gap-4">
+                {logoUrl ? (
+                  <div className="hidden h-14 w-14 shrink-0 overflow-hidden rounded border border-white/25 bg-white/10 p-1 sm:block">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={logoUrl}
+                      alt=""
+                      className="h-full w-full object-contain"
+                    />
+                  </div>
+                ) : null}
+                <div className="min-w-0">
+                  <h1 className="text-3xl font-bold leading-tight tracking-tight drop-shadow-sm sm:text-4xl lg:text-[2.5rem]">
+                    {platformName}
+                  </h1>
+                  <p className="mt-4 max-w-xl text-sm leading-relaxed text-white/90 sm:text-base">
+                    {platformDescription}
+                  </p>
+                </div>
+              </div>
 
-              {/* Citizen actions — minimal, governmental, no SaaS pill style */}
-              <div className="mt-5 flex flex-wrap gap-2">
+              <div className="mt-8 flex flex-wrap gap-3">
                 <Link
                   href="/register"
-                  className="inline-flex items-center gap-2 rounded-sm bg-white px-4 py-2 text-xs font-bold uppercase tracking-wide text-navy-950 hover:bg-gray-100"
+                  className="inline-flex items-center gap-2 rounded-sm bg-white px-5 py-2.5 text-xs font-bold uppercase tracking-wide text-navy-950 shadow-sm transition-colors hover:bg-gray-100"
                 >
-                  <MessageSquareWarning className="h-3.5 w-3.5" />
+                  <MessageSquareWarning className="h-4 w-4" />
                   {t('public.hero.submitComplaint')}
                 </Link>
                 <Link
                   href="/login"
-                  className="inline-flex items-center gap-2 rounded-sm border border-white/30 bg-white/5 px-4 py-2 text-xs font-bold uppercase tracking-wide text-white hover:bg-white/15"
+                  className="inline-flex items-center gap-2 rounded-sm border border-white/40 bg-white/10 px-5 py-2.5 text-xs font-bold uppercase tracking-wide text-white backdrop-blur-sm transition-colors hover:bg-white/20"
                 >
-                  <Eye className="h-3.5 w-3.5" />
+                  <Eye className="h-4 w-4" />
                   {t('public.hero.trackComplaint')}
                 </Link>
                 {appLinks.length > 0 && (
                   <Link
                     href="/download-app"
-                    className="inline-flex items-center gap-2 rounded-sm border border-white/30 bg-white/5 px-4 py-2 text-xs font-bold uppercase tracking-wide text-white hover:bg-white/15"
+                    className="inline-flex items-center gap-2 rounded-sm border border-white/40 bg-white/10 px-5 py-2.5 text-xs font-bold uppercase tracking-wide text-white backdrop-blur-sm transition-colors hover:bg-white/20"
                   >
-                    <Smartphone className="h-3.5 w-3.5" />
+                    <Smartphone className="h-4 w-4" />
                     {t('public.hero.downloadApp')}
                   </Link>
                 )}
               </div>
             </div>
 
-            {/* Hero side card — emergency / hotline / institutional info */}
-            <aside className="rounded border border-white/15 bg-white/5 p-4 backdrop-blur-sm">
-              <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-amber-300">
-                <AlertTriangle className="h-3.5 w-3.5" />
+            <aside className="rounded-md border border-white/20 bg-navy-950/40 p-5 shadow-lg backdrop-blur-md">
+              <div className="flex items-center gap-2 border-b border-white/15 pb-3 text-[11px] font-bold uppercase tracking-wider text-amber-200">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
                 {t('public.hero.emergency')}
               </div>
-              <p className="mt-2 text-xs leading-relaxed text-white/70">
+              <p className="mt-3 text-sm leading-relaxed text-white/85">
                 {t('public.hero.emergency.desc')}
               </p>
-              {supportPhone && (
+              {supportPhone ? (
                 <a
                   href={`tel:${supportPhone}`}
-                  className="mt-3 flex items-center gap-2 rounded border border-white/20 bg-white/10 px-3 py-2 text-sm font-bold text-white hover:bg-white/20"
+                  className="mt-4 flex items-center justify-center gap-2 rounded-sm border border-white/25 bg-white/15 px-4 py-3 text-base font-bold text-white transition-colors hover:bg-white/25"
                 >
-                  <Phone className="h-4 w-4" />
+                  <Phone className="h-5 w-5" />
                   {supportPhone}
                 </a>
-              )}
+              ) : null}
               <Link
                 href="/contact"
-                className="mt-2 block text-center text-[11px] text-white/60 hover:text-white"
+                className="mt-3 block text-center text-xs font-medium text-white/70 underline-offset-2 hover:text-white hover:underline"
               >
                 {t('public.hero.allContacts')} →
               </Link>
@@ -177,14 +189,13 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Bottom Lebanese flag accent */}
-        <div className="absolute bottom-0 start-0 end-0 h-1 bg-gradient-to-r from-red-600 via-white to-green-700" />
+        <div className="absolute bottom-0 start-0 end-0 z-10 h-1 bg-gradient-to-r from-red-600 via-white to-green-700" />
       </section>
 
       {/* ───────────────────────────── PARTICIPATING MUNICIPALITIES ─────────────────────── */}
-      <section className="border-b border-gray-200 bg-white py-8 sm:py-10">
+      <section className="border-b border-gray-200 bg-white py-10 sm:py-12">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <header className="mb-5 flex items-end justify-between border-b border-gray-200 pb-3">
+          <header className="mb-6 flex items-end justify-between border-s-4 border-s-brand-700 ps-4">
             <div>
               <p className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
                 {t('public.section.directory')}
@@ -203,11 +214,11 @@ export default function HomePage() {
           </header>
 
           {municipalities.length === 0 ? (
-            <p className="rounded border border-dashed border-gray-300 bg-gray-50 p-6 text-center text-sm text-gray-400">
+            <p className="rounded-md border border-dashed border-gray-300 bg-gray-50 p-8 text-center text-sm text-gray-500">
               {t('public.municipalities.noResults')}
             </p>
           ) : (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {municipalities.slice(0, 8).map((muni) => {
                 const name = pickName(muni, locale);
                 const address = locale === 'ar'
@@ -219,12 +230,16 @@ export default function HomePage() {
                   <Link
                     key={muni.id}
                     href={`/municipalities/${muni.code.toLowerCase()}`}
-                    className="group flex items-center gap-3 rounded border border-gray-200 bg-white p-3 transition-colors hover:border-navy-700 hover:bg-gray-50"
+                    className="group flex items-center gap-3 rounded-md border border-gray-200 bg-white p-4 shadow-sm transition-all hover:border-navy-800 hover:shadow-md"
                   >
-                    <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded border border-gray-200 bg-gray-50">
+                    <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-md border border-gray-200 bg-gray-50">
                       {muni.logoUrl ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={muni.logoUrl} alt={name} className="h-full w-full object-contain" />
+                        <img
+                          src={resolveMunicipalityMediaUrl(muni.logoUrl)}
+                          alt={name}
+                          className="h-full w-full object-contain"
+                        />
                       ) : (
                         <Building2 className="h-5 w-5 text-gray-400" />
                       )}
@@ -254,37 +269,12 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* ───────────────────────────── PUBLIC ANNOUNCEMENTS (placeholder until news API) ── */}
-      <section className="border-b border-gray-200 bg-gray-50 py-8 sm:py-10">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <header className="mb-5 flex items-end justify-between border-b border-gray-200 pb-3">
-            <div>
-              <p className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
-                {t('public.section.announcements')}
-              </p>
-              <h2 className="text-lg font-bold text-navy-950 sm:text-xl">
-                {t('public.announcements.title')}
-              </h2>
-            </div>
-            <Link
-              href="/announcements"
-              className="flex items-center gap-1 text-xs font-semibold text-brand-700 hover:underline"
-            >
-              {t('common.viewAll')}
-              <ChevronRight className="h-3.5 w-3.5 rtl:rotate-180" />
-            </Link>
-          </header>
-          <div className="rounded border border-gray-200 bg-white p-6 text-center text-sm text-gray-500">
-            <Megaphone className="mx-auto mb-2 h-6 w-6 text-gray-300" />
-            {t('public.announcements.empty')}
-          </div>
-        </div>
-      </section>
+      <PublicAnnouncementsSection />
 
       {/* ───────────────────────────── PUBLIC SERVICES / CATEGORIES ─────────────────────── */}
-      <section className="border-b border-gray-200 bg-white py-8 sm:py-10">
+      <section className="border-b border-gray-200 bg-white py-10 sm:py-12">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <header className="mb-5 border-b border-gray-200 pb-3">
+          <header className="mb-6 border-s-4 border-s-navy-800 ps-4">
             <p className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
               {t('public.section.services')}
             </p>
@@ -293,16 +283,16 @@ export default function HomePage() {
             </h2>
             <p className="mt-1 text-xs text-gray-500">{t('public.services.subtitle')}</p>
           </header>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             {services.map((s) => {
               const Icon = s.icon;
               return (
                 <Link
                   key={s.key}
                   href="/register"
-                  className="flex items-center gap-2 rounded border border-gray-200 bg-white p-3 transition-colors hover:border-navy-700 hover:bg-gray-50"
+                  className="flex items-center gap-2.5 rounded-md border border-gray-200 bg-white p-3.5 shadow-sm transition-all hover:border-navy-800 hover:shadow-md"
                 >
-                  <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded ${s.tone}`}>
+                  <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${s.tone}`}>
                     <Icon className="h-4 w-4" />
                   </span>
                   <span className="text-xs font-semibold text-gray-800">{t(s.key as any)}</span>
@@ -314,9 +304,9 @@ export default function HomePage() {
       </section>
 
       {/* ───────────────────────────── CITIZEN HELP (no flow diagrams) ─────────────────── */}
-      <section className="border-b border-gray-200 bg-gray-50 py-8 sm:py-10">
+      <section className="border-b border-gray-200 bg-gray-50 py-10 sm:py-12">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <header className="mb-5 border-b border-gray-200 pb-3">
+          <header className="mb-6 border-s-4 border-s-red-600/80 ps-4">
             <p className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
               {t('public.section.help')}
             </p>
@@ -324,10 +314,13 @@ export default function HomePage() {
               {t('public.help.title')}
             </h2>
           </header>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             {helpItems.map(({ key, descKey, icon: Icon }) => (
-              <div key={key} className="flex items-start gap-3 rounded border border-gray-200 bg-white p-4">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded border border-gray-200 bg-gray-50">
+              <div
+                key={key}
+                className="flex items-start gap-4 rounded-md border border-gray-200 bg-white p-5 shadow-sm"
+              >
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-gray-200 bg-gray-50">
                   <Icon className="h-4 w-4 text-navy-700" />
                 </span>
                 <div>
@@ -342,7 +335,7 @@ export default function HomePage() {
 
       {/* ───────────────────────────── MOBILE APP ───────────────────────────────────────── */}
       {appLinks.length > 0 && (
-        <section className="border-b border-gray-200 bg-navy-950 py-8 text-white sm:py-10">
+        <section className="border-b border-gray-200 bg-navy-950 py-10 text-white sm:py-12">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
             <div className="flex flex-col items-start gap-5 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex items-start gap-4">
@@ -394,19 +387,60 @@ export default function HomePage() {
       )}
 
       {/* ───────────────────────────── PLATFORM SUPPORT BAND ────────────────────────────── */}
-      <section className="bg-white py-8 sm:py-10">
+      <section className="bg-white py-10 sm:py-12">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="flex flex-col items-start justify-between gap-4 rounded border border-gray-200 bg-gray-50 p-5 sm:flex-row sm:items-center">
-            <div>
-              <p className="text-sm font-bold text-navy-950">{t('public.contact.platformSupport')}</p>
-              <p className="mt-0.5 text-xs text-gray-600">
-                {t('public.contact.platformSupportDesc')}
-              </p>
+          <div className="rounded-md border border-gray-200 bg-gray-50 p-6 shadow-sm">
+            <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
+              <div>
+                <p className="text-sm font-bold text-navy-950">
+                  {t('public.contact.platformSupport')}
+                </p>
+                <p className="mt-0.5 text-xs text-gray-600">
+                  {t('public.contact.platformSupportDesc')}
+                </p>
+              </div>
+              <Link href="/contact" className="btn-gov-primary shrink-0 text-xs">
+                {t('public.faq.contactUs')}
+                <ChevronRight className="h-3.5 w-3.5 rtl:rotate-180" />
+              </Link>
             </div>
-            <Link href="/contact" className="btn-gov-primary text-xs">
-              {t('public.faq.contactUs')}
-              <ChevronRight className="h-3.5 w-3.5 rtl:rotate-180" />
-            </Link>
+            {hasPlatformContact ? (
+              <div className="mt-4 flex flex-wrap gap-4 border-t border-gray-200 pt-4 text-sm text-gray-700">
+                {supportPhone && (
+                  <a
+                    href={`tel:${supportPhone}`}
+                    className="inline-flex items-center gap-2 hover:text-brand-700"
+                  >
+                    <Phone className="h-4 w-4 text-gray-400" />
+                    {supportPhone}
+                  </a>
+                )}
+                {supportEmail && (
+                  <a
+                    href={`mailto:${supportEmail}`}
+                    className="inline-flex items-center gap-2 hover:text-brand-700"
+                  >
+                    <Mail className="h-4 w-4 text-gray-400" />
+                    {supportEmail}
+                  </a>
+                )}
+                {supportWhatsApp && (
+                  <a
+                    href={`https://wa.me/${supportWhatsApp.replace(/\D/g, '')}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 hover:text-brand-700"
+                  >
+                    <MessageSquareWarning className="h-4 w-4 text-green-600" />
+                    {supportWhatsApp}
+                  </a>
+                )}
+              </div>
+            ) : (
+              <p className="mt-3 text-sm italic text-gray-400">
+                {t('public.contact.noContact')}
+              </p>
+            )}
           </div>
         </div>
       </section>

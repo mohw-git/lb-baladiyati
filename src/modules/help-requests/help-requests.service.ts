@@ -1,16 +1,52 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { assertEligibleStaffAssignee } from '../../core/users/user-governance';
 import type { Request } from 'express';
 import {
+  AttachmentStage,
   ComplaintStatus,
   HelpRequestStatus,
   NotificationType,
   Prisma,
 } from '@prisma/client';
+
+/**
+ * Help workflow event kinds written into ComplaintStatusLog.eventKind so
+ * the frontend can render them as event rows instead of fake same-status
+ * transitions.
+ */
+const HELP_EVENT_KIND = {
+  REQUESTED: 'HELP_REQUESTED',
+  SOURCE_APPROVED: 'HELP_SOURCE_APPROVED',
+  SOURCE_REJECTED: 'HELP_SOURCE_REJECTED',
+  ACCEPTED: 'HELP_ACCEPTED',
+  DECLINED: 'HELP_DECLINED',
+  ASSIGNED: 'HELP_ASSIGNED',
+  SUBMITTED: 'HELP_SUBMITTED',
+  APPROVED: 'HELP_APPROVED',
+  REJECTED: 'HELP_REJECTED',
+  CANCELLED: 'HELP_CANCELLED',
+} as const;
+
+function isPrismaRecordNotFound(err: unknown): boolean {
+  return (
+    err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025'
+  );
+}
+
+function helpStaleStateConflict(): never {
+  throw new ConflictException({
+    statusCode: 409,
+    code: 'HELP_REQUEST_STATE_CONFLICT',
+    message:
+      'This help request has already been updated. Refresh and try again.',
+  });
+}
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { PermissionsResolver } from '../../core/rbac/permissions.resolver';
 import { PERMISSIONS } from '../../core/rbac/permissions.constants';
@@ -18,6 +54,7 @@ import { paginate } from '../../core/common/dto/pagination.dto';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RealtimeService } from '../../core/realtime/realtime.service';
+import { AssignmentsService } from '../complaints/assignments.service';
 import {
   AssignHelpRequestDto,
   CloseHelpRequestDto,
@@ -38,6 +75,26 @@ const HELP_REQUESTABLE_STATUSES: ComplaintStatus[] = [
   ComplaintStatus.IN_PROGRESS,
   ComplaintStatus.PENDING_APPROVAL,
 ];
+
+/** Non-terminal help requests — at most one per complaint. */
+const OPEN_HELP_STATUSES: HelpRequestStatus[] = [
+  HelpRequestStatus.PENDING_SOURCE_APPROVAL,
+  HelpRequestStatus.PENDING,
+  HelpRequestStatus.ACCEPTED,
+  HelpRequestStatus.IN_PROGRESS,
+  HelpRequestStatus.SUBMITTED,
+];
+
+/** Terminal help-request statuses (history tab). */
+const TERMINAL_HELP_STATUSES: HelpRequestStatus[] = [
+  HelpRequestStatus.SOURCE_REJECTED,
+  HelpRequestStatus.COMPLETED,
+  HelpRequestStatus.DECLINED,
+  HelpRequestStatus.REJECTED,
+  HelpRequestStatus.CANCELLED,
+];
+
+const HELP_EVENT_KIND_VALUES = Object.values(HELP_EVENT_KIND);
 
 /**
  * Cross-department HELP requests.
@@ -61,6 +118,7 @@ export class HelpRequestsService {
     private audit: AuditService,
     private notifications: NotificationsService,
     private realtime: RealtimeService,
+    private assignments: AssignmentsService,
   ) {}
 
   // ============================================================
@@ -130,47 +188,26 @@ export class HelpRequestsService {
     const perms = await this.permissions.getUserPermissions(user.id);
     const isPrivileged = perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
     const sameDept = me?.departmentId === complaint.departmentId;
-    const isAssignee = complaint.assignments.some(
-      (a) => a.assignedToId === user.id,
-    );
+    const isAssignee = await this.assignments.isAssignedTo(complaintId, user.id);
     if (!isPrivileged && !sameDept && !isAssignee) {
       throw new ForbiddenException(
         'You can only request help for complaints in your department or assigned to you.',
       );
     }
 
-    // Source-side approval gate. Pure workers (only complaint.view_assigned,
-    // no dept-level visibility) cannot send help requests directly to a
-    // receiver HOD — they must escalate through a Supervisor or HOD who has
-    // dept-level oversight. This prevents a single worker from triggering
-    // cross-department political friction without source-side sign-off.
-    // Workers can still flag the need via in-team channels; the supervisor
-    // then opens the formal help request on their behalf.
     const hasDeptOversight =
       perms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
       perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
-    if (!hasDeptOversight) {
-      throw new ForbiddenException({
-        statusCode: 403,
-        error: 'SOURCE_APPROVAL_REQUIRED',
-        message:
-          'Workers must escalate help requests through their Supervisor or Head of Department. Ask them to open the request on your behalf.',
-      });
+
+    // Workers must be the active assignee; Supervisors/HOD/Admin may open on behalf of the team.
+    if (!hasDeptOversight && !isAssignee) {
+      throw new ForbiddenException(
+        'Only the assigned field worker can request cross-department help on this complaint.',
+      );
     }
 
-    // No more than one OPEN help request at a time per complaint
     const open = await this.prisma.complaintHelpRequest.findFirst({
-      where: {
-        complaintId,
-        status: {
-          in: [
-            HelpRequestStatus.PENDING,
-            HelpRequestStatus.ACCEPTED,
-            HelpRequestStatus.IN_PROGRESS,
-            HelpRequestStatus.SUBMITTED,
-          ],
-        },
-      },
+      where: { complaintId, status: { in: OPEN_HELP_STATUSES } },
       select: { id: true },
     });
     if (open) {
@@ -178,6 +215,18 @@ export class HelpRequestsService {
         'There is already an active help request for this complaint.',
       );
     }
+
+    const requester = await this.prisma.user.findUnique({
+      where: { id: user.id },
+      select: { firstName: true, lastName: true },
+    });
+    const requesterName = requester
+      ? `${requester.firstName} ${requester.lastName}`
+      : 'Staff';
+
+    const initialStatus = hasDeptOversight
+      ? HelpRequestStatus.PENDING
+      : HelpRequestStatus.PENDING_SOURCE_APPROVAL;
 
     const created = await this.prisma.complaintHelpRequest.create({
       data: {
@@ -187,29 +236,79 @@ export class HelpRequestsService {
         toDepartmentId: dto.toDepartmentId,
         requestedById: user.id,
         reason: dto.reason,
+        status: initialStatus,
+        ...(hasDeptOversight
+          ? {
+              sourceApprovedById: user.id,
+              sourceApprovedAt: new Date(),
+            }
+          : {}),
       },
       include: this.includeRelations(),
     });
 
-    // Notify helper-dept HOD + tenant admins
-    const recipientIds = await this.recipientsForToDept(
-      user.municipalityId,
-      dto.toDepartmentId,
-    );
-    if (recipientIds.length) {
-      await this.notifications
-        .createAndSend(
-          user.municipalityId,
-          recipientIds,
-          NotificationType.HELP_REQUESTED,
-          'Help request received',
-          `${created.fromDepartment.name} → ${created.toDepartment.name}: "${complaint.title}"`,
-          {
-            helpRequestId: created.id,
-            complaintId,
-          },
-        )
-        .catch(() => undefined);
+    if (hasDeptOversight) {
+      const recipientIds = await this.recipientsForToDept(
+        user.municipalityId,
+        dto.toDepartmentId,
+      );
+      if (recipientIds.length) {
+        await this.notifications
+          .createAndSend(
+            user.municipalityId,
+            recipientIds,
+            NotificationType.HELP_REQUESTED,
+            'Help request received',
+            `${created.fromDepartment.name} → ${created.toDepartment.name}: "${complaint.title}"`,
+            { helpRequestId: created.id, complaintId },
+          )
+          .catch(() => undefined);
+      }
+      await this.logHelpEvent(
+        complaintId,
+        user.id,
+        HELP_EVENT_KIND.REQUESTED,
+        `Help request sent to ${toDept.name} by ${requesterName}.`,
+      );
+      this.realtime.helpRequestEvent('help-request:created', {
+        id: created.id,
+        complaintId,
+        municipalityId: user.municipalityId,
+        fromDepartmentId: created.fromDepartmentId,
+        toDepartmentId: created.toDepartmentId,
+        userIds: [user.id, ...recipientIds],
+      });
+    } else {
+      const sourceRecipients = await this.recipientsForFromDept(
+        user.municipalityId,
+        complaint.departmentId,
+      );
+      if (sourceRecipients.length) {
+        await this.notifications
+          .createAndSend(
+            user.municipalityId,
+            sourceRecipients,
+            NotificationType.HELP_REQUESTED,
+            'Help request awaiting your approval',
+            `${requesterName} requested help from ${toDept.name} for "${complaint.title}". Review before it is sent.`,
+            { helpRequestId: created.id, complaintId },
+          )
+          .catch(() => undefined);
+      }
+      await this.logHelpEvent(
+        complaintId,
+        user.id,
+        HELP_EVENT_KIND.REQUESTED,
+        `Help requested by ${requesterName} — awaiting source department approval.`,
+      );
+      this.realtime.helpRequestEvent('help-request:created', {
+        id: created.id,
+        complaintId,
+        municipalityId: user.municipalityId,
+        fromDepartmentId: created.fromDepartmentId,
+        toDepartmentId: created.toDepartmentId,
+        userIds: [user.id, ...sourceRecipients],
+      });
     }
 
     await this.audit.logFromRequest(req, {
@@ -224,19 +323,138 @@ export class HelpRequestsService {
         from: complaint.departmentId,
         to: dto.toDepartmentId,
         reason: dto.reason,
+        status: initialStatus,
       },
     });
 
-    this.realtime.helpRequestEvent('help-request:created', {
-      id: created.id,
-      complaintId,
-      municipalityId: user.municipalityId,
-      fromDepartmentId: created.fromDepartmentId,
-      toDepartmentId: created.toDepartmentId,
-      userIds: [user.id, ...recipientIds],
-    });
-
     return created;
+  }
+
+  // ============================================================
+  // SOURCE APPROVE — Supervisor/HOD sends request to receiver dept
+  // ============================================================
+
+  async approveSource(
+    id: string,
+    user: { id: string; email: string; municipalityId: string },
+    dto: RespondHelpRequestDto,
+    req?: Request,
+  ) {
+    const hr = await this.loadOrFail(id, user.municipalityId);
+    if (hr.status !== HelpRequestStatus.PENDING_SOURCE_APPROVAL) {
+      throw new BadRequestException(
+        `Help request is not awaiting source approval (status: ${hr.status}).`,
+      );
+    }
+    await this.assertCanApproveSource(user.id, hr.fromDepartmentId);
+
+    // Atomic: only the first concurrent click wins. Race losers get 409.
+    let updated;
+    try {
+      updated = await this.prisma.complaintHelpRequest.update({
+        where: { id, status: HelpRequestStatus.PENDING_SOURCE_APPROVAL },
+        data: {
+          status: HelpRequestStatus.PENDING,
+          sourceApprovedById: user.id,
+          sourceApprovedAt: new Date(),
+        },
+        include: this.includeRelations(),
+      });
+    } catch (err) {
+      if (isPrismaRecordNotFound(err)) helpStaleStateConflict();
+      throw err;
+    }
+
+    const recipientIds = await this.recipientsForToDept(
+      user.municipalityId,
+      hr.toDepartmentId,
+    );
+    await this.notify(
+      updated,
+      NotificationType.HELP_REQUESTED,
+      'Help request received',
+      `${updated.fromDepartment.name} → ${updated.toDepartment.name}: "${updated.complaint.title}"`,
+      recipientIds,
+    );
+    await this.notify(
+      updated,
+      NotificationType.HELP_ACCEPTED,
+      'Your help request was approved',
+      `Your supervisor sent the help request to ${updated.toDepartment.name}.`,
+      [updated.requestedById],
+    );
+
+    await this.logHelpEvent(
+      hr.complaintId,
+      user.id,
+      HELP_EVENT_KIND.SOURCE_APPROVED,
+      `Help request approved by source department and sent to ${updated.toDepartment.name}.`,
+    );
+    await this.auditChange(req, user, updated, 'help.approve_source', {
+      note: dto.note,
+    });
+    this.emitUpdated(updated, recipientIds);
+    return updated;
+  }
+
+  // ============================================================
+  // SOURCE REJECT — Supervisor/HOD declines before sending
+  // ============================================================
+
+  async rejectSource(
+    id: string,
+    user: { id: string; email: string; municipalityId: string },
+    dto: RespondHelpRequestDto,
+    req?: Request,
+  ) {
+    const hr = await this.loadOrFail(id, user.municipalityId);
+    if (hr.status !== HelpRequestStatus.PENDING_SOURCE_APPROVAL) {
+      throw new BadRequestException(
+        `Help request is not awaiting source approval (status: ${hr.status}).`,
+      );
+    }
+    if (!dto.note || dto.note.trim().length < 5) {
+      throw new BadRequestException(
+        'A short reason (5+ chars) is required when rejecting a help request.',
+      );
+    }
+    await this.assertCanApproveSource(user.id, hr.fromDepartmentId);
+
+    let updated;
+    try {
+      updated = await this.prisma.complaintHelpRequest.update({
+        where: { id, status: HelpRequestStatus.PENDING_SOURCE_APPROVAL },
+        data: {
+          status: HelpRequestStatus.SOURCE_REJECTED,
+          sourceRejectedById: user.id,
+          sourceRejectedAt: new Date(),
+          sourceRejectReason: dto.note,
+        },
+        include: this.includeRelations(),
+      });
+    } catch (err) {
+      if (isPrismaRecordNotFound(err)) helpStaleStateConflict();
+      throw err;
+    }
+
+    await this.notify(
+      updated,
+      NotificationType.HELP_REJECTED,
+      'Help request not approved',
+      `Your help request was not approved: ${dto.note}`,
+      [updated.requestedById],
+    );
+    await this.logHelpEvent(
+      hr.complaintId,
+      user.id,
+      HELP_EVENT_KIND.SOURCE_REJECTED,
+      `Help request rejected by source department: ${dto.note}`,
+    );
+    await this.auditChange(req, user, updated, 'help.reject_source', {
+      note: dto.note,
+    });
+    this.emitUpdated(updated);
+    return updated;
   }
 
   // ============================================================
@@ -257,21 +475,33 @@ export class HelpRequestsService {
     }
     await this.assertCanRespond(user.id, hr.toDepartmentId);
 
-    const updated = await this.prisma.complaintHelpRequest.update({
-      where: { id },
-      data: {
-        status: HelpRequestStatus.ACCEPTED,
-        respondedById: user.id,
-        respondedAt: new Date(),
-        responseReason: dto.note ?? null,
-      },
-      include: this.includeRelations(),
-    });
+    let updated;
+    try {
+      updated = await this.prisma.complaintHelpRequest.update({
+        where: { id, status: HelpRequestStatus.PENDING },
+        data: {
+          status: HelpRequestStatus.ACCEPTED,
+          respondedById: user.id,
+          respondedAt: new Date(),
+          responseReason: dto.note ?? null,
+        },
+        include: this.includeRelations(),
+      });
+    } catch (err) {
+      if (isPrismaRecordNotFound(err)) helpStaleStateConflict();
+      throw err;
+    }
 
     await this.notify(updated, NotificationType.HELP_ACCEPTED,
       'Help request accepted',
       `${updated.toDepartment.name} accepted your help request for "${updated.complaint.title}".`,
       [updated.requestedById],
+    );
+    await this.logHelpEvent(
+      hr.complaintId,
+      user.id,
+      HELP_EVENT_KIND.ACCEPTED,
+      `Help request accepted by ${updated.toDepartment.name}.`,
     );
     await this.auditChange(req, user, updated, 'help.accept', { note: dto.note });
     this.emitUpdated(updated);
@@ -301,21 +531,33 @@ export class HelpRequestsService {
     }
     await this.assertCanRespond(user.id, hr.toDepartmentId);
 
-    const updated = await this.prisma.complaintHelpRequest.update({
-      where: { id },
-      data: {
-        status: HelpRequestStatus.DECLINED,
-        respondedById: user.id,
-        respondedAt: new Date(),
-        responseReason: dto.note,
-      },
-      include: this.includeRelations(),
-    });
+    let updated;
+    try {
+      updated = await this.prisma.complaintHelpRequest.update({
+        where: { id, status: HelpRequestStatus.PENDING },
+        data: {
+          status: HelpRequestStatus.DECLINED,
+          respondedById: user.id,
+          respondedAt: new Date(),
+          responseReason: dto.note,
+        },
+        include: this.includeRelations(),
+      });
+    } catch (err) {
+      if (isPrismaRecordNotFound(err)) helpStaleStateConflict();
+      throw err;
+    }
 
     await this.notify(updated, NotificationType.HELP_DECLINED,
       'Help request declined',
       `${updated.toDepartment.name} declined: ${dto.note}`,
       [updated.requestedById],
+    );
+    await this.logHelpEvent(
+      hr.complaintId,
+      user.id,
+      HELP_EVENT_KIND.DECLINED,
+      `Help request declined by ${updated.toDepartment.name}: ${dto.note}`,
     );
     await this.auditChange(req, user, updated, 'help.decline', { note: dto.note });
     this.emitUpdated(updated);
@@ -350,27 +592,59 @@ export class HelpRequestsService {
         departmentId: hr.toDepartmentId,
         isActive: true,
       },
-      select: { id: true, firstName: true, lastName: true },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        createdVia: true,
+        isActive: true,
+        userRoles: { select: { role: { select: { name: true } } } },
+      },
     });
     if (!assignee) {
       throw new BadRequestException(
-        'The chosen helper must be an active member of the helper department.',
+        'The chosen helper must be an active staff member of the helper department.',
       );
     }
-
-    const updated = await this.prisma.complaintHelpRequest.update({
-      where: { id },
-      data: {
-        status: HelpRequestStatus.IN_PROGRESS,
-        helperAssigneeId: dto.helperAssigneeId,
-      },
-      include: this.includeRelations(),
+    assertEligibleStaffAssignee({
+      createdVia: assignee.createdVia,
+      isActive: assignee.isActive,
+      userRoles: assignee.userRoles,
     });
+
+    // Atomic: only ACCEPTED or IN_PROGRESS may move to IN_PROGRESS via assign.
+    // We allow assign-while-IN_PROGRESS (reassigning the helper) but require
+    // the previous status row to match one of those two.
+    let updated;
+    try {
+      updated = await this.prisma.complaintHelpRequest.update({
+        where: {
+          id,
+          status: {
+            in: [HelpRequestStatus.ACCEPTED, HelpRequestStatus.IN_PROGRESS],
+          },
+        },
+        data: {
+          status: HelpRequestStatus.IN_PROGRESS,
+          helperAssigneeId: dto.helperAssigneeId,
+        },
+        include: this.includeRelations(),
+      });
+    } catch (err) {
+      if (isPrismaRecordNotFound(err)) helpStaleStateConflict();
+      throw err;
+    }
 
     await this.notify(updated, NotificationType.HELP_ASSIGNED,
       'You have been assigned to help on a complaint',
       `${updated.fromDepartment.name} requested help: "${updated.complaint.title}". Reason: ${updated.reason}`,
       [dto.helperAssigneeId, updated.requestedById],
+    );
+    await this.logHelpEvent(
+      hr.complaintId,
+      user.id,
+      HELP_EVENT_KIND.ASSIGNED,
+      `Help assigned to ${assignee.firstName} ${assignee.lastName} in ${updated.toDepartment.name}.`,
     );
     await this.auditChange(req, user, updated, 'help.assign', {
       helperAssigneeId: dto.helperAssigneeId,
@@ -414,22 +688,39 @@ export class HelpRequestsService {
       );
     }
 
-    const updated = await this.prisma.complaintHelpRequest.update({
-      where: { id },
-      data: {
-        status: HelpRequestStatus.SUBMITTED,
-        submittedById: user.id,
-        submittedAt: new Date(),
-        solutionNotes: dto.notes,
-        solutionAttachments: (dto.attachments ?? []) as unknown as Prisma.InputJsonValue,
-      },
-      include: this.includeRelations(),
-    });
+    let updated;
+    try {
+      updated = await this.prisma.complaintHelpRequest.update({
+        where: {
+          id,
+          status: {
+            in: [HelpRequestStatus.IN_PROGRESS, HelpRequestStatus.ACCEPTED],
+          },
+        },
+        data: {
+          status: HelpRequestStatus.SUBMITTED,
+          submittedById: user.id,
+          submittedAt: new Date(),
+          solutionNotes: dto.notes,
+          solutionAttachments: (dto.attachments ?? []) as unknown as Prisma.InputJsonValue,
+        },
+        include: this.includeRelations(),
+      });
+    } catch (err) {
+      if (isPrismaRecordNotFound(err)) helpStaleStateConflict();
+      throw err;
+    }
 
     await this.notify(updated, NotificationType.HELP_SUBMITTED,
       'Helper department submitted work',
       `${updated.toDepartment.name} finished helping with "${updated.complaint.title}". Please review.`,
       this.recipientsForCloseReview(updated),
+    );
+    await this.logHelpEvent(
+      hr.complaintId,
+      user.id,
+      HELP_EVENT_KIND.SUBMITTED,
+      `Help work submitted by ${updated.toDepartment.name}.`,
     );
     await this.auditChange(req, user, updated, 'help.submit', {
       hasAttachments: (dto.attachments ?? []).length,
@@ -456,21 +747,33 @@ export class HelpRequestsService {
     }
     await this.assertCanCloseFromOriginal(user.id, hr.fromDepartmentId);
 
-    const updated = await this.prisma.complaintHelpRequest.update({
-      where: { id },
-      data: {
-        status: HelpRequestStatus.COMPLETED,
-        closedById: user.id,
-        closedAt: new Date(),
-        closeReason: dto.reason ?? null,
-      },
-      include: this.includeRelations(),
-    });
+    let updated;
+    try {
+      updated = await this.prisma.complaintHelpRequest.update({
+        where: { id, status: HelpRequestStatus.SUBMITTED },
+        data: {
+          status: HelpRequestStatus.COMPLETED,
+          closedById: user.id,
+          closedAt: new Date(),
+          closeReason: dto.reason ?? null,
+        },
+        include: this.includeRelations(),
+      });
+    } catch (err) {
+      if (isPrismaRecordNotFound(err)) helpStaleStateConflict();
+      throw err;
+    }
 
     await this.notify(updated, NotificationType.HELP_COMPLETED,
       'Help request completed',
       `Your contribution to "${updated.complaint.title}" was approved by ${updated.fromDepartment.name}.`,
       this.contributorsOf(updated),
+    );
+    await this.logHelpEvent(
+      hr.complaintId,
+      user.id,
+      HELP_EVENT_KIND.APPROVED,
+      'Help result approved by source department.',
     );
     await this.auditChange(req, user, updated, 'help.approve', { reason: dto.reason });
     this.emitUpdated(updated);
@@ -500,21 +803,33 @@ export class HelpRequestsService {
     }
     await this.assertCanCloseFromOriginal(user.id, hr.fromDepartmentId);
 
-    const updated = await this.prisma.complaintHelpRequest.update({
-      where: { id },
-      data: {
-        status: HelpRequestStatus.REJECTED,
-        closedById: user.id,
-        closedAt: new Date(),
-        closeReason: dto.reason,
-      },
-      include: this.includeRelations(),
-    });
+    let updated;
+    try {
+      updated = await this.prisma.complaintHelpRequest.update({
+        where: { id, status: HelpRequestStatus.SUBMITTED },
+        data: {
+          status: HelpRequestStatus.REJECTED,
+          closedById: user.id,
+          closedAt: new Date(),
+          closeReason: dto.reason,
+        },
+        include: this.includeRelations(),
+      });
+    } catch (err) {
+      if (isPrismaRecordNotFound(err)) helpStaleStateConflict();
+      throw err;
+    }
 
     await this.notify(updated, NotificationType.HELP_REJECTED,
       'Helper work rejected',
       `${updated.fromDepartment.name} rejected the helper work for "${updated.complaint.title}": ${dto.reason}`,
       this.contributorsOf(updated),
+    );
+    await this.logHelpEvent(
+      hr.complaintId,
+      user.id,
+      HELP_EVENT_KIND.REJECTED,
+      `Help result rejected by source department: ${dto.reason}`,
     );
     await this.auditChange(req, user, updated, 'help.reject', { reason: dto.reason });
     this.emitUpdated(updated);
@@ -532,6 +847,7 @@ export class HelpRequestsService {
   ) {
     const hr = await this.loadOrFail(id, user.municipalityId);
     const cancellableFrom: HelpRequestStatus[] = [
+      HelpRequestStatus.PENDING_SOURCE_APPROVAL,
       HelpRequestStatus.PENDING,
       HelpRequestStatus.ACCEPTED,
       HelpRequestStatus.IN_PROGRESS,
@@ -556,20 +872,32 @@ export class HelpRequestsService {
       );
     }
 
-    const updated = await this.prisma.complaintHelpRequest.update({
-      where: { id },
-      data: {
-        status: HelpRequestStatus.CANCELLED,
-        closedById: user.id,
-        closedAt: new Date(),
-      },
-      include: this.includeRelations(),
-    });
+    let updated;
+    try {
+      updated = await this.prisma.complaintHelpRequest.update({
+        where: { id, status: { in: cancellableFrom } },
+        data: {
+          status: HelpRequestStatus.CANCELLED,
+          closedById: user.id,
+          closedAt: new Date(),
+        },
+        include: this.includeRelations(),
+      });
+    } catch (err) {
+      if (isPrismaRecordNotFound(err)) helpStaleStateConflict();
+      throw err;
+    }
 
     await this.notify(updated, NotificationType.HELP_CANCELLED,
       'Help request cancelled',
       `${updated.fromDepartment.name} withdrew their help request for "${updated.complaint.title}".`,
       this.contributorsOf(updated),
+    );
+    await this.logHelpEvent(
+      hr.complaintId,
+      user.id,
+      HELP_EVENT_KIND.CANCELLED,
+      `Help request cancelled by ${updated.fromDepartment.name}.`,
     );
     await this.auditChange(req, user, updated, 'help.cancel', {});
     this.emitUpdated(updated);
@@ -581,45 +909,82 @@ export class HelpRequestsService {
   // ============================================================
 
   async findAll(userId: string, municipalityId: string, query: HelpRequestQueryDto) {
-    const where: any = { municipalityId };
-    const filters: any[] = [];
+    const where: Prisma.ComplaintHelpRequestWhereInput = { municipalityId };
+    const filters: Prisma.ComplaintHelpRequestWhereInput[] = [];
 
     if (query.status) filters.push({ status: query.status });
     if (query.complaintId) filters.push({ complaintId: query.complaintId });
 
-    if (query.inbox || query.outgoing) {
-      const me = await this.prisma.user.findUnique({
-        where: { id: userId },
-        select: { departmentId: true },
-      });
-      const perms = await this.permissions.getUserPermissions(userId);
-      const isAdmin = perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
-      const hasDeptOversight =
-        perms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
-        perms.includes(PERMISSIONS.HELP_RESPOND);
+    const me = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { departmentId: true },
+    });
+    const perms = await this.permissions.getUserPermissions(userId);
+    const isAdmin = perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
+    const hasDeptOversight =
+      perms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
+      perms.includes(PERMISSIONS.HELP_RESPOND);
+    const canRespond = perms.includes(PERMISSIONS.HELP_RESPOND);
 
+    if (query.queue) {
+      const queueFilter = this.buildQueueFilter(
+        query.queue,
+        userId,
+        me?.departmentId ?? null,
+        isAdmin,
+        hasDeptOversight,
+        canRespond,
+      );
+      if (queueFilter === null) return paginate([], 0, query);
+      filters.push(queueFilter);
+    } else if (query.inbox || query.outgoing) {
+      // Legacy mobile / API clients
+      if (query.sourceApproval) {
+        if (!query.outgoing) {
+          throw new BadRequestException(
+            'sourceApproval filter requires outgoing=true',
+          );
+        }
+        const q = this.buildQueueFilter(
+          'sourceApproval',
+          userId,
+          me?.departmentId ?? null,
+          isAdmin,
+          hasDeptOversight,
+          canRespond,
+        );
+        if (q) filters.push(q);
+        else return paginate([], 0, query);
+      }
       if (query.inbox) {
-        // Inbox = "requests landing in MY dept that need HOD/Supervisor
-        // attention". Pure workers (no dept-level oversight, no help.respond)
-        // never see receiver inbox; only their own assigned helper work,
-        // which they reach via complaint detail or "outgoing"-of-self.
-        if (isAdmin) {
-          // admin sees nothing extra; the muni filter is enough
-        } else if (hasDeptOversight && me?.departmentId) {
-          filters.push({ toDepartmentId: me.departmentId });
+        if (canRespond && (isAdmin || me?.departmentId)) {
+          const q = this.buildQueueFilter(
+            'incoming',
+            userId,
+            me?.departmentId ?? null,
+            isAdmin,
+            hasDeptOversight,
+            canRespond,
+          );
+          if (q) filters.push(q);
         } else if (me?.departmentId) {
-          // Worker: only requests where they are the helper assignee.
-          filters.push({
-            toDepartmentId: me.departmentId,
-            helperAssigneeId: userId,
-          });
+          const q = this.buildQueueFilter(
+            'myAssignments',
+            userId,
+            me?.departmentId ?? null,
+            isAdmin,
+            hasDeptOversight,
+            canRespond,
+          );
+          if (q) filters.push(q);
+          else return paginate([], 0, query);
         } else {
           return paginate([], 0, query);
         }
       }
-      if (query.outgoing) {
+      if (query.outgoing && !query.sourceApproval) {
         if (isAdmin) {
-          // skip narrow filter
+          // all outgoing — no extra filter
         } else if (hasDeptOversight && me?.departmentId) {
           filters.push({
             OR: [
@@ -628,7 +993,6 @@ export class HelpRequestsService {
             ],
           });
         } else {
-          // Pure worker can only see requests they personally raised.
           filters.push({ requestedById: userId });
         }
       }
@@ -651,14 +1015,144 @@ export class HelpRequestsService {
     return paginate(items, total, query);
   }
 
+  /**
+   * Maps a workflow queue tab to a Prisma filter. Returns null when the caller
+   * has no visibility for that queue (empty list, not an error).
+   */
+  private buildQueueFilter(
+    queue: NonNullable<HelpRequestQueryDto['queue']>,
+    userId: string,
+    departmentId: string | null,
+    isAdmin: boolean,
+    hasDeptOversight: boolean,
+    canRespond: boolean,
+  ): Prisma.ComplaintHelpRequestWhereInput | null {
+    switch (queue) {
+      case 'sourceApproval':
+        if (isAdmin) {
+          return { status: HelpRequestStatus.PENDING_SOURCE_APPROVAL };
+        }
+        if (hasDeptOversight && departmentId) {
+          return {
+            fromDepartmentId: departmentId,
+            status: HelpRequestStatus.PENDING_SOURCE_APPROVAL,
+          };
+        }
+        return null;
+
+      case 'incoming':
+        if (isAdmin) {
+          return { status: HelpRequestStatus.PENDING };
+        }
+        if (canRespond && departmentId) {
+          return {
+            toDepartmentId: departmentId,
+            status: HelpRequestStatus.PENDING,
+          };
+        }
+        return null;
+
+      case 'needsAssignment':
+        if (isAdmin) {
+          return {
+            status: HelpRequestStatus.ACCEPTED,
+            helperAssigneeId: null,
+          };
+        }
+        if (canRespond && departmentId) {
+          return {
+            toDepartmentId: departmentId,
+            status: HelpRequestStatus.ACCEPTED,
+            helperAssigneeId: null,
+          };
+        }
+        return null;
+
+      case 'inProgress':
+        if (isAdmin) {
+          return { status: HelpRequestStatus.IN_PROGRESS };
+        }
+        if (canRespond && departmentId) {
+          return {
+            toDepartmentId: departmentId,
+            status: HelpRequestStatus.IN_PROGRESS,
+          };
+        }
+        return null;
+
+      case 'awaitingSourceReview':
+        if (isAdmin) {
+          return { status: HelpRequestStatus.SUBMITTED };
+        }
+        if (hasDeptOversight && departmentId) {
+          return {
+            fromDepartmentId: departmentId,
+            status: HelpRequestStatus.SUBMITTED,
+          };
+        }
+        return null;
+
+      case 'myAssignments':
+        return {
+          helperAssigneeId: userId,
+          status: {
+            in: [
+              HelpRequestStatus.IN_PROGRESS,
+              HelpRequestStatus.SUBMITTED,
+              HelpRequestStatus.ACCEPTED,
+            ],
+          },
+        };
+
+      case 'history':
+        if (isAdmin) {
+          return { status: { in: TERMINAL_HELP_STATUSES } };
+        }
+        if (!departmentId) return null;
+        return {
+          status: { in: TERMINAL_HELP_STATUSES },
+          OR: [
+            { fromDepartmentId: departmentId },
+            { toDepartmentId: departmentId },
+            { requestedById: userId },
+            { helperAssigneeId: userId },
+          ],
+        };
+
+      default:
+        return null;
+    }
+  }
+
   async findOne(id: string, userId: string, municipalityId: string) {
     const hr = await this.loadOrFail(id, municipalityId);
     await this.assertCanRead(userId, hr);
-    return hr;
+
+    const [complaintContext, timeline] = await Promise.all([
+      this.buildSafeComplaintContext(hr.complaintId, municipalityId),
+      this.buildHelpTimeline(hr.complaintId),
+    ]);
+
+    return {
+      ...hr,
+      complaintContext,
+      timeline,
+    };
   }
 
-  /** Pending help-requests targeting the caller's department (badge count). */
-  async pendingCount(userId: string, municipalityId: string): Promise<number> {
+  /** Pending help-request counts for inbox badges. */
+  async pendingCount(
+    userId: string,
+    municipalityId: string,
+  ): Promise<{
+    count: number;
+    receiverCount: number;
+    sourceCount: number;
+    needsAssignmentCount: number;
+    inProgressCount: number;
+    awaitingSourceReviewCount: number;
+    myAssignmentsCount: number;
+  }> {
     const me = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { departmentId: true },
@@ -668,21 +1162,162 @@ export class HelpRequestsService {
     const hasDeptOversight =
       perms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
       perms.includes(PERMISSIONS.HELP_RESPOND);
+    const canRespond = perms.includes(PERMISSIONS.HELP_RESPOND);
+    const deptId = me?.departmentId;
 
-    if (isAdmin) {
-      return this.prisma.complaintHelpRequest.count({
-        where: { municipalityId, status: HelpRequestStatus.PENDING },
-      });
-    }
-    // Workers don't see receiver inbox badge — they have no action to take.
-    if (!hasDeptOversight || !me?.departmentId) return 0;
-    return this.prisma.complaintHelpRequest.count({
+    const empty = {
+      count: 0,
+      receiverCount: 0,
+      sourceCount: 0,
+      needsAssignmentCount: 0,
+      inProgressCount: 0,
+      awaitingSourceReviewCount: 0,
+      myAssignmentsCount: 0,
+    };
+
+    const myAssignmentsCount = await this.prisma.complaintHelpRequest.count({
       where: {
         municipalityId,
-        toDepartmentId: me.departmentId,
-        status: HelpRequestStatus.PENDING,
+        helperAssigneeId: userId,
+        status: {
+          in: [
+            HelpRequestStatus.IN_PROGRESS,
+            HelpRequestStatus.ACCEPTED,
+          ],
+        },
       },
     });
+
+    if (isAdmin) {
+      const [
+        receiverCount,
+        sourceCount,
+        needsAssignmentCount,
+        inProgressCount,
+        awaitingSourceReviewCount,
+      ] = await Promise.all([
+        this.prisma.complaintHelpRequest.count({
+          where: { municipalityId, status: HelpRequestStatus.PENDING },
+        }),
+        this.prisma.complaintHelpRequest.count({
+          where: {
+            municipalityId,
+            status: HelpRequestStatus.PENDING_SOURCE_APPROVAL,
+          },
+        }),
+        this.prisma.complaintHelpRequest.count({
+          where: {
+            municipalityId,
+            status: HelpRequestStatus.ACCEPTED,
+            helperAssigneeId: null,
+          },
+        }),
+        this.prisma.complaintHelpRequest.count({
+          where: { municipalityId, status: HelpRequestStatus.IN_PROGRESS },
+        }),
+        this.prisma.complaintHelpRequest.count({
+          where: { municipalityId, status: HelpRequestStatus.SUBMITTED },
+        }),
+      ]);
+      return {
+        count: receiverCount,
+        receiverCount,
+        sourceCount,
+        needsAssignmentCount,
+        inProgressCount,
+        awaitingSourceReviewCount,
+        myAssignmentsCount,
+      };
+    }
+
+    if (!deptId) {
+      return { ...empty, myAssignmentsCount };
+    }
+
+    if (canRespond) {
+      const [
+        receiverCount,
+        needsAssignmentCount,
+        inProgressCount,
+      ] = await Promise.all([
+        this.prisma.complaintHelpRequest.count({
+          where: {
+            municipalityId,
+            toDepartmentId: deptId,
+            status: HelpRequestStatus.PENDING,
+          },
+        }),
+        this.prisma.complaintHelpRequest.count({
+          where: {
+            municipalityId,
+            toDepartmentId: deptId,
+            status: HelpRequestStatus.ACCEPTED,
+            helperAssigneeId: null,
+          },
+        }),
+        this.prisma.complaintHelpRequest.count({
+          where: {
+            municipalityId,
+            toDepartmentId: deptId,
+            status: HelpRequestStatus.IN_PROGRESS,
+          },
+        }),
+      ]);
+      const sourceCount = hasDeptOversight
+        ? await this.prisma.complaintHelpRequest.count({
+            where: {
+              municipalityId,
+              fromDepartmentId: deptId,
+              status: HelpRequestStatus.PENDING_SOURCE_APPROVAL,
+            },
+          })
+        : 0;
+      const awaitingSourceReviewCount = hasDeptOversight
+        ? await this.prisma.complaintHelpRequest.count({
+            where: {
+              municipalityId,
+              fromDepartmentId: deptId,
+              status: HelpRequestStatus.SUBMITTED,
+            },
+          })
+        : 0;
+      return {
+        count: receiverCount,
+        receiverCount,
+        sourceCount,
+        needsAssignmentCount,
+        inProgressCount,
+        awaitingSourceReviewCount,
+        myAssignmentsCount,
+      };
+    }
+
+    if (hasDeptOversight) {
+      const [sourceCount, awaitingSourceReviewCount] = await Promise.all([
+        this.prisma.complaintHelpRequest.count({
+          where: {
+            municipalityId,
+            fromDepartmentId: deptId,
+            status: HelpRequestStatus.PENDING_SOURCE_APPROVAL,
+          },
+        }),
+        this.prisma.complaintHelpRequest.count({
+          where: {
+            municipalityId,
+            fromDepartmentId: deptId,
+            status: HelpRequestStatus.SUBMITTED,
+          },
+        }),
+      ]);
+      return {
+        ...empty,
+        sourceCount,
+        awaitingSourceReviewCount,
+        myAssignmentsCount,
+      };
+    }
+
+    return { ...empty, myAssignmentsCount };
   }
 
   /**
@@ -750,14 +1385,24 @@ export class HelpRequestsService {
       });
     }
 
-    // Helper-side: only requests where helper dept = caller dept AND caller
-    // has dept oversight OR was assigned the helper work.
+    // Helper-side: never see pre-source-approval requests.
     if (!me?.departmentId) return [];
+    const helperStatuses: HelpRequestStatus[] = [
+      HelpRequestStatus.PENDING,
+      HelpRequestStatus.ACCEPTED,
+      HelpRequestStatus.IN_PROGRESS,
+      HelpRequestStatus.SUBMITTED,
+      HelpRequestStatus.COMPLETED,
+      HelpRequestStatus.DECLINED,
+      HelpRequestStatus.REJECTED,
+      HelpRequestStatus.CANCELLED,
+    ];
     return this.prisma.complaintHelpRequest.findMany({
       where: {
         complaintId,
         municipalityId,
         toDepartmentId: me.departmentId,
+        status: { in: helperStatuses },
         ...(perms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
         perms.includes(PERMISSIONS.HELP_RESPOND)
           ? {}
@@ -801,15 +1446,134 @@ export class HelpRequestsService {
       perms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
       perms.includes(PERMISSIONS.HELP_RESPOND);
 
-    // Source side
+    // Source side (including worker requester while awaiting approval)
     if (hr.requestedById === userId) return;
-    if (me?.departmentId && me.departmentId === hr.fromDepartmentId && hasDeptOversight) return;
+    if (me?.departmentId && me.departmentId === hr.fromDepartmentId && hasDeptOversight) {
+      return;
+    }
 
-    // Helper side
+    // Helper side — not visible until source approved
+    if (
+      hr.status === HelpRequestStatus.PENDING_SOURCE_APPROVAL ||
+      hr.status === HelpRequestStatus.SOURCE_REJECTED
+    ) {
+      throw new ForbiddenException('You do not have access to this help request');
+    }
     if (hr.helperAssigneeId === userId) return;
-    if (me?.departmentId && me.departmentId === hr.toDepartmentId && hasDeptOversight) return;
+
+    if (me?.departmentId && me.departmentId === hr.toDepartmentId) {
+      const isHelperHod =
+        perms.includes(PERMISSIONS.HELP_RESPOND) &&
+        (await this.isHodOf(userId, hr.toDepartmentId));
+      if (isHelperHod) return;
+      // Receiver Supervisor / HOD with dept visibility (field workers lack this)
+      if (perms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT)) return;
+    }
 
     throw new ForbiddenException('You do not have access to this help request');
+  }
+
+  /** Safe complaint snapshot for cross-dept help work (no citizen PII). */
+  private async buildSafeComplaintContext(
+    complaintId: string,
+    municipalityId: string,
+  ) {
+    const complaint = await this.prisma.complaint.findFirst({
+      where: { id: complaintId, municipalityId, deletedAt: null },
+      select: {
+        id: true,
+        referenceCode: true,
+        title: true,
+        description: true,
+        address: true,
+        latitude: true,
+        longitude: true,
+        createdAt: true,
+        category: {
+          select: { id: true, name: true, nameAr: true, nameFr: true },
+        },
+        department: { select: { id: true, name: true } },
+        attachments: {
+          where: { stage: AttachmentStage.SUBMISSION, deletedAt: null },
+          select: {
+            id: true,
+            url: true,
+            filename: true,
+            mimeType: true,
+            stage: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+    if (!complaint) return null;
+
+    return {
+      id: complaint.id,
+      referenceCode: complaint.referenceCode,
+      title: complaint.title,
+      description: complaint.description,
+      address: complaint.address,
+      latitude: complaint.latitude?.toString() ?? null,
+      longitude: complaint.longitude?.toString() ?? null,
+      createdAt: complaint.createdAt,
+      category: complaint.category,
+      owningDepartment: complaint.department,
+      attachments: complaint.attachments.map((a) => ({
+        id: a.id,
+        url: a.url,
+        filename: a.filename,
+        mime: a.mimeType,
+        stage: a.stage,
+        createdAt: a.createdAt,
+      })),
+    };
+  }
+
+  /** Help workflow rows from the complaint status log. */
+  private async buildHelpTimeline(complaintId: string) {
+    const logs = await this.prisma.complaintStatusLog.findMany({
+      where: {
+        complaintId,
+        eventKind: { in: HELP_EVENT_KIND_VALUES },
+      },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true,
+        eventKind: true,
+        notes: true,
+        createdAt: true,
+        changedBy: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+      },
+    });
+    return logs;
+  }
+
+  private async assertCanApproveSource(
+    userId: string,
+    fromDepartmentId: string,
+  ) {
+    const perms = await this.permissions.getUserPermissions(userId);
+    if (perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) return;
+
+    const me = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { departmentId: true },
+    });
+    if (me?.departmentId !== fromDepartmentId) {
+      throw new ForbiddenException(
+        'You can only approve help requests from your own department.',
+      );
+    }
+    if (await this.isHodOf(userId, fromDepartmentId)) return;
+    if (perms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT)) return;
+
+    throw new ForbiddenException(
+      'Only your department Supervisor, Head of Department, or an Admin can approve outgoing help requests.',
+    );
   }
 
   private async assertCanRespond(userId: string, departmentId: string) {
@@ -833,13 +1597,23 @@ export class HelpRequestsService {
    */
   private async assertCanCloseFromOriginal(userId: string, fromDepartmentId: string) {
     const perms = await this.permissions.getUserPermissions(userId);
-    const isAdmin = perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
-    if (isAdmin) return;
-    if (!(await this.isHodOf(userId, fromDepartmentId))) {
+    if (perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) return;
+
+    const me = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { departmentId: true },
+    });
+    if (me?.departmentId !== fromDepartmentId) {
       throw new ForbiddenException(
-        'Only the Head of the requesting department (or Admin) can approve/reject helper work.',
+        'Only staff from the owning department can review helper work.',
       );
     }
+    if (await this.isHodOf(userId, fromDepartmentId)) return;
+    if (perms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT)) return;
+
+    throw new ForbiddenException(
+      'Only the requesting department Supervisor, Head of Department, or an Admin can approve/reject helper work.',
+    );
   }
 
   private async isHodOf(userId: string, departmentId: string): Promise<boolean> {
@@ -848,6 +1622,60 @@ export class HelpRequestsService {
       select: { headUserId: true },
     });
     return dept?.headUserId === userId;
+  }
+
+  /** Source dept HOD (or admin fallback) when a worker raises a help request. */
+  private async recipientsForFromDept(
+    municipalityId: string,
+    fromDepartmentId: string,
+  ): Promise<string[]> {
+    const dept = await this.prisma.department.findUnique({
+      where: { id: fromDepartmentId },
+      select: { headUserId: true },
+    });
+    if (dept?.headUserId) return [dept.headUserId];
+
+    const admins = await this.prisma.user.findMany({
+      where: {
+        municipalityId,
+        isActive: true,
+        userRoles: { some: { role: { name: 'Admin' } } },
+      },
+      select: { id: true },
+    });
+    return admins.map((a) => a.id);
+  }
+
+  /**
+   * Append a help-workflow event row to the complaint's status log. Uses
+   * eventKind to mark the row as an event so the timeline UI does not
+   * render it as a misleading same-status transition.
+   *
+   * We keep writing fromStatus = toStatus = current complaint status so
+   * legacy clients that only look at status fields still see a row, while
+   * the new UI groups by eventKind.
+   */
+  private async logHelpEvent(
+    complaintId: string,
+    changedById: string,
+    eventKind: (typeof HELP_EVENT_KIND)[keyof typeof HELP_EVENT_KIND],
+    notes: string,
+  ) {
+    const complaint = await this.prisma.complaint.findUnique({
+      where: { id: complaintId },
+      select: { status: true },
+    });
+    if (!complaint) return;
+    await this.prisma.complaintStatusLog.create({
+      data: {
+        complaintId,
+        changedById,
+        fromStatus: complaint.status,
+        toStatus: complaint.status,
+        notes,
+        eventKind,
+      },
+    });
   }
 
   /**
@@ -959,6 +1787,12 @@ export class HelpRequestsService {
       fromDepartment: { select: { id: true, name: true, headUserId: true } },
       toDepartment: { select: { id: true, name: true, headUserId: true } },
       requestedBy: {
+        select: { id: true, firstName: true, lastName: true, email: true },
+      },
+      sourceApprovedBy: {
+        select: { id: true, firstName: true, lastName: true, email: true },
+      },
+      sourceRejectedBy: {
         select: { id: true, firstName: true, lastName: true, email: true },
       },
       respondedBy: {

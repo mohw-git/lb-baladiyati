@@ -141,6 +141,18 @@ export interface CreateComplaintRequest {
   address?: string;
 }
 
+export type ComplaintBucketId =
+  | 'needsAttention'
+  | 'assignedToMe'
+  | 'myDepartment'
+  | 'all'
+  | 'overdue'
+  | 'myReports'
+  | 'completed'
+  | 'rejected'
+  | 'closed'
+  | 'history';
+
 export interface ComplaintQueryParams {
   page?: number;
   limit?: number;
@@ -154,8 +166,17 @@ export interface ComplaintQueryParams {
   overdue?: boolean;
   /** Excludes COMPLETED / CLOSED / REJECTED so the action-queue list matches its count. */
   openOnly?: boolean;
+  /** History view — terminal complaints only (COMPLETED / REJECTED / CLOSED). */
+  terminalOnly?: boolean;
+  /**
+   * Worker history: when true the assignment filter ignores `isActive`, so
+   * a worker can see closed work they were previously assigned to.
+   */
+  includeAssignmentHistory?: boolean;
   /** Staff only: complaints from unverified citizens. */
   riskyOnly?: boolean;
+  /** Staff inbox bucket — same filters as GET /complaints/stats/buckets */
+  bucket?: ComplaintBucketId;
 }
 
 export interface AssignComplaintRequest {

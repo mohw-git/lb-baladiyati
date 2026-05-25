@@ -46,7 +46,7 @@ export default function PlatformMunicipalitiesPage() {
   });
 
   const munis: PlatformMunicipality[] = Array.isArray(data) ? data : (data as any)?.data ?? [];
-  const munisWithoutAdmin = munis.filter((m) => m.isActive && !m.adminUserId);
+  const munisWithoutAdmin = munis.filter((m) => m.isActive && !m.adminUserId && !m.admin);
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -60,7 +60,10 @@ export default function PlatformMunicipalitiesPage() {
       toast.success(t('platform.municipalities.toast.created'));
       setShowCreate(false);
       setForm(emptyForm);
+      queryClient.invalidateQueries({ queryKey: ['platform', 'municipalities'] });
       queryClient.invalidateQueries({ queryKey: ['platform'] });
+      queryClient.invalidateQueries({ queryKey: ['org-chart'] });
+      queryClient.invalidateQueries({ queryKey: ['platform', 'users'] });
     },
     onError: (err: ApiError) => toast.error(err.message),
   });
@@ -70,6 +73,7 @@ export default function PlatformMunicipalitiesPage() {
       platformApi.updateMunicipality(id, { isActive }),
     onSuccess: () => {
       toast.success(t('platform.municipalities.toast.updated'));
+      queryClient.invalidateQueries({ queryKey: ['platform', 'municipalities'] });
       queryClient.invalidateQueries({ queryKey: ['platform'] });
     },
     onError: (err: ApiError) => toast.error(err.message),
@@ -86,7 +90,9 @@ export default function PlatformMunicipalitiesPage() {
       toast.success(t('platform.municipalities.toast.transferAdmin'));
       setTransferTarget(null);
       setNewAdminEmail('');
+      queryClient.invalidateQueries({ queryKey: ['platform', 'municipalities'] });
       queryClient.invalidateQueries({ queryKey: ['platform'] });
+      queryClient.invalidateQueries({ queryKey: ['org-chart'] });
     },
     onError: (err: ApiError) => toast.error(err.message),
   });

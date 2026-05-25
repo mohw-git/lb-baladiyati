@@ -6,6 +6,12 @@ import { useTranslate, useLocale } from '@/lib/i18n';
 import { municipalitiesApi, MunicipalityPublic } from '@/lib/api/endpoints/municipalities';
 import { pickName, pickDescription } from '@shared/types/locale';
 import {
+  DEFAULT_BANNER_OVERLAY_COLOR,
+  normalizeOverlayOpacity,
+  resolveMunicipalityMediaUrl,
+  sanitizeHexColor,
+} from '@/lib/municipality-branding';
+import {
   Building2,
   MapPin,
   Phone,
@@ -75,8 +81,9 @@ export default function MunicipalityProfilePage({
       {/* Banner */}
       <div className="relative mb-6 h-48 overflow-hidden rounded border border-gray-200 bg-navy-900 sm:h-56">
         {muni.bannerImageUrl && (
+          // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={muni.bannerImageUrl}
+            src={resolveMunicipalityMediaUrl(muni.bannerImageUrl)}
             alt={name}
             className="h-full w-full object-cover"
           />
@@ -84,8 +91,11 @@ export default function MunicipalityProfilePage({
         <div
           className="absolute inset-0"
           style={{
-            backgroundColor: muni.bannerOverlayColor || '#0c1a2e',
-            opacity: muni.bannerOverlayOpacity ?? 0.55,
+            backgroundColor: sanitizeHexColor(
+              muni.bannerOverlayColor,
+              DEFAULT_BANNER_OVERLAY_COLOR,
+            ),
+            opacity: normalizeOverlayOpacity(muni.bannerOverlayOpacity),
           }}
         />
 
@@ -93,7 +103,12 @@ export default function MunicipalityProfilePage({
         <div className="absolute bottom-4 start-5 flex items-center gap-3">
           <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded border border-white/20 bg-white/10 backdrop-blur-sm">
             {muni.logoUrl ? (
-              <img src={muni.logoUrl} alt={name} className="h-full w-full object-contain" />
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={resolveMunicipalityMediaUrl(muni.logoUrl)}
+                alt={name}
+                className="h-full w-full object-contain"
+              />
             ) : (
               <Building2 className="h-7 w-7 text-white/60" />
             )}

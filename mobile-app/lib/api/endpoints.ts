@@ -142,11 +142,18 @@ export const departmentsApi = {
 export const helpRequestsApi = {
   list: (params: any = {}) => getPaginated<any>(`/help-requests${qs(params)}`),
   getById: (id: string) => get<any>(`/help-requests/${id}`),
-  pendingCount: () => get<{ count: number }>('/help-requests/pending-count'),
+  pendingCount: () =>
+    get<{ count: number; receiverCount: number; sourceCount: number }>(
+      '/help-requests/pending-count',
+    ),
   historyForComplaint: (complaintId: string) =>
     get<any[]>(`/help-requests/complaint/${complaintId}`),
   create: (complaintId: string, data: { toDepartmentId: string; reason: string }) =>
     post<any>(`/help-requests/complaint/${complaintId}`, data),
+  approveSource: (id: string, data: { note?: string } = {}) =>
+    post<any>(`/help-requests/${id}/approve-source`, data),
+  rejectSource: (id: string, data: { note: string }) =>
+    post<any>(`/help-requests/${id}/reject-source`, data),
   cancel: (id: string) => del<any>(`/help-requests/${id}`),
   accept: (id: string, data: { reason?: string } = {}) =>
     post<any>(`/help-requests/${id}/accept`, data),

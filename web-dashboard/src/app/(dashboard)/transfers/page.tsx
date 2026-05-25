@@ -38,6 +38,12 @@ export default function TransfersInboxPage() {
   const canRespond = user?.permissions?.includes(PERMISSIONS.TRANSFER_RESPOND);
   const canRequest = user?.permissions?.includes(PERMISSIONS.TRANSFER_REQUEST);
 
+  const invalidateAfterTransferChange = () => {
+    qc.invalidateQueries({ queryKey: ['transfers'] });
+    qc.invalidateQueries({ queryKey: ['complaints'] });
+    qc.invalidateQueries({ queryKey: ['complaint'] });
+  };
+
   const { data, isLoading } = useQuery({
     queryKey: ['transfers', tab],
     queryFn: () =>
@@ -118,7 +124,7 @@ export default function TransfersInboxPage() {
                     transfer={t}
                     canAct={tab === 'inbox' && !!canRespond}
                     canCancel={tab === 'outgoing' && t.requestedById === user?.id}
-                    onChanged={() => qc.invalidateQueries({ queryKey: ['transfers'] })}
+                    onChanged={invalidateAfterTransferChange}
                   />
                 ))}
               </div>

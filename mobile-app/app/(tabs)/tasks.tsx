@@ -28,7 +28,8 @@ export default function TasksScreen() {
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ['assigned-tasks'],
-    queryFn: () => complaintsApi.list({ myAssignments: true, limit: 50 }),
+    queryFn: () =>
+      complaintsApi.list({ myAssignments: true, openOnly: true, limit: 50 }),
     refetchInterval: 20_000,
   });
 

@@ -17,6 +17,14 @@ import { AuditService, AUDIT_ACTIONS } from '../audit/audit.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserQueryDto } from './dto/user-query.dto';
+import { Prisma } from '@prisma/client';
+import {
+  assertCanAssignRoleToUser,
+  assertCanRemoveCitizenRole,
+  assertCanSetUserDepartment,
+  isProtectedCitizenAccount,
+  protectedCitizenListWhere,
+} from '../../core/users/user-governance';
 
 @Injectable()
 export class UsersService {
@@ -72,12 +80,18 @@ export class UsersService {
     }
 
     if (query.onlyCitizens) {
-      // Citizens management tab: ONLY users whose role is Citizen.
-      // This catches both self-registered (mobile) and seeded citizens.
-      where.userRoles = {
-        ...(where.userRoles ?? {}),
-        some: { role: { name: 'Citizen' } },
-      };
+      const citizenFilter = protectedCitizenListWhere();
+      const existingAnd = Array.isArray(where.AND)
+        ? where.AND
+        : where.AND
+          ? [where.AND]
+          : [];
+      const citizenAnd = Array.isArray(citizenFilter.AND)
+        ? citizenFilter.AND
+        : citizenFilter.AND
+          ? [citizenFilter.AND]
+          : [];
+      where.AND = [...existingAnd, ...citizenAnd];
     } else if (query.excludeCitizens || !query.includeCitizens) {
       // Default Staff view: exclude users with only the Citizen role
       // AND exclude self-registered accounts (defence-in-depth).
@@ -188,7 +202,16 @@ export class UsersService {
     const effectiveRank = roles.length
       ? Math.max(...roles.map((r) => r.priority ?? 0))
       : 0;
-    return { ...user, roles, effectiveRank };
+    const protectedCitizen = isProtectedCitizenAccount({
+      createdVia: user.createdVia,
+      userRoles: user.userRoles,
+    });
+    return {
+      ...user,
+      roles,
+      effectiveRank,
+      isProtectedCitizen: protectedCitizen,
+    };
   }
 
   async create(
@@ -236,8 +259,26 @@ export class UsersService {
       },
     });
 
-    // Assign roles if provided
     if (dto.roleIds?.length) {
+      const roles = await this.prisma.role.findMany({
+        where: { id: { in: dto.roleIds }, municipalityId, deletedAt: null },
+      });
+      if (roles.length !== dto.roleIds.length) {
+        throw new BadRequestException('One or more roles were not found');
+      }
+      for (const role of roles) {
+        if ((role as any).isSystemManaged) {
+          throw new ForbiddenException(
+            `"${role.name}" is a positional role and cannot be granted at user creation. ` +
+              'Use the department or municipality admin slot flows instead.',
+          );
+        }
+        if (role.name === 'Citizen') {
+          throw new BadRequestException(
+            'Staff accounts cannot be created with the Citizen role. Citizens register via public signup.',
+          );
+        }
+      }
       await this.prisma.userRole.createMany({
         data: dto.roleIds.map((roleId) => ({
           userId: user.id,
@@ -268,6 +309,9 @@ export class UsersService {
   ) {
     const user = await this.prisma.user.findFirst({
       where: { id, municipalityId },
+      include: {
+        userRoles: { include: { role: { select: { name: true } } } },
+      },
     });
 
     if (!user) {
@@ -279,9 +323,35 @@ export class UsersService {
       await this.hierarchy.assertCanManageUser(actor.id, id);
     }
 
+    const snapshot = {
+      createdVia: user.createdVia,
+      userRoles: user.userRoles,
+    };
+
+    if (dto.departmentId !== undefined) {
+      try {
+        assertCanSetUserDepartment(snapshot, dto.departmentId);
+      } catch (err) {
+        await this.logGovernanceDenied(req, actor, municipalityId, id, user.email, {
+          action: 'set_department',
+          departmentId: dto.departmentId,
+          reason: err instanceof Error ? err.message : 'denied',
+        });
+        throw err;
+      }
+    }
+
+    const data: Prisma.UserUncheckedUpdateInput = { ...dto };
+    if (isProtectedCitizenAccount(snapshot)) {
+      delete data.departmentId;
+      if (user.departmentId) {
+        data.departmentId = null;
+      }
+    }
+
     await this.prisma.user.update({
       where: { id },
-      data: dto,
+      data,
     });
 
     await this.audit.logFromRequest(req, {
@@ -291,7 +361,10 @@ export class UsersService {
       action: AUDIT_ACTIONS.USER_UPDATE,
       resourceType: 'User',
       resourceId: id,
-      metadata: { fields: Object.keys(dto), email: user.email },
+      metadata: {
+        fields: Object.keys(data),
+        email: user.email,
+      },
     });
 
     this.realtime.userUpdated({ id, municipalityId });
@@ -308,6 +381,9 @@ export class UsersService {
   ) {
     const user = await this.prisma.user.findFirst({
       where: { id: userId, municipalityId },
+      include: {
+        userRoles: { include: { role: { select: { name: true } } } },
+      },
     });
 
     if (!user) {
@@ -322,14 +398,21 @@ export class UsersService {
       throw new NotFoundException('Role not found');
     }
 
-    // ── Constraint: self-registered citizens cannot be elevated to staff roles ──
-    // Real-world rule: privileged accounts are PROVISIONED, not promoted from public sign-ups.
-    // If staff need access, an admin should create a fresh staff account for them.
-    if (user.createdVia === 'SELF_REGISTRATION' && role.name !== 'Citizen') {
-      throw new ForbiddenException(
-        'Self-registered users cannot be granted staff roles. ' +
-          'Provision a new staff account instead.',
-      );
+    const snapshot = {
+      createdVia: user.createdVia,
+      userRoles: user.userRoles,
+    };
+
+    try {
+      assertCanAssignRoleToUser(snapshot, role.name);
+    } catch (err) {
+      await this.logGovernanceDenied(req, actor, municipalityId, userId, user.email, {
+        action: 'assign_role',
+        roleId,
+        roleName: role.name,
+        reason: err instanceof Error ? err.message : 'denied',
+      });
+      throw err;
     }
 
     // ── Constraint: positional roles (Admin, HOD) are slot-managed ──
@@ -408,21 +491,41 @@ export class UsersService {
   ) {
     const user = await this.prisma.user.findFirst({
       where: { id: userId, municipalityId },
+      include: {
+        userRoles: { include: { role: { select: { name: true } } } },
+      },
     });
 
     if (!user) {
       throw new NotFoundException('User not found');
     }
 
-    const role = await this.prisma.role.findFirst({
+    const roleRecord = await this.prisma.role.findFirst({
       where: { id: roleId },
-      select: { name: true, isSystemManaged: true } as any,
+      select: { name: true, isSystemManaged: true },
     });
 
-    if ((role as any)?.isSystemManaged) {
+    if (roleRecord?.name) {
+      try {
+        assertCanRemoveCitizenRole(
+          { createdVia: user.createdVia, userRoles: user.userRoles },
+          roleRecord.name,
+        );
+      } catch (err) {
+        await this.logGovernanceDenied(req, actor, municipalityId, userId, user.email, {
+          action: 'remove_role',
+          roleId,
+          roleName: roleRecord.name,
+          reason: err instanceof Error ? err.message : 'denied',
+        });
+        throw err;
+      }
+    }
+
+    if (roleRecord?.isSystemManaged) {
       throw new ForbiddenException(
-        `"${(role as any).name}" is a positional role and cannot be removed directly. ` +
-          (((role as any).name === 'Admin')
+        `"${roleRecord.name}" is a positional role and cannot be removed directly. ` +
+          (roleRecord.name === 'Admin'
             ? 'Use Platform → Municipalities → Transfer Admin instead.'
             : 'Use Departments → Vacate Head instead.'),
       );
@@ -445,11 +548,30 @@ export class UsersService {
       action: AUDIT_ACTIONS.USER_ROLE_REMOVE,
       resourceType: 'User',
       resourceId: userId,
-      metadata: { roleId, roleName: role?.name, targetEmail: user.email },
+      metadata: { roleId, roleName: roleRecord?.name, targetEmail: user.email },
     });
 
     this.realtime.userUpdated({ id: userId, municipalityId });
 
     return this.findOne(userId, municipalityId);
+  }
+
+  private async logGovernanceDenied(
+    req: Request | undefined,
+    actor: { id: string; email: string } | undefined,
+    municipalityId: string,
+    targetUserId: string,
+    targetEmail: string,
+    metadata: Record<string, unknown>,
+  ) {
+    await this.audit.logFromRequest(req, {
+      actorId: actor?.id,
+      actorEmail: actor?.email,
+      municipalityId,
+      action: AUDIT_ACTIONS.USER_GOVERNANCE_DENIED,
+      resourceType: 'User',
+      resourceId: targetUserId,
+      metadata: { targetEmail, ...metadata },
+    });
   }
 }

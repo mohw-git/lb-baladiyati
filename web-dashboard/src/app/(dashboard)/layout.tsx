@@ -1,28 +1,39 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { usePathname } from 'next/navigation';
 import { Sidebar } from '@/components/layout/sidebar';
 import { Header } from '@/components/layout/header';
 import { AuthGuard, useAuthStore } from '@/lib/auth';
 import { RealtimeProvider } from '@/lib/realtime/provider';
 import { cn } from '@/lib/utils';
-import { isRtl, useLocale } from '@/lib/i18n';
 import { UnverifiedEmailBanner } from '@/components/auth/unverified-email-banner';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  // Per page-load dismiss state. Verification status is re-evaluated on
-  // every full reload, so a soft dismiss is enough to keep operators from
-  // staring at the banner while they finish a task.
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [unverifiedDismissed, setUnverifiedDismissed] = useState(false);
-  const locale = useLocale();
-  const rtl = isRtl(locale);
   const user = useAuthStore((s) => s.user);
 
-  // A user is considered "unverified" only when the backend explicitly
-  // says so (emailVerified === false). We avoid showing the banner during
-  // the brief window where the store has hydrated but the profile hasn't
-  // been refreshed yet (both fields undefined).
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMobileNavOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [mobileNavOpen]);
+
   const showUnverifiedBanner =
     !!user &&
     !unverifiedDismissed &&
@@ -31,27 +42,32 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   return (
     <AuthGuard>
       <RealtimeProvider>
-        {/* Government body background — light gray work surface */}
         <div className="min-h-screen bg-gray-100">
+          {mobileNavOpen ? (
+            <button
+              type="button"
+              className="fixed inset-0 z-30 bg-navy-950/60 lg:hidden"
+              aria-label="Close menu"
+              onClick={() => setMobileNavOpen(false)}
+            />
+          ) : null}
+
           <Sidebar
             collapsed={sidebarCollapsed}
             onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
+            mobileOpen={mobileNavOpen}
+            onMobileClose={() => setMobileNavOpen(false)}
           />
 
-          {/* Main content shifts based on sidebar width and text direction */}
           <div
             className={cn(
-              'flex flex-col transition-all duration-300',
-              // In RTL, <html dir="rtl"> flips start/end, so sidebar is on the right.
-              // Margin must be on the right side to clear the sidebar.
-              sidebarCollapsed
-                ? rtl ? 'mr-14' : 'ml-14'
-                : rtl ? 'mr-60' : 'ml-60',
+              // Sidebar is `fixed start-0` — always offset on the inline-start side (left in LTR, right in RTL).
+              'flex min-h-screen min-w-0 flex-col transition-all duration-300 max-lg:ms-0',
+              sidebarCollapsed ? 'lg:ms-14' : 'lg:ms-60',
             )}
           >
-            <Header />
-            {/* Dense operational padding — less whitespace than SaaS default */}
-            <main className="flex-1 p-4 md:p-5">
+            <Header onOpenMobileNav={() => setMobileNavOpen(true)} />
+            <main className="flex-1 overflow-x-hidden p-4 md:p-5">
               {showUnverifiedBanner && user && (
                 <div className="mb-4">
                   <UnverifiedEmailBanner

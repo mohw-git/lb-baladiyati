@@ -41,6 +41,7 @@ export const AUDIT_ACTIONS = {
   USER_UPDATE: 'user.update',
   USER_ROLE_ASSIGN: 'user.role.assign',
   USER_ROLE_REMOVE: 'user.role.remove',
+  USER_GOVERNANCE_DENIED: 'user.governance.denied',
   // Complaints
   COMPLAINT_CREATE: 'complaint.create',
   COMPLAINT_ASSIGN: 'complaint.assign',
