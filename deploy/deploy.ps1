@@ -1,100 +1,132 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Deploy Baladi on Windows Server (manual git pull + build + migrate + restart).
+  Safe production deploy: git pull, build, migrate, restart PM2, smoke test.
 
 .DESCRIPTION
-  Does NOT run prisma seed. Does NOT copy .env files.
-  Run from an elevated or service account that owns C:\baladiyati\app.
+  Uses existing repo at AppRoot - never reclones or deletes the app folder.
+  Does NOT run seed, prisma migrate dev, or prisma db push.
+  Does NOT print secrets.
 
 .PARAMETER AppRoot
-  Repository root on the server (default C:\baladiyati\app).
+  Repository root (default C:\baladiyati\app).
+
+.PARAMETER Branch
+  Optional branch to checkout before pull (e.g. fix/complaint-workflow-governance).
 
 .PARAMETER SkipGitPull
-  Skip git pull (use when CI already synced the tree).
+  Skip git fetch/pull (tree already synced).
 
 .PARAMETER SkipMigrate
-  Skip prisma migrate deploy (emergency rollback redeploy only).
+  Skip prisma migrate deploy (rollback redeploy when DB unchanged).
 
-.PARAMETER UsePm2
-  Restart via PM2 process names baladi-api / baladi-web instead of Windows services.
+.PARAMETER SkipInstall
+  Skip npm ci (use when node_modules already match lockfile).
+
+.PARAMETER NoRestart
+  Build only - do not restart PM2.
 
 .EXAMPLE
-  .\deploy\deploy.ps1 -AppRoot C:\baladiyati\app
+  .\deploy\deploy.ps1
+  .\deploy\deploy.ps1 -Branch fix/complaint-workflow-governance
+  .\deploy\deploy.ps1 -SkipGitPull -SkipMigrate
 #>
 [CmdletBinding()]
 param(
   [string] $AppRoot = 'C:\baladiyati\app',
+  [string] $Branch = '',
   [switch] $SkipGitPull,
   [switch] $SkipMigrate,
-  [switch] $UsePm2
+  [switch] $SkipInstall,
+  [switch] $NoRestart
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '_common.ps1')
 
-function Write-Step([string] $Message) {
-  Write-Host "`n==> $Message" -ForegroundColor Cyan
-}
+try {
+  $AppRoot = Resolve-BaladiAppRoot $AppRoot
+  Write-Step "Production deploy - $AppRoot"
 
-if (-not (Test-Path $AppRoot)) {
-  throw "AppRoot not found: $AppRoot"
-}
+  Test-RequiredEnvFiles -AppRoot $AppRoot
 
-Set-Location $AppRoot
+  $oldCommit = Get-GitCommitShort -AppRoot $AppRoot
+  $oldBranch = Get-GitBranch -AppRoot $AppRoot
+  Write-Host "  Before: branch=$oldBranch commit=$oldCommit" -ForegroundColor DarkGray
 
-if (-not $SkipGitPull) {
-  Write-Step 'Git pull'
-  git fetch origin
-  git pull --ff-only
-  $env:GIT_COMMIT_SHA = (git rev-parse --short HEAD)
-  Write-Host "GIT_COMMIT_SHA=$($env:GIT_COMMIT_SHA)"
-}
-
-if (-not (Test-Path '.env')) {
-  throw "Missing $AppRoot\.env — copy from .env.production.example and fill secrets first."
-}
-
-Write-Step 'Backend: npm ci + prisma generate'
-npm ci
-npx prisma generate
-
-if (-not $SkipMigrate) {
-  Write-Step 'Prisma migrate deploy (no seed)'
-  npm run prisma:migrate:deploy
-}
-
-Write-Step 'Backend: build'
-npm run build
-
-Write-Step 'Web dashboard: npm ci + build'
-Set-Location (Join-Path $AppRoot 'web-dashboard')
-if (-not (Test-Path '.env.production')) {
-  Write-Warning 'web-dashboard\.env.production missing — copy from .env.production.example before build.'
-}
-npm ci
-npm run build
-Set-Location $AppRoot
-
-Write-Step 'Restart application processes'
-if ($UsePm2) {
-  pm2 restart baladi-api --update-env
-  pm2 restart baladi-web --update-env
-  pm2 save
-} else {
-  $apiService = 'BaladiApi'
-  $webService = 'BaladiWeb'
-  foreach ($name in @($apiService, $webService)) {
-    $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
-    if ($svc) {
-      Restart-Service -Name $name -Force
-      Write-Host "Restarted Windows service: $name"
-    } else {
-      Write-Warning "Service not found: $name — start API/web manually or install NSSM services (see DEPLOYMENT.md)."
-    }
+  if (-not $SkipGitPull) {
+    Invoke-GitPullProduction -AppRoot $AppRoot -Branch $Branch
+  } else {
+    Write-WarnMsg 'Skipped git pull (-SkipGitPull)'
   }
+
+  $newCommit = Get-GitCommitShort -AppRoot $AppRoot
+  $newBranch = Get-GitBranch -AppRoot $AppRoot
+
+  Set-Location $AppRoot
+
+  if (-not $SkipInstall) {
+    Write-Step 'Backend: npm ci'
+    npm ci
+    if ($LASTEXITCODE -ne 0) { throw "npm ci failed in app root (exit $LASTEXITCODE)" }
+  } else {
+    Write-WarnMsg 'Skipped backend npm ci (-SkipInstall)'
+  }
+
+  Write-Step 'Backend: prisma generate'
+  npm run prisma:generate
+  if ($LASTEXITCODE -ne 0) { throw "prisma generate failed (exit $LASTEXITCODE)" }
+
+  if (-not $SkipMigrate) {
+    Write-Step 'Backend: prisma migrate deploy (production only - no seed)'
+    npm run prisma:migrate:deploy
+    if ($LASTEXITCODE -ne 0) { throw "prisma migrate deploy failed (exit $LASTEXITCODE)" }
+  } else {
+    Write-WarnMsg 'Skipped migrate deploy (-SkipMigrate)'
+  }
+
+  Write-Step 'Backend: npm run build'
+  npm run build
+  if ($LASTEXITCODE -ne 0) { throw "backend build failed (exit $LASTEXITCODE)" }
+
+  $webDir = Join-Path $AppRoot 'web-dashboard'
+  Set-Location $webDir
+
+  if (-not $SkipInstall) {
+    Write-Step 'Web: npm ci'
+    npm ci
+    if ($LASTEXITCODE -ne 0) { throw "npm ci failed in web-dashboard (exit $LASTEXITCODE)" }
+  }
+
+  Write-Step 'Web: npm run build (production)'
+  npm run build
+  if ($LASTEXITCODE -ne 0) { throw "web build failed (exit $LASTEXITCODE)" }
+
+  Set-Location $AppRoot
+  Test-BuildArtifacts -AppRoot $AppRoot
+
+  if (-not $NoRestart) {
+    Write-Step 'Restart PM2 apps'
+    pm2 restart baladi-api baladi-web --update-env 2>&1 | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+      Write-WarnMsg 'PM2 restart failed - attempting start via ecosystem'
+      $ecosystem = Ensure-EcosystemConfig
+      pm2 start $ecosystem 2>&1 | Out-Host
+      if ($LASTEXITCODE -ne 0) { throw "PM2 restart/start failed (exit $LASTEXITCODE)" }
+    }
+    Start-Sleep -Seconds 6
+    Invoke-Pm2Save
+  } else {
+    Write-WarnMsg 'Skipped PM2 restart (-NoRestart)'
+  }
+
+  Write-Step 'Smoke tests (local + public)'
+  Invoke-BaladiSmoke -AppRoot $AppRoot -IncludePublic
+
+  Write-Host "`nDeploy finished." -ForegroundColor Green
+  Write-Host "  $oldBranch $oldCommit -> $newBranch $newCommit" -ForegroundColor DarkGray
+  exit 0
+} catch {
+  Write-Fail $_.Exception.Message
+  exit 1
 }
-
-Write-Step 'Smoke checks'
-& (Join-Path $AppRoot 'deploy\smoke.ps1')
-
-Write-Host "`nDeploy finished." -ForegroundColor Green

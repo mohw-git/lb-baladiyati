@@ -93,17 +93,13 @@ Uploads are served by the API at `https://api.lb-baladiyati.com/uploads/...` (no
 
 ```powershell
 cd C:\baladiyati\app
-git clone <your-repo-url> .
-copy .env.production.example .env
-# Edit .env with real secrets
+.\deploy\first-clone.ps1 -RepoUrl <your-repo-url>
+# Edit .env and C:\baladiyati\secrets\ manually — scripts do not fill secrets
 
-cd web-dashboard
-copy .env.production.example .env.production
-
-# PostgreSQL: install on Windows OR run only postgres via Docker Compose
-npm ci
-cd ..\web-dashboard
-npm ci
+.\deploy\deploy.ps1
+npm install -g pm2-windows-startup
+pm2-startup install
+.\deploy\start.ps1 -IncludePublicSmoke
 ```
 
 ### Build
@@ -126,13 +122,18 @@ npm run prisma:migrate:deploy
 
 **Do not run:** `prisma migrate dev`, `prisma db push`, `npm run prisma:seed`, `npm run db:reset`.
 
-### Start / restart (PM2 fallback)
+### Start / restart (PM2 — see `deploy/WINDOWS_STARTUP.md`)
+
+**Use `ecosystem.config.cjs`, not `pm2.ecosystem.cjs`.** PM2 7 on Windows only loads ecosystem files whose names contain `.config.js` / `.config.cjs`.
 
 ```powershell
-copy deploy\pm2.ecosystem.example.cjs C:\baladiyati\pm2.ecosystem.cjs
-# Edit paths if needed
-pm2 start C:\baladiyati\pm2.ecosystem.cjs
+copy deploy\pm2.ecosystem.example.cjs C:\baladiyati\ecosystem.config.cjs
+cd C:\baladiyati\app\web-dashboard
+npm run build
+pm2 start C:\baladiyati\ecosystem.config.cjs
 pm2 save
+npm install -g pm2-windows-startup
+pm2-startup install
 ```
 
 Or install **NSSM** Windows services `BaladiApi` / `BaladiWeb` pointing to:
@@ -140,25 +141,45 @@ Or install **NSSM** Windows services `BaladiApi` / `BaladiWeb` pointing to:
 - API: `node C:\baladiyati\app\dist\src\main.js`  
 - Web: `node C:\baladiyati\app\web-dashboard\node_modules\next\dist\bin\next start -p 3001`
 
-### Automated deploy script
+### Daily operations (PowerShell scripts)
+
+See **`deploy/WINDOWS_STARTUP.md`** for full detail.
+
+| Task | Command |
+|------|---------|
+| Status | `.\deploy\status.ps1` (`-Logs`) |
+| Start | `.\deploy\start.ps1` |
+| Stop | `.\deploy\stop.ps1` |
+| Restart | `.\deploy\restart.ps1` |
+| Deploy update | `.\deploy\backup.ps1 -Uploads` then `.\deploy\deploy.ps1` |
+| Smoke only | `.\deploy\smoke.ps1 -IncludePublic` |
+
+**First clone (once only):** `.\deploy\first-clone.ps1 -RepoUrl <url>` — never used for normal updates.
+
+**Normal deploy policy:** uses existing `C:\baladiyati\app`, runs `git pull --ff-only`, does **not** reclone or overwrite `.env`/uploads/DB. Stops on dirty tree or pull conflicts.
 
 ```powershell
 cd C:\baladiyati\app
-.\deploy\deploy.ps1 -AppRoot C:\baladiyati\app -UsePm2
+.\deploy\deploy.ps1
+.\deploy\deploy.ps1 -Branch fix/complaint-workflow-governance
 ```
 
-Options: `-SkipGitPull`, `-SkipMigrate` (rollback redeploys only).
+Options: `-SkipGitPull`, `-SkipMigrate`, `-SkipInstall`, `-NoRestart`.
+
+**Never on production:** seed, `prisma migrate dev`, `prisma db push`, `next dev`, `start:dev`.
+
+Always **`npm run build`** in `web-dashboard` before restart (deploy does this automatically).
 
 ### Smoke tests
 
 ```powershell
 .\deploy\smoke.ps1
-# Or against localhost before DNS:
-.\deploy\smoke.ps1 -ApiBase http://127.0.0.1:3000 -WebBase http://127.0.0.1:3001
+.\deploy\smoke.ps1 -IncludePublic
 ```
 
 ### Logs
 
+- `.\deploy\status.ps1 -Logs`
 - PM2: `pm2 logs baladi-api` / `pm2 logs baladi-web`  
 - Windows Service: Event Viewer / NSSM log redirection  
 - Backend structured JSON logs via pino to stdout
@@ -205,13 +226,17 @@ eas build --profile production --platform android
 
 ## Backups & rollback
 
+```powershell
+.\deploy\backup.ps1 -Uploads
+```
+
 | Asset | Backup |
 |-------|--------|
-| PostgreSQL | nightly `.bak` or `pg_dump` |
-| `C:\baladiyati\data\uploads` | filesystem copy / VSS |
-| `.env` / secrets | offline password manager / secure vault |
+| PostgreSQL | `pg_dump` via `backup.ps1` (if on PATH) |
+| `C:\baladiyati\data\uploads` | `backup.ps1 -Uploads` |
+| `.env` / secrets | redacted copy in backup folder + secure vault |
 
-**Rollback:** checkout previous git tag → `deploy.ps1 -SkipMigrate` if DB unchanged → verify `smoke.ps1`. If a migration broke data, restore DB from backup before redeploying.
+**Rollback:** `git checkout <tag>` → `.\deploy\deploy.ps1 -SkipGitPull` (add `-SkipMigrate` if DB unchanged) → `.\deploy\smoke.ps1 -IncludePublic`. Restore DB from `C:\baladiyati\backup\<timestamp>\` if a migration broke data.
 
 ---
 
