@@ -32,8 +32,8 @@ PREREQUISITES (one-time setup)
 - Apply the database schema + seed data (only the first time, or after schema changes):
 
     cd C:\Users\A\Documents\bau\FYP
-    npx prisma db push
-    npm run db:seed
+    npm run prisma:migrate
+    npm run prisma:seed
 
 
 ==============================================================
@@ -113,9 +113,9 @@ Backend:
     npm run start:dev          # dev server with hot reload
     npm run build              # compile to dist/
     npm run start:prod         # run compiled build
-    npm run db:seed            # re-seed the database
-    npx prisma db push         # apply schema.prisma to DB (no migration files)
-    npx prisma migrate dev     # create + apply a migration file
+    npm run prisma:seed        # re-seed the database (dev only)
+    npm run prisma:migrate     # create + apply a migration file
+    npm run prisma:migrate:deploy  # production only — see DEPLOYMENT.md
     npx prisma generate        # regenerate the Prisma client
     npx prisma studio          # GUI database browser
 

@@ -1,13 +1,14 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import { randomUUID } from 'crypto';
-import { join } from 'path';
 
 // Core modules
 import { ConfigModule } from './core/config/config.module';
+import { resolveUploadRoot } from './core/storage/upload-path.util';
 import { PrismaModule } from './core/prisma/prisma.module';
 import { AuthCoreModule } from './core/auth/auth.module';
 import { RbacModule } from './core/rbac/rbac.module';
@@ -89,14 +90,18 @@ import { MaintenanceGuard } from './core/maintenance/maintenance.guard';
       },
     }),
 
-    // Serve static files (uploads)
-    // Use process.cwd() (project root) because __dirname points to dist/src/ after compilation
-    ServeStaticModule.forRoot({
-      rootPath: join(process.cwd(), 'uploads'),
-      serveRoot: '/uploads',
-      serveStaticOptions: {
-        index: false, // Don't try to serve index.html as fallback
-      },
+    // Public uploads (not KYC — blocked in main.ts). Root follows UPLOAD_PATH.
+    ServeStaticModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => [
+        {
+          rootPath: resolveUploadRoot(config.get<string>('UPLOAD_PATH')),
+          serveRoot: '/uploads',
+          serveStaticOptions: {
+            index: false,
+          },
+        },
+      ],
     }),
 
     // Rate limiting - default 100 requests per minute

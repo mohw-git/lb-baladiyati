@@ -1,0 +1,15 @@
+node_modules
+dist
+web-dashboard/node_modules
+web-dashboard/.next
+mobile-app/node_modules
+.expo
+uploads
+secrets
+.env
+.env.*
+!.env.example
+!.env.production.example
+.git
+coverage
+*.log

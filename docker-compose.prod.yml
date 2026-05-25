@@ -1,0 +1,72 @@
+# Baladi — production Compose for Docker Desktop on Windows Server
+#
+# Recommended for FYP: run API + web + Postgres as Windows services/PM2 (see DEPLOYMENT.md).
+# Use this compose when you prefer containerized Postgres + apps on the same host.
+#
+# Before first run:
+#   copy .env.production.example → .env (repo root) and fill secrets
+#   copy web-dashboard\.env.production.example → web-dashboard\.env.production
+#   mkdir C:\baladiyati\data\uploads  and  C:\baladiyati\secrets
+#
+#   docker compose -f docker-compose.prod.yml build
+#   docker compose -f docker-compose.prod.yml run --rm api npx prisma migrate deploy
+#   docker compose -f docker-compose.prod.yml up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: baladi_app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: baladi
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U baladi_app -d baladi']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://baladi_app:${POSTGRES_PASSWORD}@postgres:5432/baladi
+      UPLOAD_PATH: /data/uploads
+      NODE_ENV: production
+    ports:
+      - '127.0.0.1:3000:3000'
+    volumes:
+      - ${UPLOAD_HOST_PATH:-C:/baladiyati/data/uploads}:/data/uploads
+      - ${FIREBASE_SECRETS_HOST_PATH:-C:/baladiyati/secrets}:/run/secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/ready']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  web:
+    build:
+      context: .
+      dockerfile: web-dashboard/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://api.lb-baladiyati.com}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+    ports:
+      - '127.0.0.1:3001:3001'
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

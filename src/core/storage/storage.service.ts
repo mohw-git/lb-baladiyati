@@ -3,22 +3,40 @@ import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
 import { v4 as uuid } from 'uuid';
+import {
+  ensureUploadDir,
+  resolveUploadFilePath,
+  resolveUploadRoot,
+  toUploadUrlPath,
+  UPLOAD_URL_PREFIX,
+} from './upload-path.util';
 
 @Injectable()
 export class StorageService {
   private readonly logger = new Logger(StorageService.name);
-  private uploadPath: string;
+  private readonly uploadPath: string;
 
   constructor(private config: ConfigService) {
-    this.uploadPath = this.config.get('UPLOAD_PATH', './uploads');
-    this.ensureDirectory(this.uploadPath);
+    this.uploadPath = resolveUploadRoot(
+      this.config.get<string>('UPLOAD_PATH'),
+    );
+    ensureUploadDir(this.uploadPath);
+    this.logger.log(`Upload root: ${this.uploadPath}`);
   }
 
-  private ensureDirectory(dirPath: string): void {
-    if (!fs.existsSync(dirPath)) {
-      fs.mkdirSync(dirPath, { recursive: true });
-      this.logger.log(`Created upload directory: ${dirPath}`);
-    }
+  /** Absolute path to the upload root directory. */
+  getUploadRoot(): string {
+    return this.uploadPath;
+  }
+
+  /** Absolute path for a DB storage key (e.g. kyc/<submissionId>/file.jpg). */
+  resolveDiskPath(storageKey: string): string {
+    return resolveUploadFilePath(this.uploadPath, storageKey);
+  }
+
+  /** Directory for a KYC submission's files on disk. */
+  getKycSubmissionDir(submissionId: string): string {
+    return ensureUploadDir(this.uploadPath, path.join('kyc', submissionId));
   }
 
   async saveFile(
@@ -30,21 +48,17 @@ export class StorageService {
     const relativePath = path.join(folder, filename);
     const fullPath = path.join(this.uploadPath, relativePath);
 
-    // Ensure subdirectory exists
-    const dir = path.dirname(fullPath);
-    this.ensureDirectory(dir);
+    ensureUploadDir(path.dirname(fullPath));
 
-    // Write file
     fs.writeFileSync(fullPath, file.buffer);
     this.logger.debug(`Saved file: ${fullPath}`);
 
-    // Return URL path (forward slashes for URL)
-    return `/uploads/${relativePath.replace(/\\/g, '/')}`;
+    return toUploadUrlPath(relativePath.replace(/\\/g, '/'));
   }
 
   async deleteFile(url: string): Promise<void> {
     try {
-      const relativePath = url.replace('/uploads/', '');
+      const relativePath = url.replace(`${UPLOAD_URL_PREFIX}/`, '');
       const fullPath = path.join(this.uploadPath, relativePath);
 
       if (fs.existsSync(fullPath)) {

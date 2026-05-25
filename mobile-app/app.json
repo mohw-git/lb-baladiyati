@@ -9,7 +9,6 @@
     "newArchEnabled": true,
     "scheme": "baladi",
     "extra": {
-      "apiUrl": "http://localhost:3000",
       "sentryDsn": "",
       "sentryEnvironment": "development",
       "router": {},

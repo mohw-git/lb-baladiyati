@@ -7,6 +7,7 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
+import { buildSocketIoCorsOptions } from '../config/cors-origins.util';
 import { PrismaService } from '../prisma/prisma.service';
 
 /**
@@ -24,7 +25,7 @@ import { PrismaService } from '../prisma/prisma.service';
  * when they actually need it.
  */
 @WebSocketGateway({
-  cors: { origin: true, credentials: true },
+  cors: buildSocketIoCorsOptions(),
   namespace: '/realtime',
   // The default ping settings (25s/20s) are fine for our latency budget.
 })

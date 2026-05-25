@@ -12,6 +12,8 @@ import { PERMISSIONS } from '../../core/rbac/permissions.constants';
 import { AuditService, AUDIT_ACTIONS } from '../audit/audit.service';
 import { RealtimeService } from '../../core/realtime/realtime.service';
 import { MailService } from '../../core/mail/mail.service';
+import { StorageService } from '../../core/storage/storage.service';
+import { toUploadUrlPath } from '../../core/storage/upload-path.util';
 import { KycDocType, KycAction, VerificationStatus, NotificationType } from '@prisma/client';
 import { ReviewAction } from './dto/review-kyc.dto';
 import { KycQueryDto } from './dto/kyc-query.dto';
@@ -20,7 +22,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { v4 as uuid } from 'uuid';
 
-const KYC_UPLOAD_DIR = './uploads/kyc';
 const ALLOWED_KYC_MIMES = ['image/jpeg', 'image/png'];
 const MAX_KYC_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
@@ -35,6 +36,7 @@ export class KycService {
     private audit: AuditService,
     private realtime: RealtimeService,
     private mail: MailService,
+    private storage: StorageService,
   ) {}
 
   /**
@@ -118,10 +120,7 @@ export class KycService {
       });
 
       // Save files to disk
-      const submissionDir = path.join(KYC_UPLOAD_DIR, sub.id);
-      if (!fs.existsSync(submissionDir)) {
-        fs.mkdirSync(submissionDir, { recursive: true });
-      }
+      const submissionDir = this.storage.getKycSubmissionDir(sub.id);
 
       const docTypes: { file: Express.Multer.File; type: KycDocType }[] = [
         { file: files.idFront[0], type: KycDocType.ID_FRONT },
@@ -132,8 +131,8 @@ export class KycService {
       for (const { file, type } of docTypes) {
         const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
         const filename = `${type.toLowerCase()}_${uuid()}${ext}`;
-        const storageKey = path.join('kyc', sub.id, filename);
-        const fullPath = path.join('./uploads', storageKey);
+        const storageKey = path.join('kyc', sub.id, filename).replace(/\\/g, '/');
+        const fullPath = this.storage.resolveDiskPath(storageKey);
 
         fs.writeFileSync(fullPath, file.buffer);
 
@@ -161,7 +160,7 @@ export class KycService {
       if (selfieAttachment) {
         await tx.user.update({
           where: { id: userId },
-          data: { avatarUrl: `/uploads/${selfieAttachment.storageKey}` },
+          data: { avatarUrl: toUploadUrlPath(selfieAttachment.storageKey) },
         });
       }
 
@@ -659,7 +658,7 @@ export class KycService {
       throw new NotFoundException('Attachment not found');
     }
 
-    const fullPath = path.resolve('./uploads', attachment.storageKey);
+    const fullPath = this.storage.resolveDiskPath(attachment.storageKey);
 
     if (!fs.existsSync(fullPath)) {
       throw new NotFoundException('File not found on disk');
