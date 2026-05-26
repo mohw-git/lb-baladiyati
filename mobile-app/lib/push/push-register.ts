@@ -1,14 +1,11 @@
 /**
- * Mobile push (FCM) bootstrap.
- *
- * Invoked from the auth store after login, register, or session restore.
- * On logout, unregister removes the token from the backend while JWT is
- * still valid, then clears local state.
+ * Push token registration — loaded only via dynamic import() after auth.
+ * Must not be imported statically from auth screens or store.
  */
-import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { deviceTokensApi } from '../api/endpoints';
+import { canUseRemotePush } from './push-env';
 
 const STORAGE_KEY = 'baladi.fcmToken';
 const REGISTERED_USER_KEY = 'baladi.fcmRegisteredUserId';
@@ -16,19 +13,30 @@ const REGISTERED_USER_KEY = 'baladi.fcmRegisteredUserId';
 let cachedToken: string | null = null;
 let cachedUserId: string | null = null;
 let registerInFlight: Promise<string | null> | null = null;
+let handlerConfigured = false;
 
-/** Set how foreground notifications should appear by default. */
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+async function loadNotificationsModule() {
+  if (!canUseRemotePush()) return null;
+  return import('expo-notifications');
+}
 
-async function ensureChannel() {
+async function ensureForegroundHandler(
+  Notifications: Awaited<ReturnType<typeof loadNotificationsModule>>,
+) {
+  if (!Notifications || handlerConfigured) return;
+  handlerConfigured = true;
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    }),
+  });
+}
+
+async function ensureChannel(Notifications: NonNullable<Awaited<ReturnType<typeof loadNotificationsModule>>>) {
   if (Platform.OS !== 'android') return;
   try {
     await Notifications.setNotificationChannelAsync('baladi-default', {
@@ -38,21 +46,7 @@ async function ensureChannel() {
       lightColor: '#0c1a2e',
     });
   } catch {
-    // Non-fatal — older Android versions may not support channels.
-  }
-}
-
-async function requestPermission(): Promise<boolean> {
-  try {
-    const settings = await Notifications.getPermissionsAsync();
-    if (settings.granted) return true;
-    if (settings.canAskAgain) {
-      const result = await Notifications.requestPermissionsAsync();
-      return !!result.granted;
-    }
-    return false;
-  } catch {
-    return false;
+    // Non-fatal
   }
 }
 
@@ -86,17 +80,22 @@ async function clearRegisteredState() {
   ]);
 }
 
-async function resolveTokenForUnregister(): Promise<string | null> {
-  if (cachedToken) return cachedToken;
-  const { token } = await loadPersistedState();
-  if (token) cachedToken = token;
-  return token;
-}
-
 async function doRegister(userId: string): Promise<string | null> {
+  if (!canUseRemotePush()) return null;
+
+  const Notifications = await loadNotificationsModule();
+  if (!Notifications) return null;
+
   try {
-    await ensureChannel();
-    const granted = await requestPermission();
+    await ensureForegroundHandler(Notifications);
+    await ensureChannel(Notifications);
+
+    const settings = await Notifications.getPermissionsAsync();
+    let granted = settings.granted;
+    if (!granted && settings.canAskAgain) {
+      const result = await Notifications.requestPermissionsAsync();
+      granted = !!result.granted;
+    }
     if (!granted) return null;
 
     const result = await Notifications.getDevicePushTokenAsync();
@@ -104,11 +103,10 @@ async function doRegister(userId: string): Promise<string | null> {
     if (!token) return null;
 
     const persisted = await loadPersistedState();
-    const alreadyRegistered =
+    if (
       token === (cachedToken ?? persisted.token) &&
-      userId === (cachedUserId ?? persisted.userId);
-
-    if (alreadyRegistered) {
+      userId === (cachedUserId ?? persisted.userId)
+    ) {
       cachedToken = token;
       cachedUserId = userId;
       return token;
@@ -119,50 +117,34 @@ async function doRegister(userId: string): Promise<string | null> {
       await deviceTokensApi.register(token, platform);
       await persistRegisteredState(token, userId);
     } catch {
-      // Network/backend failure — don't block auth; retry on next session.
+      // Retry on next session
     }
-
     return token;
   } catch {
     return null;
   }
 }
 
-/**
- * Register this device for push notifications and associate the FCM token
- * with the signed-in user on the backend.
- *
- * Safe to call multiple times; skips duplicate backend registration when
- * the same user already registered the same token. Returns null when
- * permission is denied or the token cannot be obtained.
- */
 export async function registerPushNotifications(userId: string): Promise<string | null> {
-  if (!userId) return null;
+  if (!userId || !canUseRemotePush()) return null;
   if (registerInFlight) return registerInFlight;
-
   registerInFlight = doRegister(userId).finally(() => {
     registerInFlight = null;
   });
-
   return registerInFlight;
 }
 
-/**
- * Remove the device token from the backend (call before clearing auth).
- * Best-effort when the session is already invalid.
- */
 export async function unregisterPushNotifications(): Promise<void> {
-  const token = await resolveTokenForUnregister();
+  const token =
+    cachedToken ?? (await loadPersistedState()).token;
   if (!token) {
     await clearRegisteredState();
     return;
   }
-
   try {
     await deviceTokensApi.remove(token);
   } catch {
-    // Session may already be expired — still clear local state.
+    // Session may be expired
   }
-
   await clearRegisteredState();
 }

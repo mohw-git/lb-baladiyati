@@ -1,10 +1,15 @@
-import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Image, TouchableOpacity, RefreshControl } from 'react-native';
+import { useCallback } from 'react';
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Image, TouchableOpacity } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { newsApi } from '../../lib/api/endpoints';
-import { getFileUrl } from '../../lib/api/client';
+import { ApiError, getFileUrl } from '../../lib/api/client';
+import { getErrorPresentation } from '../../lib/api/errors';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../constants/theme';
+import { AuthGate } from '../../components/auth-gate';
+import { useTranslate } from '../../lib/i18n';
+import { useStableRefresh } from '../../lib/ui/use-stable-refresh';
 
 /** Strip HTML tags and decode common entities */
 function stripHtml(html: string): string {
@@ -27,31 +32,46 @@ function stripHtml(html: string): string {
 }
 
 export default function NewsDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  return (
+    <AuthGate>
+      <NewsDetailContent />
+    </AuthGate>
+  );
+}
 
-  const { data: article, isLoading, isError, error, refetch, isFetching } = useQuery({
+function NewsDetailContent() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const t = useTranslate();
+
+  const { data: article, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['news', id],
     queryFn: () => newsApi.getById(id),
     enabled: !!id,
   });
+
+  const handleRefresh = useCallback(() => refetch(), [refetch]);
+  const stableRefresh = useStableRefresh({ onRefresh: handleRefresh });
 
   if (isLoading) {
     return <View style={styles.center}><ActivityIndicator size="large" color={Colors.brand[600]} /></View>;
   }
 
   if (isError || !article) {
+    const pres = isError
+      ? getErrorPresentation(error, t)
+      : getErrorPresentation(new ApiError(404, 'NOT_FOUND', t('errors.notFound.message')), t);
     return (
       <View style={styles.center}>
-        <Ionicons name="cloud-offline-outline" size={48} color={Colors.red[400]} />
-        <Text style={styles.emptyText}>
-          {isError ? 'Could not load article' : 'Article not found'}
-        </Text>
-        {isError && (
-          <Text style={styles.errorDetail}>{(error as any)?.message || 'Check your connection.'}</Text>
-        )}
+        <Ionicons
+          name={pres.isNetwork ? 'cloud-offline-outline' : 'alert-circle-outline'}
+          size={48}
+          color={Colors.red[400]}
+        />
+        <Text style={styles.emptyText}>{t(pres.titleKey)}</Text>
+        {isError && <Text style={styles.errorDetail}>{pres.message}</Text>}
         <TouchableOpacity style={styles.retryBtn} onPress={() => refetch()}>
           <Ionicons name="refresh" size={16} color={Colors.white} />
-          <Text style={styles.retryBtnText}>Retry</Text>
+          <Text style={styles.retryBtnText}>{t('common.retry')}</Text>
         </TouchableOpacity>
       </View>
     );
@@ -61,7 +81,9 @@ export default function NewsDetailScreen() {
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl refreshing={isFetching && !isLoading} onRefresh={refetch} tintColor={Colors.brand[600]} />}
+      refreshControl={stableRefresh.refreshControl}
+      onScroll={stableRefresh.onScroll}
+      scrollEventThrottle={stableRefresh.scrollEventThrottle}
     >
       {article.coverImageUrl && (
         <Image source={{ uri: getFileUrl(article.coverImageUrl) }} style={styles.cover} resizeMode="cover" />

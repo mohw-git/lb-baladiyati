@@ -71,6 +71,14 @@ export class ApiError extends Error {
     });
     return errors;
   }
+
+  /** Human-readable message for toasts, including validation details when present. */
+  getDisplayMessage(fallback = 'Something went wrong'): string {
+    if (this.details?.length) {
+      return this.details.map((d) => `• ${d.message}`).join('\n');
+    }
+    return this.message || fallback;
+  }
 }
 
 // ============================================================

@@ -1,54 +1,62 @@
-import { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Image, TouchableOpacity, RefreshControl, Alert, Modal, TextInput } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useState, useCallback } from 'react';
+import {
+  View, Text, StyleSheet, ScrollView, Image, TouchableOpacity,
+  Alert, Modal, TextInput, Platform,
+} from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { complaintsApi } from '../../lib/api/endpoints';
 import { getFileUrl, ApiError } from '../../lib/api/client';
-import { useCanChangeStatus, useHasPermission, PERMISSIONS } from '../../lib/hooks/usePermission';
+import { getErrorPresentation } from '../../lib/api/errors';
+import { useCanChangeStatus, useIsFieldWorker } from '../../lib/hooks/usePermission';
 import { useAuthStore } from '../../lib/auth/store';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../constants/theme';
 import { HelpRequestSection } from '../../components/help-requests/HelpRequestSection';
-
-const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; icon: string }> = {
-  SUBMITTED: { label: 'Submitted', color: Colors.brand[700], bg: Colors.brand[100], icon: 'paper-plane' },
-  UNDER_REVIEW: { label: 'Under Review', color: Colors.purple[700], bg: Colors.purple[100], icon: 'eye' },
-  ASSIGNED: { label: 'Assigned', color: Colors.orange[700], bg: Colors.orange[100], icon: 'person-add' },
-  IN_PROGRESS: { label: 'In Progress', color: Colors.yellow[700], bg: Colors.yellow[100], icon: 'construct' },
-  PENDING_APPROVAL: { label: 'Pending Approval', color: Colors.purple[700], bg: Colors.purple[100], icon: 'hourglass' },
-  COMPLETED: { label: 'Resolved', color: Colors.green[700], bg: Colors.green[100], icon: 'checkmark-circle' },
-  REJECTED: { label: 'Rejected', color: Colors.red[700], bg: Colors.red[100], icon: 'close-circle' },
-  CLOSED: { label: 'Closed', color: Colors.gray[600], bg: Colors.gray[100], icon: 'lock-closed' },
-};
-
-const PRIORITY_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
-  LOW: { label: 'Low Priority', color: Colors.gray[600], bg: Colors.gray[100] },
-  MEDIUM: { label: 'Medium Priority', color: Colors.blue[600], bg: Colors.blue[100] },
-  HIGH: { label: 'High Priority', color: Colors.orange[600], bg: Colors.orange[100] },
-  URGENT: { label: 'Urgent', color: Colors.red[600], bg: Colors.red[100] },
-};
+import { AuthGate } from '../../components/auth-gate';
+import { getComplaintStatusBadge } from '../../lib/complaints/status-config';
+import { invalidateComplaintQueries } from '../../lib/query/invalidate-complaints';
+import { useTranslate, useIsRtl } from '../../lib/i18n';
+import {
+  GovCard, GovButton, StatusChip, ErrorBanner, LoadingState, EmptyState,
+} from '../../components/ui';
+import { PriorityChip } from '../../components/complaints/PriorityChip';
+import { flexRow, textAlignStart } from '../../lib/ui/rtl';
+import { useStableRefresh } from '../../lib/ui/use-stable-refresh';
 
 export default function ComplaintDetailScreen() {
+  return (
+    <AuthGate>
+      <ComplaintDetailContent />
+    </AuthGate>
+  );
+}
+
+function ComplaintDetailContent() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const router = useRouter();
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
+  const t = useTranslate();
+  const rtl = useIsRtl();
+  const isFieldWorker = useIsFieldWorker();
   const canChangeStatus = useCanChangeStatus();
   
   const [showProofModal, setShowProofModal] = useState(false);
   const [proofPhotos, setProofPhotos] = useState<string[]>([]);
   const [workNotes, setWorkNotes] = useState('');
-  const [isUploading, setIsUploading] = useState(false);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [feedbackRating, setFeedbackRating] = useState(0);
   const [feedbackComment, setFeedbackComment] = useState('');
 
-  const { data: complaint, isLoading, isError, error, refetch, isFetching } = useQuery({
+  const { data: complaint, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['complaint', id],
     queryFn: () => complaintsApi.getById(id),
     enabled: !!id,
   });
+
+  const handleRefresh = useCallback(() => refetch(), [refetch]);
+  const stableRefresh = useStableRefresh({ onRefresh: handleRefresh });
 
   const statusMutation = useMutation({
     mutationFn: async ({ status, notes, photos }: { status: string; notes?: string; photos?: string[] }) => {
@@ -67,45 +75,32 @@ export default function ComplaintDetailScreen() {
       
       return complaintsApi.changeStatus(id, formData);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['complaint', id] });
-      queryClient.invalidateQueries({ queryKey: ['assigned-tasks'] });
-      queryClient.invalidateQueries({ queryKey: ['my-complaints'] });
+    onSuccess: (_data, variables) => {
+      invalidateComplaintQueries(queryClient, id);
       setShowProofModal(false);
       setProofPhotos([]);
       setWorkNotes('');
-      Alert.alert('Success', 'Status updated successfully');
+      const msg =
+        variables.status === 'PENDING_APPROVAL'
+          ? t('worker.workSubmitted')
+          : t('worker.statusUpdated');
+      Alert.alert(t('common.success'), msg);
     },
-    onError: (err: any) => {
-      // 409 = someone else updated this complaint while we were typing. Show
-      // a clean message and force a refetch so the UI re-renders against
-      // the new state (action buttons may now be hidden, etc.).
+    onError: (err: unknown) => {
+      const pres = getErrorPresentation(err, t);
       if (err instanceof ApiError && err.status === 409) {
-        Alert.alert(
-          'Already updated',
-          'This complaint was just updated by someone else. Refreshing…',
-        );
         setShowProofModal(false);
-        queryClient.invalidateQueries({ queryKey: ['complaint', id] });
-        queryClient.invalidateQueries({ queryKey: ['assigned-tasks'] });
-        queryClient.invalidateQueries({ queryKey: ['my-complaints'] });
-        queryClient.invalidateQueries({ queryKey: ['assigned-tasks', 'recent'] });
-        queryClient.invalidateQueries({ queryKey: ['my-complaints', 'recent'] });
-        return;
+        invalidateComplaintQueries(queryClient, id);
       }
-      Alert.alert('Error', err?.message || 'Failed to update status');
+      Alert.alert(t(pres.titleKey), pres.message);
     },
   });
 
   const handleStartWork = () => {
-    Alert.alert(
-      'Start Work',
-      'Are you ready to start working on this task?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Start', onPress: () => statusMutation.mutate({ status: 'IN_PROGRESS' }) },
-      ]
-    );
+    Alert.alert(t('detail.startWorkTitle'), t('detail.startWorkBody'), [
+      { text: t('common.cancel'), style: 'cancel' },
+      { text: t('detail.startWorkConfirm'), onPress: () => statusMutation.mutate({ status: 'IN_PROGRESS' }) },
+    ]);
   };
 
   const handleSubmitForApproval = () => {
@@ -128,7 +123,7 @@ export default function ComplaintDetailScreen() {
   const takeProofPhoto = async () => {
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) {
-      Alert.alert('Permission Denied', 'Camera permission is required');
+      Alert.alert(t('common.error'), t('submit.permission.camera'));
       return;
     }
     
@@ -143,7 +138,7 @@ export default function ComplaintDetailScreen() {
 
   const submitProof = () => {
     if (!proofPhotos.length) {
-      Alert.alert('Photos Required', 'Please add at least one photo as proof of work completion');
+      Alert.alert(t('detail.proofRequired'), t('detail.proofRequiredBody'));
       return;
     }
     statusMutation.mutate({ status: 'PENDING_APPROVAL', notes: workNotes, photos: proofPhotos });
@@ -157,130 +152,148 @@ export default function ComplaintDetailScreen() {
       setShowFeedbackModal(false);
       setFeedbackRating(0);
       setFeedbackComment('');
-      Alert.alert('Thank You', 'Your feedback has been submitted.');
+      Alert.alert(t('detail.feedbackThanks'), t('detail.feedbackSubmitted'));
     },
-    onError: (err: any) => {
-      Alert.alert('Error', err?.message || 'Failed to submit feedback');
+    onError: (err: unknown) => {
+      Alert.alert(t('common.error'), getErrorPresentation(err, t).message);
     },
   });
 
   const submitFeedback = () => {
     if (feedbackRating < 1 || feedbackRating > 5) {
-      Alert.alert('Rating Required', 'Please select a rating from 1 to 5 stars');
+      Alert.alert(t('detail.ratingRequired'), t('detail.ratingRequiredBody'));
       return;
     }
     feedbackMutation.mutate();
   };
 
   if (isLoading) {
-    return <View style={styles.center}><ActivityIndicator size="large" color={Colors.brand[600]} /></View>;
+    return <LoadingState />;
   }
 
   if (isError || !complaint) {
-    const apiErr = error as ApiError | undefined;
-    const is403 = apiErr?.status === 403;
-    const is404 = apiErr?.status === 404;
+    const pres = isError
+      ? getErrorPresentation(error, t)
+      : getErrorPresentation(new ApiError(404, 'NOT_FOUND', t('errors.notFound.message')), t);
+    const isPreview403 = pres.status === 403;
     return (
       <View style={styles.center}>
-        <Ionicons
-          name={is403 ? 'lock-closed-outline' : is404 ? 'document-outline' : 'cloud-offline-outline'}
-          size={48}
-          color={Colors.red[400]}
+        <EmptyState
+          icon={
+            isPreview403
+              ? 'eye-outline'
+              : pres.status === 404
+                ? 'document-outline'
+                : pres.isNetwork
+                  ? 'cloud-offline-outline'
+                  : 'alert-circle-outline'
+          }
+          title={isPreview403 ? t('detail.previewAccess') : t(pres.titleKey as 'errors.notFound.title')}
+          message={isPreview403 ? t('detail.previewAccessBody') : pres.message}
+          actionLabel={pres.status !== 404 && pres.status !== 403 ? t('common.retry') : undefined}
+          onAction={
+            pres.status !== 404 && pres.status !== 403 ? () => refetch() : undefined
+          }
         />
-        <Text style={styles.emptyText}>
-          {is403
-            ? 'You do not have access to this complaint'
-            : is404
-              ? 'Complaint not found'
-              : isError
-                ? 'Could not load complaint'
-                : 'Complaint not found'}
-        </Text>
-        {isError && !is403 && !is404 && (
-          <Text style={styles.errorDetail}>{apiErr?.message || 'Check your connection.'}</Text>
-        )}
-        <TouchableOpacity style={styles.retryBtn} onPress={() => refetch()}>
-          <Ionicons name="refresh" size={16} color={Colors.white} />
-          <Text style={styles.retryBtnText}>Retry</Text>
-        </TouchableOpacity>
       </View>
     );
   }
 
-  const cfg = STATUS_CONFIG[complaint.status] || STATUS_CONFIG.SUBMITTED;
-  const priorityCfg = PRIORITY_CONFIG[complaint.priority] || PRIORITY_CONFIG.MEDIUM;
+  const isOwner = complaint.createdBy?.id === user?.id;
+  const showCitizenOwnerBanner = !isFieldWorker && isOwner;
   const isAssignedToMe = complaint.currentAssignment?.assignedTo?.id === user?.id;
   const showWorkerActions = canChangeStatus && isAssignedToMe;
+  const showAwaitingReview =
+    complaint.status === 'PENDING_APPROVAL' && isAssignedToMe;
 
   return (
     <>
       <ScrollView
         style={styles.container}
         contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl refreshing={isFetching && !isLoading} onRefresh={refetch} tintColor={Colors.brand[600]} />}
+        refreshControl={stableRefresh.refreshControl}
+        onScroll={stableRefresh.onScroll}
+        scrollEventThrottle={stableRefresh.scrollEventThrottle}
       >
-        {/* Status + Priority badges */}
-        <View style={styles.badgesRow}>
-          <View style={[styles.statusBanner, { backgroundColor: cfg.bg }]}>
-            <Ionicons name={cfg.icon as any} size={16} color={cfg.color} />
-            <Text style={[styles.statusLabel, { color: cfg.color }]}>{cfg.label}</Text>
-          </View>
-          {complaint.priority && (
-            <View style={[styles.statusBanner, { backgroundColor: priorityCfg.bg }]}>
-              <Ionicons name="flag" size={14} color={priorityCfg.color} />
-              <Text style={[styles.statusLabel, { color: priorityCfg.color }]}>{priorityCfg.label}</Text>
+        <GovCard accent="brand">
+          <View style={[styles.headerRow, flexRow(rtl)]}>
+            {complaint.referenceCode ? (
+              <Text style={[styles.ref, textAlignStart(rtl)]}>{complaint.referenceCode}</Text>
+            ) : (
+              <View style={{ flex: 1 }} />
+            )}
+            <View style={[styles.chipRow, flexRow(rtl)]}>
+              <StatusChip status={complaint.status} />
+              {complaint.priority ? <PriorityChip priority={complaint.priority} /> : null}
             </View>
-          )}
-        </View>
+          </View>
+          <Text style={[styles.title, textAlignStart(rtl)]}>{complaint.title}</Text>
+          {complaint.dueDate ? (
+            <View style={[styles.dueInline, flexRow(rtl)]}>
+              <Ionicons
+                name="calendar-outline"
+                size={16}
+                color={complaint.isOverdue ? Colors.red[600] : Colors.gray[500]}
+              />
+              <Text style={[styles.dueText, complaint.isOverdue && styles.dueOverdue, textAlignStart(rtl)]}>
+                {t('detail.due', { date: new Date(complaint.dueDate).toLocaleString() })}
+              </Text>
+            </View>
+          ) : null}
+        </GovCard>
 
-        {/* Overdue warning */}
         {complaint.isOverdue && (
-          <View style={styles.overdueWarning}>
-            <Ionicons name="warning" size={18} color={Colors.red[600]} />
-            <Text style={styles.overdueText}>This task is overdue!</Text>
-          </View>
+          <ErrorBanner title={t('detail.overdue')} variant="error" />
         )}
 
-        {/* SLA / Due date */}
-        {complaint.dueDate && (
-          <View style={[styles.dueBox, complaint.isOverdue && styles.dueBoxOverdue]}>
-            <Ionicons name="time-outline" size={16} color={complaint.isOverdue ? Colors.red[600] : Colors.gray[600]} />
-            <Text style={[styles.dueText, complaint.isOverdue && { color: Colors.red[600] }]}>
-              Due: {new Date(complaint.dueDate).toLocaleString()}
-            </Text>
-          </View>
+        {showCitizenOwnerBanner && (
+          <GovCard accent="cedar">
+            <Text style={[styles.bannerTitle, textAlignStart(rtl)]}>{t('detail.citizenStatus')}</Text>
+            <Text style={[styles.bannerBody, textAlignStart(rtl)]}>{t('detail.citizenStatusBody')}</Text>
+          </GovCard>
         )}
 
-        <Text style={styles.title}>{complaint.title}</Text>
-        {complaint.referenceCode && <Text style={styles.ref}>{complaint.referenceCode}</Text>}
+        {showWorkerActions && !showAwaitingReview && (
+          <GovCard accent="brand">
+            <Text style={[styles.bannerTitle, textAlignStart(rtl)]}>{t('detail.assignedToYou')}</Text>
+            <Text style={[styles.bannerBody, textAlignStart(rtl)]}>{t('detail.assignedToYouBody')}</Text>
+          </GovCard>
+        )}
 
-        {/* Worker Action buttons */}
+        {showAwaitingReview && (
+          <GovCard accent="warning">
+            <View style={[flexRow(rtl), { gap: Spacing.sm }]}>
+              <Ionicons name="hourglass-outline" size={22} color={Colors.purple[700]} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.awaitingTitle, textAlignStart(rtl)]}>{t('worker.awaitingReview.title')}</Text>
+                <Text style={[styles.awaitingBody, textAlignStart(rtl)]}>{t('worker.awaitingReview.body')}</Text>
+              </View>
+            </View>
+          </GovCard>
+        )}
+
         {showWorkerActions && (
-          <View style={styles.actionsCard}>
+          <GovCard>
+            <Text style={[styles.sectionTitle, textAlignStart(rtl)]}>{t('detail.section.workerActions')}</Text>
             {complaint.status === 'ASSIGNED' && (
-              <TouchableOpacity
-                style={[styles.actionBtn, { backgroundColor: Colors.brand[600] }]}
+              <GovButton
+                label={t('worker.startWork')}
                 onPress={handleStartWork}
                 disabled={statusMutation.isPending}
-              >
-                <Ionicons name="play" size={20} color={Colors.white} />
-                <Text style={styles.actionBtnText}>Start Work</Text>
-              </TouchableOpacity>
+                loading={statusMutation.isPending}
+                icon="play-outline"
+              />
             )}
             {complaint.status === 'IN_PROGRESS' && (
-              <TouchableOpacity
-                style={[styles.actionBtn, { backgroundColor: Colors.green[600] }]}
+              <GovButton
+                label={t('worker.submitForApproval')}
                 onPress={handleSubmitForApproval}
                 disabled={statusMutation.isPending}
-              >
-                <Ionicons name="checkmark-circle" size={20} color={Colors.white} />
-                <Text style={styles.actionBtnText}>Submit for Approval</Text>
-              </TouchableOpacity>
+                variant="secondary"
+                icon="checkmark-circle-outline"
+              />
             )}
-            {statusMutation.isPending && (
-              <ActivityIndicator style={{ marginTop: Spacing.sm }} color={Colors.brand[600]} />
-            )}
-          </View>
+          </GovCard>
         )}
 
         {/* Cross-department help requests */}
@@ -293,27 +306,29 @@ export default function ComplaintDetailScreen() {
 
         {/* Rejection info */}
         {complaint.status === 'REJECTED' && complaint.rejectionReason && (
-          <View style={styles.rejectionCard}>
-            <View style={styles.rejectionHeader}>
+          <GovCard accent="warning">
+            <View style={[flexRow(rtl), { gap: Spacing.sm, marginBottom: Spacing.sm }]}>
               <Ionicons name="close-circle" size={20} color={Colors.red[600]} />
-              <Text style={styles.rejectionTitle}>Complaint Rejected</Text>
+              <Text style={[styles.rejectionTitle, textAlignStart(rtl)]}>{t('detail.rejected')}</Text>
             </View>
-            <Text style={styles.rejectionReason}>{complaint.rejectionReason.replace(/_/g, ' ')}</Text>
-            {complaint.rejectionNotes && (
-              <Text style={styles.rejectionNotes}>{complaint.rejectionNotes}</Text>
-            )}
-          </View>
+            <Text style={[styles.rejectionReason, textAlignStart(rtl)]}>
+              {complaint.rejectionReason.replace(/_/g, ' ')}
+            </Text>
+            {complaint.rejectionNotes ? (
+              <Text style={[styles.rejectionNotes, textAlignStart(rtl)]}>{complaint.rejectionNotes}</Text>
+            ) : null}
+          </GovCard>
         )}
 
         {/* Feedback section - shown to citizen owner when complaint is COMPLETED/CLOSED */}
         {(complaint.status === 'COMPLETED' || complaint.status === 'CLOSED') &&
           complaint.createdBy?.id === user?.id && (
             complaint.feedback ? (
-              <View style={[styles.card, { borderColor: Colors.green[100], borderWidth: 1, backgroundColor: Colors.green[50] }]}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <GovCard accent="cedar">
+                <View style={[flexRow(rtl), { gap: 8, marginBottom: 6 }]}>
                   <Ionicons name="checkmark-circle" size={20} color={Colors.green[600]} />
-                  <Text style={[styles.sectionTitle, { color: Colors.green[700], marginBottom: 0 }]}>
-                    Your Feedback
+                  <Text style={[styles.sectionTitle, { color: Colors.cedar[700], marginBottom: 0 }, textAlignStart(rtl)]}>
+                    {t('detail.section.feedback')}
                   </Text>
                 </View>
                 <View style={{ flexDirection: 'row', gap: 4, marginBottom: 4 }}>
@@ -331,55 +346,55 @@ export default function ComplaintDetailScreen() {
                     "{complaint.feedback.comment}"
                   </Text>
                 )}
-              </View>
+              </GovCard>
             ) : (
-              <View style={[styles.card, { borderColor: Colors.brand[200], borderWidth: 1 }]}>
-                <Text style={[styles.sectionTitle, { color: Colors.brand[700] }]}>
-                  How was your experience?
-                </Text>
-                <Text style={{ fontSize: FontSize.sm, color: Colors.gray[600], marginBottom: 12 }}>
-                  Rate the service quality to help your municipality improve.
-                </Text>
-                <TouchableOpacity
-                  style={[styles.actionBtn, { backgroundColor: Colors.brand[600] }]}
+              <GovCard>
+                <Text style={[styles.sectionTitle, textAlignStart(rtl)]}>{t('detail.section.feedbackPrompt')}</Text>
+                <Text style={[styles.bannerBody, textAlignStart(rtl)]}>{t('detail.section.feedbackPromptBody')}</Text>
+                <GovButton
+                  label={t('detail.rateResolution')}
                   onPress={() => setShowFeedbackModal(true)}
-                >
-                  <Ionicons name="star" size={20} color={Colors.white} />
-                  <Text style={styles.actionBtnText}>Rate This Resolution</Text>
-                </TouchableOpacity>
-              </View>
+                  icon="star-outline"
+                  style={{ marginTop: Spacing.md }}
+                />
+              </GovCard>
             )
           )}
 
-        {/* Description */}
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Description</Text>
-          <Text style={styles.description}>{complaint.description}</Text>
-        </View>
+        <GovCard>
+          <Text style={[styles.sectionTitle, textAlignStart(rtl)]}>{t('detail.section.description')}</Text>
+          <Text style={[styles.description, textAlignStart(rtl)]}>{complaint.description}</Text>
+        </GovCard>
 
-        {/* Details */}
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Details</Text>
-          <DetailRow icon="pricetag" label="Category" value={complaint.category?.name || '—'} />
-          {complaint.department && <DetailRow icon="business" label="Department" value={complaint.department.name} />}
-          {complaint.address && <DetailRow icon="location" label="Address" value={complaint.address} />}
-          {complaint.latitude && complaint.longitude && (
-            <DetailRow icon="navigate" label="Coordinates" value={`${parseFloat(complaint.latitude).toFixed(6)}, ${parseFloat(complaint.longitude).toFixed(6)}`} />
-          )}
-          <DetailRow icon="calendar" label="Submitted" value={new Date(complaint.createdAt).toLocaleString()} />
-          {complaint.resolvedAt && (
-            <DetailRow icon="checkmark-done" label="Resolved" value={new Date(complaint.resolvedAt).toLocaleString()} />
-          )}
-        </View>
+        <GovCard>
+          <Text style={[styles.sectionTitle, textAlignStart(rtl)]}>{t('detail.section.details')}</Text>
+          <DetailRow rtl={rtl} icon="pricetag-outline" label={t('detail.field.category')} value={complaint.category?.name || '—'} />
+          {complaint.department ? (
+            <DetailRow rtl={rtl} icon="business-outline" label={t('detail.field.department')} value={complaint.department.name} />
+          ) : null}
+          {complaint.address ? (
+            <DetailRow rtl={rtl} icon="location-outline" label={t('detail.field.address')} value={complaint.address} />
+          ) : null}
+          {complaint.latitude && complaint.longitude ? (
+            <DetailRow
+              rtl={rtl}
+              icon="navigate-outline"
+              label={t('detail.field.coordinates')}
+              value={`${parseFloat(complaint.latitude).toFixed(6)}, ${parseFloat(complaint.longitude).toFixed(6)}`}
+            />
+          ) : null}
+          <DetailRow rtl={rtl} icon="calendar-outline" label={t('detail.field.submitted')} value={new Date(complaint.createdAt).toLocaleString()} />
+          {complaint.resolvedAt ? (
+            <DetailRow rtl={rtl} icon="checkmark-done-outline" label={t('detail.field.resolved')} value={new Date(complaint.resolvedAt).toLocaleString()} />
+          ) : null}
+        </GovCard>
 
-        {/* Attachments by stage */}
         {complaint.attachments?.length > 0 && (
-          <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Photos</Text>
-            {/* Submission photos */}
+          <GovCard>
+            <Text style={[styles.sectionTitle, textAlignStart(rtl)]}>{t('detail.section.photos')}</Text>
             {complaint.attachments.filter((a: any) => a.stage === 'SUBMISSION').length > 0 && (
               <>
-                <Text style={styles.photoStageLabel}>Original Report</Text>
+                <Text style={[styles.photoStageLabel, textAlignStart(rtl)]}>{t('detail.photos.submission')}</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoScroll}>
                   {complaint.attachments.filter((a: any) => a.stage === 'SUBMISSION').map((a: any) => (
                     <Image key={a.id} source={{ uri: getFileUrl(a.url) }} style={styles.photo} resizeMode="cover" />
@@ -390,7 +405,9 @@ export default function ComplaintDetailScreen() {
             {/* Proof photos */}
             {complaint.attachments.filter((a: any) => a.stage === 'PROOF').length > 0 && (
               <>
-                <Text style={[styles.photoStageLabel, { marginTop: Spacing.md }]}>Work Completion Proof</Text>
+                <Text style={[styles.photoStageLabel, { marginTop: Spacing.md }, textAlignStart(rtl)]}>
+                  {t('detail.photos.proof')}
+                </Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoScroll}>
                   {complaint.attachments.filter((a: any) => a.stage === 'PROOF').map((a: any) => (
                     <Image key={a.id} source={{ uri: getFileUrl(a.url) }} style={styles.photo} resizeMode="cover" />
@@ -398,14 +415,13 @@ export default function ComplaintDetailScreen() {
                 </ScrollView>
               </>
             )}
-          </View>
+          </GovCard>
         )}
 
-        {/* Current Assignment */}
         {complaint.currentAssignment && (
-          <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Assigned To</Text>
-            <View style={styles.assignRow}>
+          <GovCard>
+            <Text style={[styles.sectionTitle, textAlignStart(rtl)]}>{t('detail.section.assignment')}</Text>
+            <View style={[styles.assignRow, flexRow(rtl)]}>
               <View style={styles.assignAvatar}>
                 <Text style={styles.assignAvatarText}>
                   {complaint.currentAssignment.assignedTo?.firstName?.[0]}
@@ -416,18 +432,19 @@ export default function ComplaintDetailScreen() {
                 <Text style={styles.assignName}>
                   {complaint.currentAssignment.assignedTo?.firstName} {complaint.currentAssignment.assignedTo?.lastName}
                 </Text>
-                <Text style={styles.assignMeta}>
-                  Assigned by {complaint.currentAssignment.assignedBy?.firstName} {complaint.currentAssignment.assignedBy?.lastName}
+                <Text style={[styles.assignMeta, textAlignStart(rtl)]}>
+                  {t('detail.assignedBy', {
+                    name: `${complaint.currentAssignment.assignedBy?.firstName ?? ''} ${complaint.currentAssignment.assignedBy?.lastName ?? ''}`.trim(),
+                  })}
                 </Text>
               </View>
             </View>
-          </View>
+          </GovCard>
         )}
 
-        {/* Feedback */}
-        {complaint.feedback && (
-          <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Citizen Feedback</Text>
+        {complaint.feedback && !isOwner && (
+          <GovCard>
+            <Text style={[styles.sectionTitle, textAlignStart(rtl)]}>{t('detail.section.feedback')}</Text>
             <View style={styles.ratingRow}>
               {[1, 2, 3, 4, 5].map((star) => (
                 <Ionicons
@@ -442,25 +459,25 @@ export default function ComplaintDetailScreen() {
             {complaint.feedback.comment && (
               <Text style={styles.feedbackComment}>"{complaint.feedback.comment}"</Text>
             )}
-          </View>
+          </GovCard>
         )}
 
-        {/* Status timeline */}
         {complaint.statusHistory?.length > 0 && (
-          <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Status History</Text>
+          <GovCard accent="brand">
+            <Text style={[styles.sectionTitle, textAlignStart(rtl)]}>{t('detail.section.timeline')}</Text>
+            <Text style={[styles.timelineHint, textAlignStart(rtl)]}>{t('detail.timelineHint')}</Text>
             {complaint.statusHistory.map((log: any, i: number) => {
-              const logCfg = STATUS_CONFIG[log.toStatus] || STATUS_CONFIG.SUBMITTED;
+              const logCfg = getComplaintStatusBadge(log.toStatus, t);
               return (
-                <View key={log.id} style={styles.timelineItem}>
+                <View key={log.id} style={[styles.timelineItem, flexRow(rtl)]}>
                   <View style={styles.timelineLine}>
                     <View style={[styles.timelineDot, { backgroundColor: logCfg.color }]} />
                     {i < complaint.statusHistory.length - 1 && <View style={styles.timelineConnector} />}
                   </View>
-                  <View style={styles.timelineContent}>
-                    <Text style={styles.timelineStatus}>{logCfg.label}</Text>
-                    {log.notes && <Text style={styles.timelineNotes}>{log.notes}</Text>}
-                    <Text style={styles.timelineDate}>
+                  <View style={[styles.timelineContent, rtl ? { marginRight: Spacing.md } : { marginLeft: Spacing.md }]}>
+                    <Text style={[styles.timelineStatus, textAlignStart(rtl)]}>{logCfg.label}</Text>
+                    {log.notes ? <Text style={[styles.timelineNotes, textAlignStart(rtl)]}>{log.notes}</Text> : null}
+                    <Text style={[styles.timelineDate, textAlignStart(rtl)]}>
                       {log.changedBy ? `${log.changedBy.firstName} ${log.changedBy.lastName} · ` : ''}
                       {new Date(log.createdAt).toLocaleString()}
                     </Text>
@@ -468,7 +485,7 @@ export default function ComplaintDetailScreen() {
                 </View>
               );
             })}
-          </View>
+          </GovCard>
         )}
       </ScrollView>
 
@@ -479,13 +496,13 @@ export default function ComplaintDetailScreen() {
             <TouchableOpacity onPress={() => setShowProofModal(false)}>
               <Ionicons name="close" size={24} color={Colors.gray[900]} />
             </TouchableOpacity>
-            <Text style={styles.modalTitle}>Submit for Approval</Text>
+            <Text style={styles.modalTitle}>{t('detail.proofModalTitle')}</Text>
             <View style={{ width: 24 }} />
           </View>
 
           <ScrollView style={styles.modalContent}>
-            <Text style={styles.modalSectionTitle}>Proof Photos *</Text>
-            <Text style={styles.modalHint}>Add at least one photo showing the completed work</Text>
+            <Text style={styles.modalSectionTitle}>{t('detail.proofRequired')}</Text>
+            <Text style={styles.modalHint}>{t('detail.proofHint')}</Text>
 
             <View style={styles.photoGrid}>
               {proofPhotos.map((uri, idx) => (
@@ -503,20 +520,20 @@ export default function ComplaintDetailScreen() {
                 <View style={styles.addPhotoButtons}>
                   <TouchableOpacity style={styles.addPhotoBtn} onPress={takeProofPhoto}>
                     <Ionicons name="camera" size={28} color={Colors.brand[600]} />
-                    <Text style={styles.addPhotoLabel}>Camera</Text>
+                    <Text style={styles.addPhotoLabel}>{t('submit.camera')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.addPhotoBtn} onPress={pickProofPhoto}>
                     <Ionicons name="images" size={28} color={Colors.brand[600]} />
-                    <Text style={styles.addPhotoLabel}>Gallery</Text>
+                    <Text style={styles.addPhotoLabel}>{t('submit.gallery')}</Text>
                   </TouchableOpacity>
                 </View>
               )}
             </View>
 
-            <Text style={[styles.modalSectionTitle, { marginTop: Spacing.xl }]}>Work Notes (Optional)</Text>
+            <Text style={[styles.modalSectionTitle, { marginTop: Spacing.xl }]}>{t('detail.workNotes')}</Text>
             <TextInput
               style={styles.notesInput}
-              placeholder="Add any notes about the work done..."
+              placeholder={t('detail.workNotesPlaceholder')}
               value={workNotes}
               onChangeText={setWorkNotes}
               multiline
@@ -526,20 +543,13 @@ export default function ComplaintDetailScreen() {
           </ScrollView>
 
           <View style={styles.modalFooter}>
-            <TouchableOpacity
-              style={[styles.submitBtn, (!proofPhotos.length || statusMutation.isPending) && styles.submitBtnDisabled]}
+            <GovButton
+              label={t('worker.submitForApproval')}
               onPress={submitProof}
-              disabled={!proofPhotos.length || statusMutation.isPending}
-            >
-              {statusMutation.isPending ? (
-                <ActivityIndicator color={Colors.white} />
-              ) : (
-                <>
-                  <Ionicons name="cloud-upload" size={20} color={Colors.white} />
-                  <Text style={styles.submitBtnText}>Submit for Approval</Text>
-                </>
-              )}
-            </TouchableOpacity>
+              disabled={!proofPhotos.length}
+              loading={statusMutation.isPending}
+              icon="cloud-upload-outline"
+            />
           </View>
         </View>
       </Modal>
@@ -548,14 +558,14 @@ export default function ComplaintDetailScreen() {
       <Modal visible={showFeedbackModal} animationType="slide" presentationStyle="pageSheet">
         <View style={styles.modalContainer}>
           <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Rate Your Experience</Text>
+            <Text style={styles.modalTitle}>{t('detail.feedbackModalTitle')}</Text>
             <TouchableOpacity onPress={() => setShowFeedbackModal(false)}>
               <Ionicons name="close" size={28} color={Colors.gray[600]} />
             </TouchableOpacity>
           </View>
           <ScrollView contentContainerStyle={{ padding: Spacing.lg }}>
             <Text style={{ fontSize: FontSize.md, color: Colors.gray[700], marginBottom: 24, textAlign: 'center' }}>
-              How satisfied are you with the resolution?
+              {t('detail.feedbackPromptModal')}
             </Text>
             <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 8, marginBottom: 24 }}>
               {[1, 2, 3, 4, 5].map((s) => (
@@ -574,7 +584,7 @@ export default function ComplaintDetailScreen() {
               </Text>
             )}
             <Text style={{ fontSize: FontSize.sm, fontWeight: '600', color: Colors.gray[700], marginBottom: 8 }}>
-              Comments (optional)
+              {t('detail.feedbackComments')}
             </Text>
             <TextInput
               style={{
@@ -582,27 +592,21 @@ export default function ComplaintDetailScreen() {
                 padding: Spacing.md, minHeight: 100, textAlignVertical: 'top',
                 fontSize: FontSize.md, color: Colors.gray[900],
               }}
-              placeholder="Share your experience..."
+              placeholder={t('detail.feedbackPlaceholder')}
               placeholderTextColor={Colors.gray[400]}
               multiline
               maxLength={500}
               value={feedbackComment}
               onChangeText={setFeedbackComment}
             />
-            <TouchableOpacity
-              style={[styles.actionBtn, { backgroundColor: Colors.brand[600], marginTop: 24 }]}
+            <GovButton
+              label={t('detail.submitFeedback')}
               onPress={submitFeedback}
-              disabled={feedbackMutation.isPending || feedbackRating < 1}
-            >
-              {feedbackMutation.isPending ? (
-                <ActivityIndicator color={Colors.white} />
-              ) : (
-                <>
-                  <Ionicons name="send" size={20} color={Colors.white} />
-                  <Text style={styles.actionBtnText}>Submit Feedback</Text>
-                </>
-              )}
-            </TouchableOpacity>
+              disabled={feedbackRating < 1}
+              loading={feedbackMutation.isPending}
+              icon="send-outline"
+              style={{ marginTop: 24 }}
+            />
           </ScrollView>
         </View>
       </Modal>
@@ -610,71 +614,50 @@ export default function ComplaintDetailScreen() {
   );
 }
 
-function DetailRow({ icon, label, value }: { icon: string; label: string; value: string }) {
+function DetailRow({
+  icon,
+  label,
+  value,
+  rtl,
+}: {
+  icon: string;
+  label: string;
+  value: string;
+  rtl: boolean;
+}) {
   return (
-    <View style={styles.detailRow}>
-      <Ionicons name={icon as any} size={16} color={Colors.gray[400]} />
-      <Text style={styles.detailLabel}>{label}</Text>
-      <Text style={styles.detailValue}>{value}</Text>
+    <View style={[styles.detailRow, flexRow(rtl)]}>
+      <Ionicons name={icon as keyof typeof Ionicons.glyphMap} size={16} color={Colors.gray[400]} />
+      <Text style={[styles.detailLabel, textAlignStart(rtl)]}>{label}</Text>
+      <Text style={[styles.detailValue, textAlignStart(rtl)]}>{value}</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.gray[50] },
-  content: { padding: Spacing.lg, paddingBottom: 40 },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: Spacing.md, padding: Spacing.xl },
-  emptyText: { fontSize: FontSize.md, color: Colors.gray[500], textAlign: 'center' },
-  errorDetail: { fontSize: FontSize.sm, color: Colors.gray[400], textAlign: 'center' },
-  retryBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.xs,
-    backgroundColor: Colors.brand[600], borderRadius: BorderRadius.md,
-    paddingHorizontal: Spacing.xl, paddingVertical: Spacing.md,
+  container: { flex: 1, backgroundColor: Colors.surface },
+  content: { padding: Spacing.lg, paddingBottom: 40, gap: Spacing.md },
+  center: { flex: 1, justifyContent: 'center', backgroundColor: Colors.surface },
+  headerRow: { alignItems: 'center', justifyContent: 'space-between', marginBottom: Spacing.sm },
+  chipRow: { gap: Spacing.xs, flexShrink: 0 },
+  title: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.navy[900], marginTop: Spacing.sm, lineHeight: 28 },
+  ref: {
+    flex: 1,
+    fontSize: FontSize.xs,
+    fontWeight: '700',
+    color: Colors.navy[700],
+    letterSpacing: 1,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    textTransform: 'uppercase',
   },
-  retryBtnText: { fontSize: FontSize.md, fontWeight: '600', color: Colors.white },
-  badgesRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.md },
-  statusBanner: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs, borderRadius: BorderRadius.full,
-  },
-  statusLabel: { fontSize: FontSize.xs, fontWeight: '600' },
-  overdueWarning: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    backgroundColor: Colors.red[50], borderRadius: BorderRadius.md,
-    padding: Spacing.md, marginBottom: Spacing.md,
-    borderWidth: 1, borderColor: Colors.red[200],
-  },
-  overdueText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.red[600] },
-  dueBox: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    backgroundColor: Colors.gray[100], borderRadius: BorderRadius.md,
-    padding: Spacing.sm, marginBottom: Spacing.md,
-  },
-  dueBoxOverdue: { backgroundColor: Colors.red[50] },
+  dueInline: { alignItems: 'center', gap: Spacing.xs, marginTop: Spacing.sm },
   dueText: { fontSize: FontSize.sm, color: Colors.gray[600] },
-  title: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.gray[900], marginBottom: Spacing.xs },
-  ref: { fontSize: FontSize.xs, color: Colors.gray[400], fontFamily: 'monospace', marginBottom: Spacing.md },
-  actionsCard: {
-    backgroundColor: Colors.white, borderRadius: BorderRadius.lg, padding: Spacing.lg, marginBottom: Spacing.md,
-    shadowColor: Colors.black, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 4, elevation: 3,
-  },
-  actionBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,
-    padding: Spacing.lg, borderRadius: BorderRadius.md,
-  },
-  actionBtnText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.white },
-  rejectionCard: {
-    backgroundColor: Colors.red[50], borderRadius: BorderRadius.lg, padding: Spacing.lg, marginBottom: Spacing.md,
-    borderWidth: 1, borderColor: Colors.red[200],
-  },
-  rejectionHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.sm },
-  rejectionTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.red[700] },
-  rejectionReason: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.red[600], marginBottom: Spacing.xs },
-  rejectionNotes: { fontSize: FontSize.sm, color: Colors.red[600] },
-  card: {
-    backgroundColor: Colors.white, borderRadius: BorderRadius.lg, padding: Spacing.lg, marginBottom: Spacing.md,
-    shadowColor: Colors.black, shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 3, elevation: 1,
-  },
+  dueOverdue: { color: Colors.red[600], fontWeight: '600' },
+  bannerTitle: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.gray[900] },
+  bannerBody: { fontSize: FontSize.xs, color: Colors.gray[600], marginTop: 4, lineHeight: 18 },
+  rejectionTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.red[700], flex: 1 },
+  rejectionReason: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.red[600] },
+  rejectionNotes: { fontSize: FontSize.sm, color: Colors.red[600], marginTop: Spacing.xs },
   sectionTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.gray[900], marginBottom: Spacing.md },
   description: { fontSize: FontSize.md, color: Colors.gray[700], lineHeight: 22 },
   detailRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.md },
@@ -694,12 +677,33 @@ const styles = StyleSheet.create({
   ratingRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, marginBottom: Spacing.sm },
   ratingText: { fontSize: FontSize.md, fontWeight: '600', color: Colors.gray[700], marginLeft: Spacing.sm },
   feedbackComment: { fontSize: FontSize.sm, color: Colors.gray[600], fontStyle: 'italic' },
-  timelineItem: { flexDirection: 'row', marginBottom: Spacing.md },
-  timelineLine: { alignItems: 'center', width: 20, marginRight: Spacing.md },
-  timelineDot: { width: 10, height: 10, borderRadius: 5, marginTop: 4 },
-  timelineConnector: { width: 2, flex: 1, backgroundColor: Colors.gray[200], marginTop: 4 },
-  timelineContent: { flex: 1, paddingBottom: Spacing.sm },
-  timelineStatus: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.gray[900] },
+  timelineHint: {
+    fontSize: FontSize.xs,
+    color: Colors.gray[500],
+    marginBottom: Spacing.lg,
+    marginTop: -Spacing.sm,
+  },
+  timelineItem: { marginBottom: Spacing.lg },
+  timelineLine: { alignItems: 'center', width: 24 },
+  timelineDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    marginTop: 4,
+    borderWidth: 2,
+    borderColor: Colors.white,
+  },
+  timelineConnector: { width: 2, flex: 1, backgroundColor: Colors.navy[200], marginTop: 4 },
+  timelineContent: {
+    flex: 1,
+    paddingBottom: Spacing.sm,
+    backgroundColor: Colors.surfaceMuted,
+    borderRadius: BorderRadius.md,
+    padding: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.gray[200],
+  },
+  timelineStatus: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.navy[900] },
   timelineNotes: { fontSize: FontSize.xs, color: Colors.gray[500], marginTop: 2 },
   timelineDate: { fontSize: FontSize.xs, color: Colors.gray[400], marginTop: 2 },
   // Modal styles
@@ -729,10 +733,6 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.gray[200],
   },
   modalFooter: { padding: Spacing.lg, borderTopWidth: 1, borderTopColor: Colors.gray[200] },
-  submitBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,
-    backgroundColor: Colors.green[600], borderRadius: BorderRadius.md, padding: Spacing.lg,
-  },
-  submitBtnDisabled: { backgroundColor: Colors.gray[300] },
-  submitBtnText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.white },
+  awaitingTitle: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.purple[700] },
+  awaitingBody: { fontSize: FontSize.xs, color: Colors.purple[700], marginTop: 4, lineHeight: 18 },
 });

@@ -53,6 +53,7 @@ export function useRealtime(queryClient: QueryClient) {
       queryClient.invalidateQueries({ queryKey: ['complaint'] });
       // Home screen stats badge
       queryClient.invalidateQueries({ queryKey: ['complaint-stats'] });
+      queryClient.invalidateQueries({ queryKey: ['complaints'] });
     };
 
     const invalidateHelpAndTransferInboxes = () => {

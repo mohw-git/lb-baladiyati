@@ -1,36 +1,38 @@
 import { useCallback, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   FlatList,
-  RefreshControl,
   StyleSheet,
   Text,
-  TouchableOpacity,
+  Pressable,
   View,
 } from 'react-native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
+import { pickName } from '@shared/types/locale';
 import { transfersApi, helpRequestsApi } from '../../lib/api/endpoints';
+import { getErrorPresentation } from '../../lib/api/errors';
 import { useHasAnyPermission, PERMISSIONS } from '../../lib/hooks/usePermission';
+import { InboxListCard } from '../../components/inbox/InboxListCard';
+import { EmptyState, LoadingState } from '../../components/ui';
 import { Colors, BorderRadius, FontSize, Spacing } from '../../constants/theme';
+import { useTranslate, useLocale, useIsRtl } from '../../lib/i18n';
+import { flexRow, textAlignStart } from '../../lib/ui/rtl';
+import { useStableRefresh } from '../../lib/ui/use-stable-refresh';
 
 type Channel = 'transfers' | 'help';
 type InboxView = 'inbox' | 'outgoing';
 
-/**
- * Cross-department inbox for staff in the field.
- * Two channels (Transfers / Help) × two views (Incoming / Outgoing).
- * Tap any row to open the existing detail screen for that item.
- */
 export default function InboxScreen() {
+  const t = useTranslate();
+  const locale = useLocale();
+  const rtl = useIsRtl();
   const canViewTransfers = useHasAnyPermission(PERMISSIONS.TRANSFER_VIEW);
   const canViewHelp = useHasAnyPermission(PERMISSIONS.HELP_VIEW);
 
   const [channel, setChannel] = useState<Channel>(canViewHelp ? 'help' : 'transfers');
   const [view, setView] = useState<InboxView>('inbox');
   const queryClient = useQueryClient();
-
   const canRespondHelp = useHasAnyPermission(PERMISSIONS.HELP_RESPOND);
 
   const helpParams = useMemo(() => {
@@ -89,82 +91,111 @@ export default function InboxScreen() {
   });
 
   const active = channel === 'transfers' ? transfersQuery : helpQuery;
-  const items = (active.data?.items ?? []) as any[];
+  const items = (active.data?.items ?? []) as Record<string, unknown>[];
 
   const onRefresh = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: [channel === 'transfers' ? 'transfers' : 'helpRequests'] });
+    queryClient.invalidateQueries({
+      queryKey: [channel === 'transfers' ? 'transfers' : 'helpRequests'],
+    });
   }, [channel, queryClient]);
+  const stableRefresh = useStableRefresh({ onRefresh });
+
+  const emptyKey = useMemo(() => {
+    if (channel === 'help') {
+      return view === 'inbox' ? 'inbox.empty.incomingHelp' : 'inbox.empty.outgoingHelp';
+    }
+    return view === 'inbox' ? 'inbox.empty.incomingTransfers' : 'inbox.empty.outgoingTransfers';
+  }, [channel, view]) as 'inbox.empty.incomingHelp';
+
+  const sectionHint =
+    channel === 'help'
+      ? view === 'inbox'
+        ? canRespondHelp
+          ? t('inbox.view.incoming')
+          : t('profile.myAssignments')
+        : t('inbox.view.outgoing')
+      : view === 'inbox'
+        ? t('inbox.view.incoming')
+        : t('inbox.view.outgoing');
 
   if (!canViewTransfers && !canViewHelp) {
     return (
-      <View style={styles.emptyState}>
-        <Ionicons name="lock-closed-outline" size={48} color={Colors.gray[400]} />
-        <Text style={styles.emptyText}>Inbox is for staff with cross-department permissions.</Text>
+      <View style={styles.noAccess}>
+        <EmptyState icon="lock-closed-outline" title={t('inbox.noAccess')} />
       </View>
     );
   }
 
+  const errorPres = active.isError ? getErrorPresentation(active.error, t) : null;
+
   return (
     <View style={styles.container}>
-      {/* Channel switcher */}
-      <View style={styles.channelBar}>
+      <View style={[styles.channelBar, flexRow(rtl)]}>
         {canViewHelp && (
           <ChannelButton
-            label="Help"
+            label={t('inbox.channel.help')}
             active={channel === 'help'}
             badge={
               (helpCount.data?.receiverCount ?? helpCount.data?.count ?? 0) +
               (view === 'outgoing' ? helpCount.data?.sourceCount ?? 0 : 0)
             }
             onPress={() => setChannel('help')}
+            rtl={rtl}
           />
         )}
         {canViewTransfers && (
           <ChannelButton
-            label="Transfers"
+            label={t('inbox.channel.transfers')}
             active={channel === 'transfers'}
             badge={transfersCount.data?.count}
             onPress={() => setChannel('transfers')}
+            rtl={rtl}
           />
         )}
       </View>
 
-      {/* Inbox / Outgoing toggle */}
-      <View style={styles.viewToggle}>
-        <ViewToggleButton label="Incoming" active={view === 'inbox'} onPress={() => setView('inbox')} />
-        <ViewToggleButton label="Outgoing" active={view === 'outgoing'} onPress={() => setView('outgoing')} />
+      <View style={[styles.viewToggle, flexRow(rtl)]}>
+        <ViewToggleButton
+          label={t('inbox.view.incoming')}
+          active={view === 'inbox'}
+          onPress={() => setView('inbox')}
+        />
+        <ViewToggleButton
+          label={t('inbox.view.outgoing')}
+          active={view === 'outgoing'}
+          onPress={() => setView('outgoing')}
+        />
       </View>
 
+      <Text style={[styles.sectionHint, textAlignStart(rtl)]}>{sectionHint}</Text>
+
       {active.isLoading ? (
-        <View style={styles.loadingState}>
-          <ActivityIndicator color={Colors.brand[600]} />
-        </View>
+        <LoadingState />
+      ) : active.isError && errorPres ? (
+        <EmptyState
+          title={t('inbox.loadError')}
+          message={errorPres.message}
+          actionLabel={t('common.retry')}
+          onAction={() => active.refetch()}
+        />
       ) : items.length === 0 ? (
-        <View style={styles.emptyState}>
-          <Ionicons
-            name={channel === 'help' ? 'hand-left-outline' : 'swap-horizontal-outline'}
-            size={48}
-            color={Colors.gray[400]}
-          />
-          <Text style={styles.emptyText}>
-            {view === 'inbox'
-              ? `No incoming ${channel === 'help' ? 'help requests' : 'transfers'} right now.`
-              : `You haven't sent any ${channel === 'help' ? 'help requests' : 'transfers'} yet.`}
-          </Text>
-        </View>
+        <EmptyState
+          icon={channel === 'help' ? 'hand-left-outline' : 'swap-horizontal-outline'}
+          title={t(emptyKey)}
+        />
       ) : (
         <FlatList
           data={items}
-          keyExtractor={(it) => it.id}
+          keyExtractor={(it) => String((it as { id: string }).id)}
           contentContainerStyle={styles.listContent}
-          refreshControl={
-            <RefreshControl refreshing={active.isFetching} onRefresh={onRefresh} tintColor={Colors.brand[600]} />
-          }
+          refreshControl={stableRefresh.refreshControl}
+          onScroll={stableRefresh.onScroll}
+          scrollEventThrottle={stableRefresh.scrollEventThrottle}
           renderItem={({ item }) =>
             channel === 'help' ? (
-              <HelpRow item={item} />
+              <HelpRow item={item} locale={locale} />
             ) : (
-              <TransferRow item={item} />
+              <TransferRow item={item} locale={locale} />
             )
           }
         />
@@ -178,16 +209,18 @@ function ChannelButton({
   active,
   badge,
   onPress,
+  rtl,
 }: {
   label: string;
   active: boolean;
   badge?: number;
   onPress: () => void;
+  rtl: boolean;
 }) {
   return (
-    <TouchableOpacity
+    <Pressable
       onPress={onPress}
-      style={[styles.channelButton, active && styles.channelButtonActive]}
+      style={[styles.channelButton, active && styles.channelButtonActive, flexRow(rtl)]}
     >
       <Text style={[styles.channelButtonText, active && styles.channelButtonTextActive]}>{label}</Text>
       {!!badge && badge > 0 && (
@@ -195,118 +228,81 @@ function ChannelButton({
           <Text style={styles.badgeText}>{badge > 99 ? '99+' : badge}</Text>
         </View>
       )}
-    </TouchableOpacity>
+    </Pressable>
   );
 }
 
 function ViewToggleButton({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
   return (
-    <TouchableOpacity onPress={onPress} style={[styles.viewBtn, active && styles.viewBtnActive]}>
+    <Pressable onPress={onPress} style={[styles.viewBtn, active && styles.viewBtnActive]}>
       <Text style={[styles.viewBtnText, active && styles.viewBtnTextActive]}>{label}</Text>
-    </TouchableOpacity>
+    </Pressable>
   );
 }
 
-function statusColor(status: string): { bg: string; fg: string } {
-  switch (status) {
-    case 'PENDING':
-      return { bg: Colors.yellow[50], fg: Colors.yellow[700] };
-    case 'ACCEPTED':
-    case 'IN_PROGRESS':
-    case 'SUBMITTED':
-      return { bg: Colors.blue[50], fg: Colors.blue[700] };
-    case 'COMPLETED':
-      return { bg: Colors.green[50], fg: Colors.green[700] };
-    case 'REJECTED':
-    case 'DECLINED':
-      return { bg: Colors.red[50], fg: Colors.red[700] };
-    case 'CANCELLED':
-    case 'AUTO_CANCELLED':
-      return { bg: Colors.gray[100], fg: Colors.gray[600] };
-    default:
-      return { bg: Colors.gray[100], fg: Colors.gray[700] };
-  }
+function deptName(dept: unknown, locale: string): string {
+  if (!dept || typeof dept !== 'object') return '—';
+  return pickName(dept as Parameters<typeof pickName>[0], locale as 'en' | 'ar' | 'fr') || '—';
 }
 
-function TransferRow({ item }: { item: any }) {
-  const tone = statusColor(item.status);
-  const targetLabel = item.targetType === 'COMPLAINT' ? 'Complaint' : 'Task';
+function HelpRow({ item, locale }: { item: Record<string, unknown>; locale: string }) {
+  const complaint = item.complaint as { title?: string } | undefined;
+  const title =
+    complaint?.title ??
+    `Complaint ${String(item.complaintId ?? '').slice(0, 8)}`;
+  const routeLine = `${deptName(item.fromDepartment, locale)} → ${deptName(item.toDepartment, locale)}`;
+
   return (
-    <TouchableOpacity
-      style={styles.card}
+    <InboxListCard
+      title={title}
+      routeLine={routeLine}
+      reason={item.reason as string | undefined}
+      status={String(item.status ?? 'PENDING')}
+      createdAt={String(item.createdAt ?? new Date().toISOString())}
+      onPress={() => {
+        if (item.id) router.push(`/help-request/${item.id}`);
+      }}
+    />
+  );
+}
+
+function TransferRow({ item, locale }: { item: Record<string, unknown>; locale: string }) {
+  const t = useTranslate();
+  const target = item.target as { title?: string; referenceCode?: string } | undefined;
+  const targetLabel =
+    item.targetType === 'COMPLAINT'
+      ? t('inbox.transferTarget.complaint')
+      : t('inbox.transferTarget.task');
+  const title = `${targetLabel}: ${target?.title ?? target?.referenceCode ?? String(item.targetId ?? '').slice(0, 8)}`;
+  const routeLine = `${deptName(item.fromDepartment, locale)} → ${deptName(item.toDepartment, locale)}`;
+
+  return (
+    <InboxListCard
+      title={title}
+      routeLine={routeLine}
+      reason={item.reason as string | undefined}
+      status={String(item.status ?? 'PENDING')}
+      statusLabel={String(item.status ?? 'PENDING')}
+      createdAt={String(item.createdAt ?? new Date().toISOString())}
       onPress={() => {
         if (item.targetType === 'COMPLAINT' && item.targetId) {
           router.push(`/complaint/${item.targetId}`);
         }
       }}
-    >
-      <View style={styles.cardHeader}>
-        <Text style={styles.cardTitle}>
-          {targetLabel}: {item.target?.title ?? item.target?.referenceCode ?? item.targetId.slice(0, 8)}
-        </Text>
-        <View style={[styles.statusPill, { backgroundColor: tone.bg }]}>
-          <Text style={[styles.statusPillText, { color: tone.fg }]}>{item.status}</Text>
-        </View>
-      </View>
-      <Text style={styles.cardLine} numberOfLines={2}>
-        {item.fromDepartment?.name ?? '—'} → {item.toDepartment?.name ?? '—'}
-      </Text>
-      {item.reason && (
-        <Text style={styles.cardReason} numberOfLines={3}>
-          {item.reason}
-        </Text>
-      )}
-      <Text style={styles.cardMeta}>
-        {new Date(item.createdAt).toLocaleString()}
-      </Text>
-    </TouchableOpacity>
-  );
-}
-
-function HelpRow({ item }: { item: any }) {
-  const tone = statusColor(item.status);
-  return (
-    <TouchableOpacity
-      style={styles.card}
-      onPress={() => {
-        if (item.id) {
-          router.push(`/help-request/${item.id}`);
-        }
-      }}
-    >
-      <View style={styles.cardHeader}>
-        <Text style={styles.cardTitle}>
-          {item.complaint?.title ?? `Complaint ${item.complaintId?.slice(0, 8)}`}
-        </Text>
-        <View style={[styles.statusPill, { backgroundColor: tone.bg }]}>
-          <Text style={[styles.statusPillText, { color: tone.fg }]}>{item.status}</Text>
-        </View>
-      </View>
-      <Text style={styles.cardLine} numberOfLines={2}>
-        {item.fromDepartment?.name ?? '—'} → {item.toDepartment?.name ?? '—'}
-      </Text>
-      {item.reason && (
-        <Text style={styles.cardReason} numberOfLines={3}>
-          {item.reason}
-        </Text>
-      )}
-      <Text style={styles.cardMeta}>
-        {new Date(item.createdAt).toLocaleString()}
-      </Text>
-    </TouchableOpacity>
+    />
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.gray[50] },
+  container: { flex: 1, backgroundColor: Colors.surface },
+  noAccess: { flex: 1, justifyContent: 'center' },
   channelBar: {
-    flexDirection: 'row',
-    paddingHorizontal: Spacing.lg,
+    paddingHorizontal: Spacing.xl,
     paddingTop: Spacing.md,
     gap: Spacing.sm,
+    flexWrap: 'wrap',
   },
   channelButton: {
-    flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: Colors.white,
     paddingHorizontal: Spacing.lg,
@@ -331,38 +327,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   badgeText: { color: Colors.white, fontSize: FontSize.xs, fontWeight: '700' },
-
   viewToggle: {
-    flexDirection: 'row',
     backgroundColor: Colors.gray[100],
-    margin: Spacing.lg,
+    margin: Spacing.xl,
     padding: 4,
     borderRadius: BorderRadius.lg,
   },
   viewBtn: { flex: 1, paddingVertical: Spacing.sm, alignItems: 'center', borderRadius: BorderRadius.md },
-  viewBtnActive: { backgroundColor: Colors.white, shadowColor: Colors.black, shadowOpacity: 0.05, shadowRadius: 4, shadowOffset: { width: 0, height: 1 } },
+  viewBtnActive: {
+    backgroundColor: Colors.white,
+    shadowColor: Colors.black,
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+  },
   viewBtnText: { fontSize: FontSize.sm, color: Colors.gray[600], fontWeight: '500' },
   viewBtnTextActive: { color: Colors.gray[900], fontWeight: '700' },
-
-  listContent: { paddingHorizontal: Spacing.lg, paddingBottom: Spacing.xxl, gap: Spacing.md },
-
-  card: {
-    backgroundColor: Colors.white,
-    borderRadius: BorderRadius.lg,
-    padding: Spacing.lg,
-    borderWidth: 1,
-    borderColor: Colors.gray[200],
+  sectionHint: {
+    fontSize: FontSize.sm,
+    color: Colors.gray[600],
+    paddingHorizontal: Spacing.xl,
+    marginBottom: Spacing.sm,
+    fontWeight: '600',
   },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: Spacing.sm },
-  cardTitle: { flex: 1, fontSize: FontSize.md, fontWeight: '700', color: Colors.gray[900] },
-  cardLine: { marginTop: Spacing.xs, fontSize: FontSize.sm, color: Colors.gray[600] },
-  cardReason: { marginTop: Spacing.sm, fontSize: FontSize.sm, color: Colors.gray[500], lineHeight: 18 },
-  cardMeta: { marginTop: Spacing.sm, fontSize: FontSize.xs, color: Colors.gray[400] },
-
-  statusPill: { paddingHorizontal: Spacing.sm, paddingVertical: 2, borderRadius: BorderRadius.full },
-  statusPillText: { fontSize: FontSize.xs, fontWeight: '700', letterSpacing: 0.3 },
-
-  loadingState: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xxl, gap: Spacing.md },
-  emptyText: { textAlign: 'center', fontSize: FontSize.sm, color: Colors.gray[500], maxWidth: 280 },
+  listContent: { paddingHorizontal: Spacing.xl, paddingBottom: Spacing.xxl },
 });

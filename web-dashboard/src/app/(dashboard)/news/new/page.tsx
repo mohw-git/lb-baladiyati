@@ -6,6 +6,13 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { toast } from 'sonner';
 import { newsApi, ApiError } from '@/lib/api';
+import {
+  NEWS_CONTENT_MIN,
+  NEWS_TITLE_MAX,
+  NEWS_TITLE_MIN,
+  trimNewsFields,
+  validateNewsFields,
+} from '@/lib/news-form';
 import { ArrowLeft, Loader2, Save, Eye } from 'lucide-react';
 import { useTranslate, useLocale, isRtl } from '@/lib/i18n';
 
@@ -20,11 +27,8 @@ export default function NewNewsPage() {
   const [publishImmediately, setPublishImmediately] = useState(true);
 
   const createMutation = useMutation({
-    mutationFn: async () => {
-      const article = await newsApi.create(
-        { title: form.title, content: form.content },
-        coverImage || undefined
-      );
+    mutationFn: async (payload: { title: string; content: string }) => {
+      const article = await newsApi.create(payload, coverImage || undefined);
       if (publishImmediately && article?.id) {
         await newsApi.publish(article.id);
       }
@@ -35,11 +39,25 @@ export default function NewNewsPage() {
       queryClient.invalidateQueries({ queryKey: ['news'] });
       router.push('/news');
     },
-    onError: (err: any) => {
-      const message = err instanceof ApiError ? err.message : t('common.error');
+    onError: (err: unknown) => {
+      const message =
+        err instanceof ApiError
+          ? err.getDisplayMessage(t('common.error'))
+          : t('common.error');
       toast.error(message);
     },
   });
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const { title, content } = trimNewsFields(form.title, form.content);
+    const validationMsg = validateNewsFields(title, content, t);
+    if (validationMsg) {
+      toast.error(validationMsg);
+      return;
+    }
+    createMutation.mutate({ title, content });
+  };
 
   return (
     <div className="mx-auto max-w-2xl space-y-4">
@@ -54,13 +72,7 @@ export default function NewNewsPage() {
       </div>
 
       <div className="gov-card p-4">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            createMutation.mutate();
-          }}
-          className="space-y-3"
-        >
+        <form onSubmit={handleSubmit} className="space-y-3">
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-700">{t('news.field.title')} *</label>
             <input
@@ -68,8 +80,11 @@ export default function NewNewsPage() {
               value={form.title}
               onChange={(e) => setForm({ ...form, title: e.target.value })}
               required
+              minLength={NEWS_TITLE_MIN}
+              maxLength={NEWS_TITLE_MAX}
               className="input-gov"
             />
+            <p className="mt-1 text-xs text-gray-500">{t('news.hint.titleMin')}</p>
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-700">{t('news.field.content')} *</label>
@@ -77,9 +92,11 @@ export default function NewNewsPage() {
               value={form.content}
               onChange={(e) => setForm({ ...form, content: e.target.value })}
               required
+              minLength={NEWS_CONTENT_MIN}
               rows={8}
               className="input-gov"
             />
+            <p className="mt-1 text-xs text-gray-500">{t('news.hint.contentMin')}</p>
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-700">{t('news.field.coverImage')}</label>

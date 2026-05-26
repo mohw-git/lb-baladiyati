@@ -1,14 +1,21 @@
 import { useCallback } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, Image, RefreshControl } from 'react-native';
+import { View, StyleSheet, FlatList, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useInfiniteQuery } from '@tanstack/react-query';
-import { Ionicons } from '@expo/vector-icons';
 import { newsApi } from '../../lib/api/endpoints';
 import { getFileUrl } from '../../lib/api/client';
-import { Colors, Spacing, FontSize, BorderRadius } from '../../constants/theme';
+import { Colors } from '../../constants/theme';
+import { AnnouncementCard, EmptyState, BalancedListEmpty } from '../../components/ui';
+import { BrandingImages } from '../../lib/branding/assets';
+import { useTranslate, useIsRtl } from '../../lib/i18n';
+import { useStableRefresh } from '../../lib/ui/use-stable-refresh';
+import { useTabScreenInsets } from '../../hooks/useTabScreenInsets';
 
 export default function NewsScreen() {
   const router = useRouter();
+  const t = useTranslate();
+  const rtl = useIsRtl();
+  const { contentPaddingBottom, horizontalPadding } = useTabScreenInsets();
 
   const {
     data,
@@ -16,7 +23,6 @@ export default function NewsScreen() {
     isError,
     error,
     refetch,
-    isFetching,
     isFetchingNextPage,
     fetchNextPage,
     hasNextPage,
@@ -31,33 +37,23 @@ export default function NewsScreen() {
   });
 
   const articles = data?.pages?.flatMap((page: any) => page?.items ?? []) ?? [];
+  const isEmpty = !isLoading && !isError && articles.length === 0;
 
-  const handleRefresh = useCallback(() => { refetch(); }, [refetch]);
+  const handleRefresh = useCallback(() => {
+    refetch();
+  }, [refetch]);
+  const stableRefresh = useStableRefresh({ onRefresh: handleRefresh });
   const handleLoadMore = useCallback(() => {
     if (hasNextPage && !isFetchingNextPage) fetchNextPage();
   }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
-  const renderItem = ({ item }: { item: any }) => (
-    <TouchableOpacity style={styles.card} onPress={() => router.push(`/news/${item.id}`)} activeOpacity={0.7}>
-      {item.coverImageUrl && (
-        <Image source={{ uri: getFileUrl(item.coverImageUrl) }} style={styles.cover} resizeMode="cover" />
-      )}
-      <View style={styles.cardBody}>
-        <Text style={styles.title} numberOfLines={2}>{item.title}</Text>
-        <Text style={styles.preview} numberOfLines={2}>{item.content?.replace(/<[^>]*>/g, '')}</Text>
-        <View style={styles.cardFooter}>
-          <Text style={styles.author}>
-            {item.author ? `${item.author.firstName} ${item.author.lastName}` : 'Staff'}
-          </Text>
-          <Text style={styles.date}>{new Date(item.publishedAt || item.createdAt).toLocaleDateString()}</Text>
-        </View>
-      </View>
-    </TouchableOpacity>
-  );
-
   const renderFooter = () => {
     if (!isFetchingNextPage) return null;
-    return <View style={styles.footer}><ActivityIndicator size="small" color={Colors.brand[600]} /></View>;
+    return (
+      <View style={styles.footer}>
+        <ActivityIndicator size="small" color={Colors.navy[700]} />
+      </View>
+    );
   };
 
   return (
@@ -65,66 +61,71 @@ export default function NewsScreen() {
       <FlatList
         data={articles}
         keyExtractor={(item) => item.id}
-        renderItem={renderItem}
-        contentContainerStyle={styles.list}
-        refreshControl={
-          <RefreshControl
-            refreshing={isFetching && !isLoading && !isFetchingNextPage}
-            onRefresh={handleRefresh}
-            tintColor={Colors.brand[600]}
+        renderItem={({ item }) => (
+          <AnnouncementCard
+            title={item.title}
+            preview={item.content?.replace(/<[^>]*>/g, '')}
+            dateLabel={new Date(item.publishedAt || item.createdAt).toLocaleDateString()}
+            authorLabel={
+              item.author ? `${item.author.firstName} ${item.author.lastName}` : undefined
+            }
+            imageUri={item.coverImageUrl ? getFileUrl(item.coverImageUrl) : undefined}
+            placeholderImage={BrandingImages.announcement}
+            noticeLabel={t('news.noticeBadge')}
+            onPress={() => router.push(`/news/${item.id}`)}
+            rtl={rtl}
           />
-        }
+        )}
+        contentContainerStyle={[
+          styles.list,
+          {
+            paddingHorizontal: horizontalPadding,
+            paddingBottom: contentPaddingBottom,
+          },
+          isEmpty && styles.listEmpty,
+        ]}
+        refreshControl={stableRefresh.refreshControl}
+        onScroll={stableRefresh.onScroll}
+        scrollEventThrottle={stableRefresh.scrollEventThrottle}
         ListFooterComponent={renderFooter}
         ListEmptyComponent={
           isLoading ? (
-            <View style={styles.empty}><ActivityIndicator size="large" color={Colors.brand[600]} /></View>
+            <BalancedListEmpty>
+              <ActivityIndicator size="large" color={Colors.navy[700]} />
+            </BalancedListEmpty>
           ) : isError ? (
-            <View style={styles.empty}>
-              <Ionicons name="cloud-offline-outline" size={48} color={Colors.red[400]} />
-              <Text style={styles.emptyText}>Could not load news</Text>
-              <Text style={styles.errorDetail}>{(error as any)?.message || 'Check your connection and try again.'}</Text>
-              <TouchableOpacity style={styles.retryBtn} onPress={() => refetch()}>
-                <Ionicons name="refresh" size={16} color={Colors.white} />
-                <Text style={styles.retryBtnText}>Retry</Text>
-              </TouchableOpacity>
-            </View>
+            <BalancedListEmpty>
+              <EmptyState
+                compact
+                icon="cloud-offline-outline"
+                title={t('news.errorTitle')}
+                message={(error as Error)?.message || t('news.errorBody')}
+                actionLabel={t('news.retry')}
+                onAction={() => refetch()}
+              />
+            </BalancedListEmpty>
           ) : (
-            <View style={styles.empty}>
-              <Ionicons name="newspaper-outline" size={48} color={Colors.gray[300]} />
-              <Text style={styles.emptyText}>No news articles yet</Text>
-            </View>
+            <BalancedListEmpty>
+              <EmptyState
+                compact
+                icon="newspaper-outline"
+                title={t('news.empty')}
+                message={t('home.news')}
+              />
+            </BalancedListEmpty>
           )
         }
         onEndReached={handleLoadMore}
         onEndReachedThreshold={0.5}
+        showsVerticalScrollIndicator={false}
       />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.gray[50] },
-  list: { padding: Spacing.lg, paddingBottom: 20 },
-  card: {
-    backgroundColor: Colors.white, borderRadius: BorderRadius.lg, marginBottom: Spacing.md,
-    overflow: 'hidden', shadowColor: Colors.black, shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06, shadowRadius: 4, elevation: 2,
-  },
-  cover: { width: '100%', height: 160 },
-  cardBody: { padding: Spacing.lg },
-  title: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.gray[900] },
-  preview: { fontSize: FontSize.sm, color: Colors.gray[500], marginTop: Spacing.xs, lineHeight: 20 },
-  cardFooter: { flexDirection: 'row', justifyContent: 'space-between', marginTop: Spacing.md },
-  author: { fontSize: FontSize.xs, color: Colors.brand[600], fontWeight: '600' },
-  date: { fontSize: FontSize.xs, color: Colors.gray[400] },
-  empty: { alignItems: 'center', paddingTop: 80, gap: Spacing.md },
-  emptyText: { fontSize: FontSize.md, color: Colors.gray[400] },
-  errorDetail: { fontSize: FontSize.sm, color: Colors.gray[400], textAlign: 'center', paddingHorizontal: Spacing.xl },
-  retryBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.xs,
-    backgroundColor: Colors.brand[600], borderRadius: BorderRadius.md,
-    paddingHorizontal: Spacing.xl, paddingVertical: Spacing.md, marginTop: Spacing.sm,
-  },
-  retryBtnText: { fontSize: FontSize.md, fontWeight: '600', color: Colors.white },
-  footer: { paddingVertical: Spacing.lg, alignItems: 'center' },
+  container: { flex: 1, backgroundColor: Colors.surface },
+  list: { paddingTop: 12, gap: 12 },
+  listEmpty: { flexGrow: 1 },
+  footer: { paddingVertical: 16, alignItems: 'center' },
 });

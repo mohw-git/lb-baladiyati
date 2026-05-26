@@ -6,6 +6,7 @@ import { Colors, Spacing, FontSize, BorderRadius } from '../constants/theme';
 import { useLocaleStore, useTranslate } from '../lib/i18n';
 import { Locale, SUPPORTED_LOCALES, fromApiLocale, isRtl } from '@shared/types/locale';
 import { authApi } from '../lib/api/endpoints';
+import { AuthGate } from '../components/auth-gate';
 
 const LANGS: { code: Locale; label: string; native: string }[] = [
   { code: 'en', label: 'English', native: 'English' },
@@ -14,6 +15,14 @@ const LANGS: { code: Locale; label: string; native: string }[] = [
 ];
 
 export default function LanguageScreen() {
+  return (
+    <AuthGate>
+      <LanguageScreenContent />
+    </AuthGate>
+  );
+}
+
+function LanguageScreenContent() {
   const router = useRouter();
   const t = useTranslate();
   const locale = useLocaleStore((s) => s.locale);

@@ -6,6 +6,8 @@ import { QueryClient, QueryClientProvider, focusManager } from '@tanstack/react-
 import { useAuthStore } from '../lib/auth/store';
 import { authApi } from '../lib/api/endpoints';
 import { useRealtime } from '../lib/realtime/useRealtime';
+import { useNotificationHandlers } from '../lib/push/use-notification-handlers';
+import { usePushRegistration } from '../lib/push/use-push-registration';
 import { initSentry } from '../lib/sentry';
 import { useLocaleStore } from '../lib/i18n';
 import { Locale, SUPPORTED_LOCALES, toApiLocale } from '@shared/types/locale';
@@ -36,6 +38,7 @@ function onAppStateChange(status: AppStateStatus) {
 export default function RootLayout() {
   const hydrate = useAuthStore((s) => s.hydrate);
   const isAuthenticated = useAuthStore((s) => !!s.user);
+  const userId = useAuthStore((s) => s.user?.id);
   const setUser = useAuthStore((s) => s.setUser);
   const hydrateLocale = useLocaleStore((s) => s.hydrate);
   const setLocale = useLocaleStore((s) => s.setLocale);
@@ -43,6 +46,8 @@ export default function RootLayout() {
   // Stream backend updates straight into React Query so changes appear without
   // pull-to-refresh or interval polling.
   useRealtime(queryClient);
+  useNotificationHandlers(queryClient);
+  usePushRegistration(userId);
 
   useEffect(() => {
     hydrate();

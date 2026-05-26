@@ -16,12 +16,21 @@ import { authApi } from '../lib/api/endpoints';
 import { ApiError } from '../lib/api/client';
 import { Colors, Spacing, FontSize, BorderRadius } from '../constants/theme';
 import { useTranslate } from '../lib/i18n';
+import { AuthGate } from '../components/auth-gate';
 
 /**
  * Blocking screen for staff who must enrol in 2FA before using the app.
  * Supports email-based 2FA enrolment; TOTP setup remains web-dashboard only.
  */
 export default function EnrollTwoFactorScreen() {
+  return (
+    <AuthGate allowPendingTwoFactor>
+      <EnrollTwoFactorContent />
+    </AuthGate>
+  );
+}
+
+function EnrollTwoFactorContent() {
   const router = useRouter();
   const t = useTranslate();
   const { user, setUser, logout } = useAuthStore();
@@ -55,7 +64,7 @@ export default function EnrollTwoFactorScreen() {
 
   const handleSignOut = async () => {
     await logout();
-    router.replace('/(auth)/login');
+    router.replace('/(auth)/welcome');
   };
 
   return (
