@@ -20,7 +20,7 @@ import { AuthGate } from '../components/auth-gate';
 
 /**
  * Blocking screen for staff who must enrol in 2FA before using the app.
- * Supports email-based 2FA enrolment; TOTP setup remains web-dashboard only.
+ * Supports email-based 2FA enrolment and in-app TOTP via Security screen.
  */
 export default function EnrollTwoFactorScreen() {
   return (
@@ -36,8 +36,25 @@ function EnrollTwoFactorContent() {
   const { user, setUser, logout } = useAuthStore();
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
 
-  const emailVerified = !!(user as any)?.emailVerifiedAt;
+  const emailVerified = user?.emailVerified !== false;
+
+  const handleResendVerification = async () => {
+    if (!user?.email) return;
+    setResending(true);
+    try {
+      await authApi.resendVerification(user.email);
+      Alert.alert(t('common.success'), t('auth.unverified.resendSuccess'));
+    } catch (err) {
+      Alert.alert(
+        t('common.error'),
+        err instanceof ApiError ? err.message : t('common.error'),
+      );
+    } finally {
+      setResending(false);
+    }
+  };
 
   const handleEnableEmail = async () => {
     if (!password) {
@@ -75,6 +92,22 @@ function EnrollTwoFactorContent() {
       <Text style={styles.title}>{t('enroll2fa.title')}</Text>
       <Text style={styles.body}>{t('enroll2fa.body')}</Text>
 
+      {!emailVerified && (
+        <View style={styles.verifyCard}>
+          <Text style={styles.verifyTitle}>{t('auth.unverified.title')}</Text>
+          <Text style={styles.verifyBody}>{t('auth.unverified.body')}</Text>
+          <TouchableOpacity
+            onPress={handleResendVerification}
+            disabled={resending}
+            style={styles.resendBtn}
+          >
+            <Text style={styles.resendText}>
+              {resending ? t('auth.2fa.resending') : t('auth.unverified.resend')}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       <View style={styles.card}>
         <Text style={styles.cardTitle}>{t('enroll2fa.emailTitle')}</Text>
         <Text style={styles.cardHint}>
@@ -102,10 +135,13 @@ function EnrollTwoFactorContent() {
         </TouchableOpacity>
       </View>
 
-      <View style={styles.noteCard}>
-        <Ionicons name="desktop-outline" size={22} color={Colors.gray[600]} />
-        <Text style={styles.noteText}>{t('enroll2fa.totpWebOnly')}</Text>
-      </View>
+      <TouchableOpacity
+        style={styles.secondaryBtn}
+        onPress={() => router.push('/security')}
+      >
+        <Ionicons name="phone-portrait-outline" size={20} color={Colors.brand[700]} />
+        <Text style={styles.secondaryBtnText}>{t('security.setupTotp')}</Text>
+      </TouchableOpacity>
 
       <TouchableOpacity onPress={handleSignOut} style={styles.signOutBtn}>
         <Text style={styles.signOutText}>{t('profile.signOut')}</Text>
@@ -129,11 +165,23 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: FontSize.xl, fontWeight: '700', textAlign: 'center', color: Colors.gray[900] },
   body: { fontSize: FontSize.sm, color: Colors.gray[600], textAlign: 'center', marginTop: Spacing.sm, marginBottom: Spacing.xl },
+  verifyCard: {
+    backgroundColor: Colors.orange[50],
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.lg,
+    marginBottom: Spacing.lg,
+    borderWidth: 1,
+    borderColor: Colors.orange[500],
+  },
+  verifyTitle: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.orange[700] },
+  verifyBody: { fontSize: FontSize.xs, color: Colors.orange[600], marginTop: Spacing.xs, marginBottom: Spacing.sm },
+  resendBtn: { alignSelf: 'flex-start' },
+  resendText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.brand[700] },
   card: {
     backgroundColor: Colors.white,
     borderRadius: BorderRadius.lg,
     padding: Spacing.lg,
-    marginBottom: Spacing.lg,
+    marginBottom: Spacing.md,
   },
   cardTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.gray[900] },
   cardHint: { fontSize: FontSize.xs, color: Colors.gray[500], marginTop: Spacing.xs, marginBottom: Spacing.md },
@@ -154,6 +202,19 @@ const styles = StyleSheet.create({
   },
   primaryBtnText: { color: Colors.white, fontWeight: '700', fontSize: FontSize.md },
   btnDisabled: { opacity: 0.5 },
+  secondaryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.white,
+    borderRadius: BorderRadius.md,
+    padding: Spacing.md,
+    marginBottom: Spacing.lg,
+    borderWidth: 1,
+    borderColor: Colors.brand[200],
+  },
+  secondaryBtnText: { color: Colors.brand[700], fontWeight: '600', fontSize: FontSize.sm },
   noteCard: {
     flexDirection: 'row',
     gap: Spacing.sm,

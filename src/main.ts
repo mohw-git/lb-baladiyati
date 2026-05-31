@@ -7,7 +7,9 @@ import { NestFactory, Reflector } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import helmet from 'helmet';
+import * as express from 'express';
 import type { Request, Response, NextFunction } from 'express';
+import { configureJsonBodyParsers } from './core/http/boundary-source-import-body.middleware';
 import { Logger as PinoLogger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './core/common/filters/http-exception.filter';
@@ -21,7 +23,13 @@ async function bootstrap() {
   // In dev/test, this only logs warnings.
   assertProductionEnvOrExit();
 
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create(AppModule, {
+    bufferLogs: true,
+    bodyParser: false,
+  });
+  const expressApp = app.getHttpAdapter().getInstance();
+  expressApp.use(configureJsonBodyParsers);
+  expressApp.use(express.urlencoded({ extended: true, limit: '100kb' }));
   // Swap default Nest logger for pino so internal Nest logs are also JSON.
   app.useLogger(app.get(PinoLogger));
   const logger = new Logger('Bootstrap');
@@ -101,7 +109,7 @@ async function bootstrap() {
 
   // Swagger API Documentation
   const config = new DocumentBuilder()
-    .setTitle('Baladi API')
+    .setTitle('Baladiyati API')
     .setDescription(
       `## Municipal Issue Reporting System API
 
@@ -145,7 +153,7 @@ All responses follow a standardized format:
 `,
     )
     .setVersion('1.0.0')
-    .setContact('Baladi Team', 'https://baladi.gov.lb', 'support@baladi.gov.lb')
+    .setContact('Baladiyati Team', 'https://lb-baladiyati.com', 'support@lb-baladiyati.com')
     .addBearerAuth(
       {
         type: 'http',
@@ -181,7 +189,7 @@ All responses follow a standardized format:
         filter: true,
         showRequestDuration: true,
       },
-      customSiteTitle: 'Baladi API Documentation',
+      customSiteTitle: 'Baladiyati API Documentation',
       customCss: `
         .swagger-ui .topbar { display: none }
         .swagger-ui .info { margin: 20px 0 }

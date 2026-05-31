@@ -120,7 +120,7 @@ export function BrandHeader({
               isHero ? 'text-sm font-bold' : 'text-sm',
             )}
           >
-            {name || 'Baladi'}
+            {name || 'Baladiyati'}
           </div>
           {subtitle ? (
             <div

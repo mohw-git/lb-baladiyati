@@ -14,6 +14,10 @@ import { RealtimeService } from '../../core/realtime/realtime.service';
 import { MailService } from '../../core/mail/mail.service';
 import { StorageService } from '../../core/storage/storage.service';
 import { toUploadUrlPath } from '../../core/storage/upload-path.util';
+import {
+  ImageUploadCategory,
+  processImageBuffer,
+} from '../../core/storage/image-processing.util';
 import { KycDocType, KycAction, VerificationStatus, NotificationType } from '@prisma/client';
 import { ReviewAction } from './dto/review-kyc.dto';
 import { KycQueryDto } from './dto/kyc-query.dto';
@@ -129,20 +133,24 @@ export class KycService {
       ];
 
       for (const { file, type } of docTypes) {
-        const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
-        const filename = `${type.toLowerCase()}_${uuid()}${ext}`;
+        const processed = await processImageBuffer(
+          file.buffer,
+          file.mimetype,
+          ImageUploadCategory.KYC,
+        );
+        const filename = `${type.toLowerCase()}_${uuid()}${processed.ext}`;
         const storageKey = path.join('kyc', sub.id, filename).replace(/\\/g, '/');
         const fullPath = this.storage.resolveDiskPath(storageKey);
 
-        fs.writeFileSync(fullPath, file.buffer);
+        fs.writeFileSync(fullPath, processed.buffer);
 
         await tx.kycAttachment.create({
           data: {
             submissionId: sub.id,
             docType: type,
             storageKey: storageKey.replace(/\\/g, '/'),
-            mimeType: file.mimetype,
-            size: file.size,
+            mimeType: processed.mimetype,
+            size: processed.buffer.length,
           },
         });
       }

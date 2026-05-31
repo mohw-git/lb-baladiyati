@@ -334,7 +334,7 @@ export default function PlatformBrandingPage() {
     (locale === 'fr' && form.platformNameFr) ||
     form.platformName ||
     branding?.platformName ||
-    'Baladi';
+    'Baladiyati';
 
   const localizedDescription =
     (locale === 'ar' && form.platformDescriptionAr) ||
@@ -837,6 +837,7 @@ export default function PlatformBrandingPage() {
               <Smartphone className="h-4 w-4" />
               {t('platform.branding.section.apps')}
             </div>
+            <p className="mt-2 text-xs text-gray-500">{t('platform.branding.appsHelp')}</p>
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div>
                 <label className="mb-1 block text-sm font-medium text-gray-700">
@@ -845,6 +846,7 @@ export default function PlatformBrandingPage() {
                 <div className="relative">
                   <Globe className="pointer-events-none absolute start-2.5 top-2 h-4 w-4 text-gray-400" />
                   <input
+                    type="url"
                     className="input-gov ps-8"
                     placeholder="https://apps.apple.com/..."
                     value={form.appStoreUrl}
@@ -859,6 +861,7 @@ export default function PlatformBrandingPage() {
                 <div className="relative">
                   <Globe className="pointer-events-none absolute start-2.5 top-2 h-4 w-4 text-gray-400" />
                   <input
+                    type="url"
                     className="input-gov ps-8"
                     placeholder="https://play.google.com/..."
                     value={form.googlePlayUrl}
@@ -868,17 +871,21 @@ export default function PlatformBrandingPage() {
               </div>
               <div>
                 <label className="mb-1 block text-sm font-medium text-gray-700">
-                  {t('platform.branding.apkUrl')}
+                  {t('platform.branding.apkDownloadUrl')}
                 </label>
                 <div className="relative">
                   <Globe className="pointer-events-none absolute start-2.5 top-2 h-4 w-4 text-gray-400" />
                   <input
+                    type="url"
                     className="input-gov ps-8"
                     placeholder="https://..."
                     value={form.apkUrl}
                     onChange={(e) => updateForm({ apkUrl: e.target.value })}
                   />
                 </div>
+                <p className="mt-1 text-[11px] text-gray-500">
+                  {t('platform.branding.apkDownloadUrlHint')}
+                </p>
               </div>
             </div>
           </div>

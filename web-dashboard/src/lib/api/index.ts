@@ -22,6 +22,10 @@ export type {
   PlatformStats,
   AuditLogEntry,
   CreateMunicipalityRequest,
+  MunicipalityStarterTemplate,
+  MunicipalityBoundaryInfo,
+  MunicipalityBoundaryMapItem,
+  BoundaryOverlapInfo,
 } from './endpoints/platform';
 
 // Re-export client utilities

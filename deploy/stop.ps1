@@ -19,7 +19,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '_common.ps1')
 
 try {
-  Write-Step 'Stop Baladi PM2 apps (Caddy and Postgres are not touched)'
+  Write-Step 'Stop Baladiyati PM2 apps (Caddy and Postgres are not touched)'
 
   $apps = ($script:BaladiDefaults.Pm2Apps -join ' ')
   if ($Delete) {

@@ -5,12 +5,14 @@ import { ComplaintsService } from './complaints.service';
 import { AssignmentsService } from './assignments.service';
 import { StatusService } from './status.service';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { MunicipalitiesModule } from '../municipalities/municipalities.module';
 import { multerConfig } from '../../core/storage/multer.config';
 
 @Module({
   imports: [
     MulterModule.register(multerConfig),
     NotificationsModule,
+    MunicipalitiesModule,
   ],
   controllers: [ComplaintsController],
   providers: [ComplaintsService, AssignmentsService, StatusService],

@@ -40,7 +40,7 @@ async function ensureChannel(Notifications: NonNullable<Awaited<ReturnType<typeo
   if (Platform.OS !== 'android') return;
   try {
     await Notifications.setNotificationChannelAsync('baladi-default', {
-      name: 'Baladi notifications',
+      name: 'Baladiyati notifications',
       importance: Notifications.AndroidImportance.HIGH,
       vibrationPattern: [0, 250, 250, 250],
       lightColor: '#0c1a2e',

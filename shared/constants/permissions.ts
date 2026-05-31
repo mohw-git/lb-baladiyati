@@ -1,6 +1,6 @@
 /** All permission keys — mirrors backend permissions.constants.ts exactly */
 export const PERMISSIONS = {
-  // Complaints (12)
+  // Complaints (13)
   COMPLAINT_CREATE: 'complaint.create',
   COMPLAINT_VIEW_OWN: 'complaint.view_own',
   COMPLAINT_VIEW_ALL: 'complaint.view_all',
@@ -13,6 +13,7 @@ export const PERMISSIONS = {
   COMPLAINT_APPROVE: 'complaint.approve',         // HOD approves closure
   COMPLAINT_REJECT: 'complaint.reject',           // Can reject complaints
   COMPLAINT_SET_PRIORITY: 'complaint.set_priority', // Can set priority/SLA
+  COMPLAINT_CLASSIFY: 'complaint.classify',
 
   // Categories (3)
   CATEGORY_CREATE: 'category.create',
@@ -113,6 +114,7 @@ export const PERMISSION_MODULES: Record<string, { moduleLabelKey: string; items:
       { key: PERMISSIONS.COMPLAINT_APPROVE },
       { key: PERMISSIONS.COMPLAINT_REJECT },
       { key: PERMISSIONS.COMPLAINT_SET_PRIORITY },
+      { key: PERMISSIONS.COMPLAINT_CLASSIFY },
     ],
   },
   categories: {

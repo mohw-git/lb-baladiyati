@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ScrollView,
   ActivityIndicator, Image, FlatList, Modal,
@@ -13,7 +13,13 @@ import { getErrorPresentation } from '../../lib/api/errors';
 import { getCitizenSubmitPolicy } from '../../lib/citizen/submit-policy';
 import { useAuthStore } from '../../lib/auth/store';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../constants/theme';
-import { useTranslate, useIsRtl } from '../../lib/i18n';
+import { useTranslate, useIsRtl, useLocale } from '../../lib/i18n';
+import { pickName, type Locale } from '@shared/types/locale';
+import {
+  COMPLAINT_FIELD_LIMITS,
+  isComplaintDescriptionValid,
+  isComplaintTitleValid,
+} from '@shared/constants/complaint-fields';
 import {
   GovCard, GovButton, ErrorBanner, StepSection, TabScreenShell, CenteredStateCard,
 } from '../../components/ui';
@@ -21,15 +27,30 @@ import { centeredText } from '../../lib/ui/rtl';
 import { useTabScreenInsets } from '../../hooks/useTabScreenInsets';
 import { flexRow, positionEnd, textAlignStart } from '../../lib/ui/rtl';
 
+type MunicipalityCandidate = {
+  id: string;
+  name: string;
+  code: string;
+  nameAr?: string;
+  nameFr?: string;
+};
+
+function formatMunicipalityLabel(c: MunicipalityCandidate, locale: Locale): string {
+  const name = pickName(c, locale);
+  return c.code ? `${name} (${c.code})` : name;
+}
+
 export default function SubmitScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const { user } = useAuthStore();
   const t = useTranslate();
+  const locale = useLocale();
   const rtl = useIsRtl();
   const { contentPaddingBottom, horizontalPadding } = useTabScreenInsets();
   const policy = getCitizenSubmitPolicy(user);
   const verificationStatus = user?.verificationStatus;
+  const resolveSeqRef = useRef(0);
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -39,11 +60,20 @@ export default function SubmitScreen() {
   const [location, setLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [address, setAddress] = useState('');
   const [loadingLocation, setLoadingLocation] = useState(false);
+  const [resolvingMunicipality, setResolvingMunicipality] = useState(false);
+  const [resolveError, setResolveError] = useState(false);
+  const [operationalMunicipalityId, setOperationalMunicipalityId] = useState<string | undefined>();
+  const [resolutionStatus, setResolutionStatus] = useState<string | null>(null);
+  const [resolutionCandidates, setResolutionCandidates] = useState<MunicipalityCandidate[]>([]);
+  const [selectedMunicipalityId, setSelectedMunicipalityId] = useState('');
+  const [reportingMunicipalityName, setReportingMunicipalityName] = useState<string | null>(null);
+
+  const categoryMunicipalityId = operationalMunicipalityId;
 
   const { data: categoriesRaw, isLoading: loadingCats } = useQuery({
-    queryKey: ['categories'],
-    queryFn: () => categoriesApi.list(),
-    enabled: policy.canSubmit,
+    queryKey: ['categories', categoryMunicipalityId ?? 'home'],
+    queryFn: () => categoriesApi.list(categoryMunicipalityId),
+    enabled: policy.canSubmit && !!categoryMunicipalityId,
   });
   const categories: { id: string; name: string }[] = Array.isArray(categoriesRaw)
     ? categoriesRaw
@@ -51,29 +81,136 @@ export default function SubmitScreen() {
 
   const selectedCat = categories.find((c) => c.id === categoryId);
 
+  const municipalityReady =
+    !!operationalMunicipalityId &&
+    resolutionStatus !== 'OUT_OF_COVERAGE' &&
+    (resolutionStatus !== 'AMBIGUOUS' || !!selectedMunicipalityId);
+
   const validate = (): string | null => {
+    if (!location) return t('submit.validation.locationRequired');
+    if (resolveError) return t('submit.routing.resolveFailed');
+    if (resolvingMunicipality) return t('submit.routing.resolving');
+    if (resolutionStatus === 'OUT_OF_COVERAGE') return t('submit.routing.outOfCoverage');
+    if (!operationalMunicipalityId) {
+      if (resolutionStatus === 'AMBIGUOUS' && !selectedMunicipalityId) {
+        return t('submit.validation.municipality');
+      }
+      return t('submit.validation.locationRequired');
+    }
     if (!categoryId) return t('submit.validation.category');
     if (!title.trim()) return t('submit.validation.titleRequired');
-    if (title.trim().length < 5) return t('submit.validation.titleMin');
+    if (!isComplaintTitleValid(title)) return t('submit.validation.titleRange');
     if (!description.trim()) return t('submit.validation.descriptionRequired');
-    if (description.trim().length < 10) return t('submit.validation.descriptionMin');
+    if (!isComplaintDescriptionValid(description)) return t('submit.validation.descriptionRange');
+    if (resolutionStatus === 'AMBIGUOUS' && !selectedMunicipalityId) {
+      return t('submit.validation.municipality');
+    }
     return null;
   };
 
+  const resetRoutingState = useCallback(() => {
+    setOperationalMunicipalityId(undefined);
+    setSelectedMunicipalityId('');
+    setResolutionCandidates([]);
+    setResolutionStatus(null);
+    setReportingMunicipalityName(null);
+    setCategoryId('');
+    setResolveError(false);
+  }, []);
+
+  const clearLocation = useCallback(() => {
+    resolveSeqRef.current += 1;
+    setLocation(null);
+    setAddress('');
+    setResolvingMunicipality(false);
+    resetRoutingState();
+  }, [resetRoutingState]);
+
+  const resolveIncidentMunicipality = useCallback(
+    async (lat: number, lng: number) => {
+      const seq = ++resolveSeqRef.current;
+      setResolvingMunicipality(true);
+      setResolveError(false);
+      try {
+        const res = await complaintsApi.resolveLocation(lat, lng);
+        if (seq !== resolveSeqRef.current) return;
+
+        setResolutionStatus(res.status);
+        setResolutionCandidates(res.candidates ?? []);
+
+        if (res.status === 'OUT_OF_COVERAGE') {
+          setOperationalMunicipalityId(undefined);
+          setReportingMunicipalityName(null);
+          setCategoryId('');
+          setSelectedMunicipalityId('');
+          return;
+        }
+        if (res.status === 'AMBIGUOUS') {
+          setOperationalMunicipalityId(undefined);
+          setReportingMunicipalityName(null);
+          setCategoryId('');
+          setSelectedMunicipalityId('');
+          return;
+        }
+        if (res.municipalityId) {
+          setOperationalMunicipalityId(res.municipalityId);
+          setSelectedMunicipalityId('');
+          const match = res.candidates?.find((c) => c.id === res.municipalityId);
+          setReportingMunicipalityName(match ? pickName(match, locale) : null);
+          setCategoryId('');
+        }
+      } catch {
+        if (seq !== resolveSeqRef.current) return;
+        setResolveError(true);
+        setResolutionStatus(null);
+        setOperationalMunicipalityId(undefined);
+        setReportingMunicipalityName(null);
+        setResolutionCandidates([]);
+        setSelectedMunicipalityId('');
+        setCategoryId('');
+      } finally {
+        if (seq === resolveSeqRef.current) {
+          setResolvingMunicipality(false);
+        }
+      }
+    },
+    [locale],
+  );
+
+  const retryResolve = useCallback(() => {
+    if (location) {
+      void resolveIncidentMunicipality(location.latitude, location.longitude);
+    }
+  }, [location, resolveIncidentMunicipality]);
+
   const submitMutation = useMutation({
     mutationFn: async () => {
+      if (!location) {
+        throw new Error(t('submit.validation.locationRequired'));
+      }
       const data = {
         title: title.trim(),
         description: description.trim(),
         categoryId,
-        ...(location ? { latitude: location.latitude, longitude: location.longitude } : {}),
+        latitude: location.latitude,
+        longitude: location.longitude,
         ...(address ? { address: address.trim() } : {}),
+        ...(selectedMunicipalityId ? { selectedMunicipalityId } : {}),
       };
       if (images.length > 0) {
-        const photos = images.map((img, i) => ({
-          uri: img.uri,
-          name: img.fileName || `photo_${Date.now()}_${i}.jpg`,
-          type: img.mimeType || 'image/jpeg',
+        const { prepareImagesForUpload } = await import('../../lib/utils/prepare-upload-image');
+        const prepared = await prepareImagesForUpload(
+          images.map((img) => ({
+            uri: img.uri,
+            width: img.width,
+            height: img.height,
+          })),
+          'complaint',
+        );
+        const photos = prepared.map((p) => ({
+          uri: p.uri,
+          name: p.name,
+          type: p.type,
         }));
         return complaintsApi.createWithPhotos(data, photos);
       }
@@ -90,8 +227,7 @@ export default function SubmitScreen() {
             setDescription('');
             setCategoryId('');
             setImages([]);
-            setLocation(null);
-            setAddress('');
+            clearLocation();
             router.push('/(tabs)/complaints');
           },
         },
@@ -145,7 +281,10 @@ export default function SubmitScreen() {
         return;
       }
       const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-      setLocation({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
+      const coords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
+      setLocation(coords);
+      resetRoutingState();
+      await resolveIncidentMunicipality(coords.latitude, coords.longitude);
       const [geo] = await Location.reverseGeocodeAsync(loc.coords);
       if (geo) {
         setAddress([geo.street, geo.city, geo.region].filter(Boolean).join(', '));
@@ -157,8 +296,23 @@ export default function SubmitScreen() {
     }
   };
 
+  const pickAmbiguousMunicipality = (c: MunicipalityCandidate) => {
+    setSelectedMunicipalityId(c.id);
+    setOperationalMunicipalityId(c.id);
+    setReportingMunicipalityName(pickName(c, locale));
+    setCategoryId('');
+  };
+
   const canSubmit =
-    title.trim().length >= 5 && description.trim().length >= 10 && categoryId && !submitMutation.isPending;
+    !!location &&
+    !resolvingMunicipality &&
+    !resolveError &&
+    municipalityReady &&
+    resolutionStatus !== 'OUT_OF_COVERAGE' &&
+    isComplaintTitleValid(title) &&
+    isComplaintDescriptionValid(description) &&
+    !!categoryId &&
+    !submitMutation.isPending;
 
   if (policy.blockedByVerification) {
     const blockedMessage = policy.emailUnverified && policy.kycUnverified
@@ -211,65 +365,17 @@ export default function SubmitScreen() {
       <View style={styles.pageIntro}>
         <Text style={[styles.heading, textAlignStart(rtl)]}>{t('submit.title')}</Text>
         <Text style={[styles.sub, textAlignStart(rtl)]}>{t('submit.subtitle')}</Text>
+        <Text style={[styles.routingIntro, textAlignStart(rtl)]}>
+          {t('submit.routing.locationIntro')}
+        </Text>
       </View>
 
       {policy.showUnverifiedWarning && (
         <ErrorBanner title={t('home.verification.warningTitle')} message={t('submit.warning.unverified')} variant="info" />
       )}
 
-      <StepSection step={1} title={t('submit.section.category')} rtl={rtl}>
-        <TouchableOpacity style={[styles.selectBtn, flexRow(rtl)]} onPress={() => setShowCatPicker(true)}>
-          <Text
-            style={[
-              selectedCat ? styles.selectText : styles.selectPlaceholder,
-              textAlignStart(rtl),
-              { flex: 1 },
-            ]}
-            numberOfLines={1}
-          >
-            {loadingCats ? t('common.loading') : selectedCat ? selectedCat.name : t('submit.selectCategory')}
-          </Text>
-          <Ionicons name="chevron-down" size={18} color={Colors.gray[400]} />
-        </TouchableOpacity>
-      </StepSection>
-
-      <StepSection step={2} title={t('submit.section.details')} rtl={rtl} style={styles.sectionGap}>
-        <Text style={[styles.fieldLabel, textAlignStart(rtl)]}>{t('submit.field.title')}</Text>
-        <TextInput
-          style={[styles.textInput, textAlignStart(rtl)]}
-          value={title}
-          onChangeText={setTitle}
-          placeholder={t('submit.placeholder.title')}
-          placeholderTextColor={Colors.gray[400]}
-          maxLength={200}
-        />
-        {title.length > 0 && title.trim().length < 5 && (
-          <Text style={[styles.fieldError, textAlignStart(rtl)]}>{t('submit.validation.titleMin')}</Text>
-        )}
-
-        <Text style={[styles.fieldLabel, { marginTop: Spacing.lg }, textAlignStart(rtl)]}>
-          {t('submit.field.description')}
-        </Text>
-        <TextInput
-          style={[styles.textInput, styles.textArea, textAlignStart(rtl)]}
-          value={description}
-          onChangeText={setDescription}
-          placeholder={t('submit.placeholder.description')}
-          placeholderTextColor={Colors.gray[400]}
-          multiline
-          numberOfLines={4}
-          textAlignVertical="top"
-          maxLength={2000}
-        />
-        {description.length > 0 && description.trim().length < 10 && (
-          <Text style={[styles.fieldError, textAlignStart(rtl)]}>
-            {t('submit.validation.descriptionMin')}
-          </Text>
-        )}
-      </StepSection>
-
-      <StepSection step={3} title={t('submit.section.location')} rtl={rtl} style={styles.sectionGap}>
-        <TouchableOpacity style={[styles.locationBtn, flexRow(rtl)]} onPress={getLocation} disabled={loadingLocation}>
+      <StepSection step={1} title={t('submit.section.location')} rtl={rtl}>
+        <TouchableOpacity style={[styles.locationBtn, flexRow(rtl)]} onPress={getLocation} disabled={loadingLocation || resolvingMunicipality}>
           {loadingLocation ? (
             <ActivityIndicator size="small" color={Colors.brand[600]} />
           ) : (
@@ -282,7 +388,7 @@ export default function SubmitScreen() {
           </Text>
           {location ? (
             <TouchableOpacity
-              onPress={() => { setLocation(null); setAddress(''); }}
+              onPress={clearLocation}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             >
               <Ionicons name="close-circle" size={18} color={Colors.gray[400]} />
@@ -292,8 +398,152 @@ export default function SubmitScreen() {
         {address ? <Text style={[styles.addressText, textAlignStart(rtl)]}>{address}</Text> : null}
       </StepSection>
 
+      <StepSection step={2} title={t('submit.section.municipality')} rtl={rtl} style={styles.sectionGap}>
+        {!location ? (
+          <Text style={[styles.muniHint, textAlignStart(rtl)]}>{t('submit.category.locked')}</Text>
+        ) : null}
+
+        {location && resolvingMunicipality ? (
+          <View style={[styles.resolvingRow, flexRow(rtl)]}>
+            <ActivityIndicator size="small" color={Colors.brand[600]} />
+            <Text style={[styles.resolvingText, textAlignStart(rtl)]}>{t('submit.routing.resolving')}</Text>
+          </View>
+        ) : null}
+
+        {location && resolveError ? (
+          <View>
+            <ErrorBanner
+              title={t('common.error')}
+              message={t('submit.routing.resolveFailed')}
+              variant="error"
+            />
+            <GovButton
+              label={t('submit.routing.retry')}
+              onPress={retryResolve}
+              variant="outline"
+              style={styles.retryBtn}
+            />
+          </View>
+        ) : null}
+
+        {resolutionStatus === 'OUT_OF_COVERAGE' ? (
+          <ErrorBanner
+            title={t('common.error')}
+            message={t('submit.routing.outOfCoverage')}
+            variant="error"
+          />
+        ) : null}
+
+        {reportingMunicipalityName && municipalityReady ? (
+          <GovCard style={styles.routingCard}>
+            <Text style={[styles.routingTitle, textAlignStart(rtl)]}>
+              {t('submit.routing.reportingTo', { name: reportingMunicipalityName })}
+            </Text>
+            {user?.municipalityId && operationalMunicipalityId && user.municipalityId !== operationalMunicipalityId ? (
+              <Text style={[styles.routingHint, textAlignStart(rtl)]}>
+                {t('submit.routing.crossMunicipality', { name: reportingMunicipalityName })}
+              </Text>
+            ) : null}
+          </GovCard>
+        ) : null}
+
+        {resolutionStatus === 'AMBIGUOUS' && resolutionCandidates.length > 0 ? (
+          <GovCard style={styles.routingCard}>
+            <Text style={[styles.routingTitle, textAlignStart(rtl)]}>{t('submit.routing.ambiguousTitle')}</Text>
+            {resolutionCandidates.map((c) => (
+              <TouchableOpacity
+                key={c.id}
+                style={[
+                  styles.muniOption,
+                  selectedMunicipalityId === c.id && styles.muniOptionSelected,
+                  flexRow(rtl),
+                ]}
+                onPress={() => pickAmbiguousMunicipality(c)}
+              >
+                <Text style={textAlignStart(rtl)}>{formatMunicipalityLabel(c, locale)}</Text>
+              </TouchableOpacity>
+            ))}
+          </GovCard>
+        ) : null}
+      </StepSection>
+
+      <StepSection step={3} title={t('submit.section.category')} rtl={rtl} style={styles.sectionGap}>
+        <TouchableOpacity
+          style={[styles.selectBtn, flexRow(rtl), !municipalityReady && styles.selectBtnDisabled]}
+          onPress={() => municipalityReady && setShowCatPicker(true)}
+          disabled={!municipalityReady || resolvingMunicipality}
+        >
+          <Text
+            style={[
+              selectedCat ? styles.selectText : styles.selectPlaceholder,
+              textAlignStart(rtl),
+              { flex: 1 },
+            ]}
+            numberOfLines={1}
+          >
+            {!municipalityReady
+              ? t('submit.category.locked')
+              : loadingCats
+                ? t('common.loading')
+                : selectedCat
+                  ? selectedCat.name
+                  : t('submit.selectCategory')}
+          </Text>
+          <Ionicons name="chevron-down" size={18} color={Colors.gray[400]} />
+        </TouchableOpacity>
+      </StepSection>
+
+      <StepSection step={4} title={t('submit.section.details')} rtl={rtl} style={styles.sectionGap}>
+        <Text style={[styles.fieldLabel, textAlignStart(rtl)]}>{t('submit.field.title')}</Text>
+        <Text style={[styles.fieldHint, textAlignStart(rtl)]}>{t('submit.field.title.hint')}</Text>
+        <TextInput
+          style={[styles.textInput, textAlignStart(rtl)]}
+          value={title}
+          onChangeText={setTitle}
+          placeholder={t('submit.placeholder.title')}
+          placeholderTextColor={Colors.gray[400]}
+          maxLength={COMPLAINT_FIELD_LIMITS.title.max}
+        />
+        <Text style={[styles.charCount, textAlignStart(rtl)]}>
+          {t('submit.field.charCount', {
+            current: String(title.length),
+            max: String(COMPLAINT_FIELD_LIMITS.title.max),
+          })}
+        </Text>
+        {title.length > 0 && !isComplaintTitleValid(title) && (
+          <Text style={[styles.fieldError, textAlignStart(rtl)]}>{t('submit.validation.titleRange')}</Text>
+        )}
+
+        <Text style={[styles.fieldLabel, { marginTop: Spacing.lg }, textAlignStart(rtl)]}>
+          {t('submit.field.description')}
+        </Text>
+        <Text style={[styles.fieldHint, textAlignStart(rtl)]}>{t('submit.field.description.hint')}</Text>
+        <TextInput
+          style={[styles.textInput, styles.textArea, textAlignStart(rtl)]}
+          value={description}
+          onChangeText={setDescription}
+          placeholder={t('submit.placeholder.description')}
+          placeholderTextColor={Colors.gray[400]}
+          multiline
+          numberOfLines={4}
+          textAlignVertical="top"
+          maxLength={COMPLAINT_FIELD_LIMITS.description.max}
+        />
+        <Text style={[styles.charCount, textAlignStart(rtl)]}>
+          {t('submit.field.charCount', {
+            current: String(description.length),
+            max: String(COMPLAINT_FIELD_LIMITS.description.max),
+          })}
+        </Text>
+        {description.length > 0 && !isComplaintDescriptionValid(description) && (
+          <Text style={[styles.fieldError, textAlignStart(rtl)]}>
+            {t('submit.validation.descriptionRange')}
+          </Text>
+        )}
+      </StepSection>
+
       <StepSection
-        step={4}
+        step={5}
         title={t('submit.section.photos', { count: String(images.length) })}
         rtl={rtl}
         style={styles.sectionGap}
@@ -391,9 +641,33 @@ const styles = StyleSheet.create({
   },
   heading: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.white },
   sub: { fontSize: FontSize.sm, color: 'rgba(255,255,255,0.85)', marginTop: Spacing.xs, lineHeight: 22 },
+  routingIntro: {
+    fontSize: FontSize.sm,
+    color: 'rgba(255,255,255,0.9)',
+    marginTop: Spacing.sm,
+    lineHeight: 20,
+  },
+  routingCard: { marginTop: Spacing.sm },
+  routingTitle: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.navy[900] },
+  routingHint: { fontSize: FontSize.xs, color: Colors.gray[600], marginTop: Spacing.xs, lineHeight: 18 },
+  muniHint: { fontSize: FontSize.sm, color: Colors.gray[500], lineHeight: 20 },
+  resolvingRow: { alignItems: 'center', gap: Spacing.sm, marginTop: Spacing.sm },
+  resolvingText: { fontSize: FontSize.sm, color: Colors.brand[700], flex: 1 },
+  retryBtn: { marginTop: Spacing.sm },
+  muniOption: {
+    marginTop: Spacing.sm,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.gray[300],
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.white,
+  },
+  muniOptionSelected: { borderColor: Colors.brand[600], backgroundColor: Colors.brand[50] },
   sectionGap: { marginTop: Spacing.md },
-  sectionLabel: { fontSize: FontSize.md, fontWeight: '700', color: Colors.gray[900], marginBottom: Spacing.md },
   fieldLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.gray[700], marginBottom: Spacing.xs },
+  fieldHint: { fontSize: FontSize.xs, color: Colors.gray[500], marginBottom: Spacing.xs },
+  charCount: { fontSize: FontSize.xs, color: Colors.gray[400], marginTop: 4 },
   textInput: {
     borderWidth: 1, borderColor: Colors.gray[300], borderRadius: BorderRadius.md,
     paddingHorizontal: Spacing.md, paddingVertical: Spacing.md, backgroundColor: Colors.white,
@@ -406,6 +680,7 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.gray[300], borderRadius: BorderRadius.md,
     paddingHorizontal: Spacing.md, paddingVertical: Spacing.md, backgroundColor: Colors.white,
   },
+  selectBtnDisabled: { backgroundColor: Colors.gray[50], opacity: 0.85 },
   selectText: { fontSize: FontSize.md, color: Colors.gray[900], flex: 1 },
   selectPlaceholder: { fontSize: FontSize.md, color: Colors.gray[400], flex: 1 },
   locationBtn: {

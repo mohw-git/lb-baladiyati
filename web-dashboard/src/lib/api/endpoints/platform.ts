@@ -32,11 +32,97 @@ export interface PlatformBranding {
   openingHoursFr: string | null;
   appStoreUrl: string | null;
   googlePlayUrl: string | null;
+  /** Android APK direct download URL (Super Admin → Platform Branding). */
   apkUrl: string | null;
   updatedAt: string;
 }
 
 export type UpdatePlatformBrandingRequest = Partial<Omit<PlatformBranding, 'id' | 'updatedAt'>>;
+
+export type MunicipalityBoundarySourceType = 'AUTO_FROM_SOURCE' | 'MANUAL_GEOJSON';
+
+export interface MunicipalityBoundaryInfo {
+  municipalityId: string;
+  configured: boolean;
+  isActive: boolean;
+  bufferMeters: number;
+  updatedAt: string | null;
+  geojson: { type: string; coordinates: unknown } | null;
+  bounds: [number, number, number, number] | null;
+  sourceType?: MunicipalityBoundarySourceType | null;
+  sourceImportId?: string | null;
+  lastGeneratedAt?: string | null;
+  assignedFeatureCount?: number;
+  overlaps?: BoundaryOverlapInfo[];
+}
+
+export interface BoundarySourceImportInfo {
+  id: string;
+  name: string;
+  fileName: string;
+  validOn: string | null;
+  version: string | null;
+  featureCount: number;
+  status: 'IMPORTING' | 'ACTIVE' | 'ARCHIVED';
+  importedAt: string;
+}
+
+export interface BoundaryAssignmentWorkspace {
+  activeImport: BoundarySourceImportInfo | null;
+  pendingImport: BoundarySourceImportInfo | null;
+  municipalities: Array<{
+    id: string;
+    name: string;
+    nameAr?: string | null;
+    nameFr?: string | null;
+    code: string;
+    boundaryColor: string | null;
+    configured: boolean;
+    sourceType: MunicipalityBoundarySourceType | null;
+    sourceImportId: string | null;
+    lastGeneratedAt: string | null;
+    assignedFeatureCount: number;
+  }>;
+  assignments: Array<{
+    id: string;
+    featureId: string;
+    municipalityId: string;
+    featureKey: string;
+    adm3Name: string;
+    adm3Pcode: string;
+  }>;
+  boundaries: Array<{
+    municipalityId: string;
+    name: string;
+    code: string;
+    sourceType: MunicipalityBoundarySourceType;
+    geojson: { type: string; coordinates: unknown };
+    bounds: [number, number, number, number];
+  }>;
+  stats: {
+    configured: number;
+    missing: number;
+    unassignedFeatureCount: number;
+    conflictCount: number;
+  };
+}
+
+export interface BoundaryOverlapInfo {
+  municipalityId: string;
+  name: string;
+  code: string;
+}
+
+export interface MunicipalityBoundaryMapItem {
+  municipalityId: string;
+  name: string;
+  nameAr?: string | null;
+  nameFr?: string | null;
+  code: string;
+  isActive: boolean;
+  geojson: { type: string; coordinates: unknown };
+  bounds: [number, number, number, number];
+}
 
 export interface PlatformMunicipality {
   id: string;
@@ -56,18 +142,27 @@ export interface PlatformMunicipality {
   _count?: {
     users: number;
     departments: number;
+    complaintCategories?: number;
     complaints: number;
     newsPosts?: number;
   };
 }
 
+export type MunicipalityStarterTemplate =
+  | 'FULL_GOVERNMENT'
+  | 'DEPARTMENTS_ONLY'
+  | 'BLANK';
+
 export interface CreateMunicipalityRequest {
   name: string;
+  nameAr?: string;
+  nameFr?: string;
   code: string;
   adminEmail: string;
   adminPassword: string;
   adminFirstName: string;
   adminLastName: string;
+  starterTemplate?: MunicipalityStarterTemplate;
 }
 
 export interface PlatformUser {
@@ -79,6 +174,7 @@ export interface PlatformUser {
   isActive: boolean;
   isSuperAdmin: boolean;
   verificationStatus: string;
+  emailVerifiedAt: string | null;
   createdAt: string;
   municipality: { id: string; name: string; code: string } | null;
   department: { id: string; name: string } | null;
@@ -124,8 +220,120 @@ export const platformApi = {
       '/platform/municipalities',
       data,
     ),
+  applyStarterCategories: (municipalityId: string) =>
+    post<{ municipality: PlatformMunicipality }>(
+      `/platform/municipalities/${municipalityId}/apply-starter-categories`,
+      {},
+    ),
   updateMunicipality: (id: string, data: Partial<{ name: string; isActive: boolean }>) =>
     patch<PlatformMunicipality>(`/platform/municipalities/${id}`, data),
+
+  listMunicipalityBoundaries: (includeInactive = false) =>
+    get<MunicipalityBoundaryMapItem[]>(
+      `/platform/municipalities/boundaries${includeInactive ? '?includeInactive=true' : ''}`,
+    ),
+
+  getMunicipalityBoundary: (municipalityId: string) =>
+    get<MunicipalityBoundaryInfo>(`/platform/municipalities/${municipalityId}/boundary`),
+
+  validateMunicipalityBoundary: (
+    municipalityId: string,
+    body: { geojson: unknown; bufferMeters?: number },
+  ) =>
+    post<{
+      valid: boolean;
+      geojson: { type: string; coordinates: unknown };
+      bufferMeters: number;
+      bounds: [number, number, number, number];
+      overlaps: BoundaryOverlapInfo[];
+    }>(`/platform/municipalities/${municipalityId}/boundary/validate`, body),
+
+  upsertMunicipalityBoundary: (
+    municipalityId: string,
+    body: { geojson: unknown; bufferMeters?: number; isActive?: boolean },
+  ) =>
+    put<MunicipalityBoundaryInfo>(`/platform/municipalities/${municipalityId}/boundary`, body),
+
+  deactivateMunicipalityBoundary: (municipalityId: string) =>
+    del<MunicipalityBoundaryInfo>(`/platform/municipalities/${municipalityId}/boundary`),
+
+  getBoundaryAssignmentWorkspace: () =>
+    get<BoundaryAssignmentWorkspace>('/platform/boundary-assignment/workspace'),
+
+  getActiveBoundarySourceFeatures: () =>
+    get<{
+      import: BoundarySourceImportInfo;
+      featureCollection: GeoJSON.FeatureCollection;
+    } | null>('/platform/boundary-source-imports/active/features'),
+
+  createBoundarySourceImport: (body: {
+    fileName: string;
+    name?: string;
+    validOn?: string;
+    version?: string;
+  }) => post<BoundarySourceImportInfo>('/platform/boundary-source-imports', body),
+
+  addBoundarySourceFeatures: (
+    importId: string,
+    body: {
+      features: Array<{
+        featureKey: string;
+        adm3Name: string;
+        adm3Name1?: string;
+        adm3Pcode: string;
+        adm2Name: string;
+        adm1Name: string;
+        areaSqkm?: number;
+        centerLat?: number;
+        centerLon?: number;
+        geometry: unknown;
+      }>;
+    },
+  ) =>
+    post<{ accepted: number; skippedInvalid: number; featureCount: number }>(
+      `/platform/boundary-source-imports/${importId}/features`,
+      body,
+    ),
+
+  activateBoundarySourceImport: (importId: string) =>
+    post<BoundarySourceImportInfo>(`/platform/boundary-source-imports/${importId}/activate`, {}),
+
+  cancelBoundarySourceImport: (importId: string) =>
+    del<{ cancelled: boolean; importId: string }>(`/platform/boundary-source-imports/${importId}`),
+
+  importDefaultBoundarySource: (replace = false) =>
+    post<{
+      importId: string;
+      status: string;
+      featureCount: number;
+      inserted: number;
+      invalidGeometryCount: number;
+      skippedCount: number;
+      replacedPrevious: boolean;
+    }>(
+      `/platform/boundary-source-imports/import-default${replace ? '?replace=true' : ''}`,
+      {},
+    ),
+
+  updateBoundaryAssignments: (body: {
+    municipalityId: string;
+    mode: 'assign' | 'unassign';
+    featureIds: string[];
+    switchToSourceBased?: boolean;
+    forceReassign?: boolean;
+    confirmOverlap?: boolean;
+  }) => put<unknown>('/platform/boundary-assignments', body),
+
+  clearMunicipalityBoundaryAssignments: (municipalityId: string) =>
+    del<{ revoked: number; boundaryDeactivated: boolean }>(
+      `/platform/boundary-assignments/municipality/${municipalityId}?confirmed=true`,
+    ),
+
+  updateMunicipalityBoundaryColor: (municipalityId: string, boundaryColor: string) =>
+    patch<{ id: string; boundaryColor: string }>(
+      `/platform/municipalities/${municipalityId}/boundary-color`,
+      { boundaryColor },
+    ),
 
   // Users
   listUsers: (params: {
@@ -154,6 +362,10 @@ export const platformApi = {
     post<{ ok: true }>(`/platform/users/${id}/reset-password`, { newPassword }),
   resetUser2FA: (id: string) =>
     post<{ ok: true }>(`/platform/users/${id}/reset-2fa`),
+  verifyUserEmail: (id: string) =>
+    post<{ ok: true; alreadyVerified: boolean; emailVerifiedAt: string }>(
+      `/platform/users/${id}/verify-email`,
+    ),
   forceLogout: (id: string) =>
     post<{ ok: true; sessionsRevoked: number }>(`/platform/users/${id}/force-logout`),
   deleteUser: (id: string) =>

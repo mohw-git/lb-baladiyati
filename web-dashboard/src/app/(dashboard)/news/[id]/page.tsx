@@ -26,6 +26,28 @@ export default function EditNewsPage() {
   const rtl = isRtl(locale);
   const [form, setForm] = useState({ title: '', content: '' });
   const [coverImage, setCoverImage] = useState<File | null>(null);
+  const [coverImageLoading, setCoverImageLoading] = useState(false);
+
+  const handleCoverImageChange = async (file: File | null) => {
+    if (!file) {
+      setCoverImage(null);
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error(t('upload.error.tooLarge'));
+      return;
+    }
+    setCoverImageLoading(true);
+    try {
+      const { compressImageFile } = await import('@/lib/utils/image-compress');
+      const compressed = await compressImageFile(file, { maxLongEdge: 1920, quality: 0.82 });
+      setCoverImage(compressed);
+    } catch {
+      setCoverImage(file);
+    } finally {
+      setCoverImageLoading(false);
+    }
+  };
 
   const { data: article, isLoading } = useQuery({
     queryKey: ['news', id],
@@ -182,9 +204,14 @@ export default function EditNewsPage() {
             <input
               type="file"
               accept="image/*"
-              onChange={(e) => setCoverImage(e.target.files?.[0] || null)}
+              disabled={coverImageLoading}
+              onChange={(e) => {
+                void handleCoverImageChange(e.target.files?.[0] || null);
+                e.target.value = '';
+              }}
               className="input-gov"
             />
+            <p className="mt-1 text-xs text-gray-500">{t('news.hint.coverImage')}</p>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2 pt-2">
             {article.isPublished ? (

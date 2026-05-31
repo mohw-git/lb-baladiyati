@@ -18,3 +18,4 @@ export { CivicBrandMark } from './civic-brand-mark';
 export { CivicHero } from './civic-hero';
 export { StepSection } from './step-section';
 export { AnnouncementCard } from './announcement-card';
+export { UserAvatar } from './user-avatar';

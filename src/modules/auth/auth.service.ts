@@ -1306,8 +1306,8 @@ export class AuthService {
     }
 
     const secret = speakeasy.generateSecret({
-      name: `Baladi (${user.email})`,
-      issuer: 'Baladi',
+      name: `Baladiyati (${user.email})`,
+      issuer: 'Baladiyati',
       length: 20,
     });
 

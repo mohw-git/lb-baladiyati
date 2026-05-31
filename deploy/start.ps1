@@ -23,7 +23,7 @@ $ErrorActionPreference = 'Stop'
 
 try {
   $AppRoot = Resolve-BaladiAppRoot $AppRoot
-  Write-Step "Start Baladi apps - $AppRoot"
+  Write-Step "Start Baladiyati apps - $AppRoot"
 
   Test-RequiredEnvFiles -AppRoot $AppRoot
   Test-BuildArtifacts -AppRoot $AppRoot

@@ -9,6 +9,11 @@ import { PrismaService } from '../../core/prisma/prisma.service';
 import { hashPassword } from '../../core/common/utils/hash.util';
 import { PERMISSION_SEED_DATA } from '../../core/rbac/permissions.constants';
 import { provisionDefaultMunicipalityRoles } from '../../core/rbac/municipality-roles.provision';
+import {
+  DEFAULT_STARTER_TEMPLATE,
+  applyMunicipalityStarterCategoriesOnly,
+  applyMunicipalityStarterTemplate,
+} from '../../core/provisioning/municipality-starter-templates';
 import { AuditService, AUDIT_ACTIONS } from '../audit/audit.service';
 import { CreateMunicipalityDto } from './dto/create-municipality.dto';
 import { UpdateMunicipalityDto } from './dto/update-municipality.dto';
@@ -47,6 +52,7 @@ export class PlatformService {
           select: {
             users: true,
             departments: true,
+            complaintCategories: true,
             complaints: true,
           },
         },
@@ -160,7 +166,7 @@ export class PlatformService {
   /**
    * Create a new municipality and bootstrap it with:
    *  - All standard roles (Citizen, Field Worker, Supervisor, HOD, Verifier, Admin)
-   *  - Default departments (6 standard ones)
+   *  - Optional starter departments/categories (template)
    *  - First admin user
    */
   async createMunicipality(
@@ -209,20 +215,9 @@ export class PlatformService {
       }
       const createdRoles = await provisionDefaultMunicipalityRoles(tx, muni.id);
 
-      // 2. Default departments
-      const defaultDepartments = [
-        { name: 'Roads & Infrastructure', description: 'Roads, bridges, sidewalks' },
-        { name: 'Public Works', description: 'Street lights, traffic signs, public facilities' },
-        { name: 'Sanitation', description: 'Garbage collection, sewage, public cleaning' },
-        { name: 'Water Authority', description: 'Water supply, pipes, drainage' },
-        { name: 'Parks & Recreation', description: 'Parks, green spaces, playgrounds' },
-        { name: 'Public Safety', description: 'Safety hazards, emergency issues' },
-      ];
-      for (const dept of defaultDepartments) {
-        await tx.department.create({
-          data: { municipalityId: muni.id, ...dept },
-        });
-      }
+      // 2. Starter departments / categories (template)
+      const starterTemplate = dto.starterTemplate ?? DEFAULT_STARTER_TEMPLATE;
+      const starterResult = await applyMunicipalityStarterTemplate(tx, muni.id, starterTemplate);
 
       // 3. First admin user
       const adminUser = await tx.user.create({
@@ -258,12 +253,17 @@ export class PlatformService {
             },
           },
           _count: {
-            select: { users: true, departments: true, complaints: true },
+            select: {
+              users: true,
+              departments: true,
+              complaintCategories: true,
+              complaints: true,
+            },
           },
         },
       });
 
-      return { muni: muniWithAdmin, adminUser };
+      return { muni: muniWithAdmin, adminUser, starterResult, starterTemplate };
     });
 
     await this.audit.log({
@@ -278,6 +278,8 @@ export class PlatformService {
         code: result.muni.code,
         adminEmail: dto.adminEmail,
         adminUserId: result.adminUser.id,
+        starterTemplate: result.starterTemplate,
+        starterResult: result.starterResult,
       },
     });
 
@@ -297,7 +299,63 @@ export class PlatformService {
     return {
       municipality: result.muni,
       admin: result.adminUser,
+      starterResult: result.starterResult,
     };
+  }
+
+  /**
+   * Apply standard complaint categories to an existing municipality that has
+   * departments but no categories yet. Does not modify departments.
+   */
+  async applyStarterCategoriesToMunicipality(
+    municipalityId: string,
+    actorId: string,
+    actorEmail: string,
+  ) {
+    const muni = await this.prisma.municipality.findUnique({
+      where: { id: municipalityId },
+      select: { id: true, name: true, code: true },
+    });
+    if (!muni) throw new NotFoundException('Municipality not found');
+
+    const categoryCount = await this.prisma.complaintCategory.count({
+      where: { municipalityId },
+    });
+    if (categoryCount > 0) {
+      throw new BadRequestException(
+        'This municipality already has complaint categories. Starter categories can only be applied when none exist.',
+      );
+    }
+
+    const departmentCount = await this.prisma.department.count({
+      where: { municipalityId },
+    });
+    if (departmentCount === 0) {
+      throw new BadRequestException(
+        'This municipality has no departments. Create departments first or use a full starter template on a new municipality.',
+      );
+    }
+
+    const starterResult = await this.prisma.$transaction((tx) =>
+      applyMunicipalityStarterCategoriesOnly(tx, municipalityId),
+    );
+
+    await this.audit.log({
+      actorId,
+      actorEmail,
+      municipalityId,
+      action: 'platform.municipality.apply_starter_categories',
+      resourceType: 'Municipality',
+      resourceId: municipalityId,
+      metadata: {
+        municipalityName: muni.name,
+        municipalityCode: muni.code,
+        ...starterResult,
+      },
+    });
+
+    const updated = await this.getMunicipality(municipalityId);
+    return { municipality: updated, starterResult };
   }
 
   async updateMunicipality(
@@ -373,6 +431,7 @@ export class PlatformService {
           isActive: true,
           isSuperAdmin: true,
           verificationStatus: true,
+          emailVerifiedAt: true,
           createdAt: true,
           municipality: { select: { id: true, name: true, code: true } },
           department: { select: { id: true, name: true } },
@@ -693,6 +752,55 @@ export class PlatformService {
     });
 
     return { ok: true };
+  }
+
+  /**
+   * Mark a user's email as verified (super-admin support action).
+   * Idempotent when already verified. Consumes outstanding VERIFY_EMAIL tokens.
+   */
+  async verifyUserEmail(targetId: string, actorId: string, actorEmail: string) {
+    const target = await this.prisma.user.findUnique({ where: { id: targetId } });
+    if (!target) throw new NotFoundException('User not found');
+
+    if (target.emailVerifiedAt) {
+      return {
+        ok: true,
+        alreadyVerified: true,
+        emailVerifiedAt: target.emailVerifiedAt.toISOString(),
+      };
+    }
+
+    const now = new Date();
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: targetId },
+        data: { emailVerifiedAt: now },
+      }),
+      this.prisma.emailOtp.updateMany({
+        where: {
+          userId: targetId,
+          purpose: 'VERIFY_EMAIL',
+          consumedAt: null,
+        },
+        data: { consumedAt: now },
+      }),
+    ]);
+
+    await this.audit.log({
+      actorId,
+      actorEmail,
+      municipalityId: target.municipalityId,
+      action: AUDIT_ACTIONS.PLATFORM_USER_VERIFY_EMAIL,
+      resourceType: 'User',
+      resourceId: targetId,
+      metadata: { targetEmail: target.email },
+    });
+
+    return {
+      ok: true,
+      alreadyVerified: false,
+      emailVerifiedAt: now.toISOString(),
+    };
   }
 
   /**
@@ -1118,9 +1226,9 @@ export class PlatformService {
         authBackgroundFocalX: 50,
         authBackgroundFocalY: 50,
         authBackgroundOverlayOpacity: null,
-        platformName: 'Baladi',
-        platformNameAr: 'بلدي',
-        platformNameFr: 'Baladi',
+        platformName: 'Baladiyati',
+        platformNameAr: 'بلديتي',
+        platformNameFr: 'Baladiyati',
         platformDescription: null,
         platformDescriptionAr: null,
         platformDescriptionFr: null,

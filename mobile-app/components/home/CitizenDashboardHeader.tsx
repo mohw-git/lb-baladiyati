@@ -3,21 +3,26 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BrandingImages } from '../../lib/branding/assets';
-import { Colors, FontSize, Spacing, BorderRadius, Overlay } from '../../constants/theme';
+import { Colors, FontSize, Spacing, Overlay } from '../../constants/theme';
 import { flexRow, textAlignStart } from '../../lib/ui/rtl';
+import { UserAvatar } from '../ui/user-avatar';
 
 type CitizenDashboardHeaderProps = {
   greeting: string;
   municipalityLine: string;
-  initials: string;
+  avatarUrl?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
   rtl?: boolean;
 };
 
-/** Compact citizen dashboard hero — greeting, municipality, profile access */
+/** Compact citizen dashboard hero — greeting, municipality, profile photo */
 export function CitizenDashboardHeader({
   greeting,
   municipalityLine,
-  initials,
+  avatarUrl,
+  firstName,
+  lastName,
   rtl = false,
 }: CitizenDashboardHeaderProps) {
   const router = useRouter();
@@ -44,11 +49,17 @@ export function CitizenDashboardHeader({
           </View>
           <Pressable
             onPress={() => router.push('/(tabs)/profile')}
-            style={styles.profileBtn}
             accessibilityRole="button"
             accessibilityLabel="Profile"
           >
-            <Text style={styles.profileInitials}>{initials}</Text>
+            <UserAvatar
+              url={avatarUrl}
+              firstName={firstName}
+              lastName={lastName}
+              size={40}
+              cacheBust={avatarUrl ?? undefined}
+              tone="onDark"
+            />
           </Pressable>
         </View>
       </View>
@@ -83,20 +94,5 @@ const styles = StyleSheet.create({
     fontSize: FontSize.sm,
     color: 'rgba(255,255,255,0.82)',
     fontWeight: '500',
-  },
-  profileBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: BorderRadius.md,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  profileInitials: {
-    fontSize: FontSize.sm,
-    fontWeight: '700',
-    color: Colors.white,
   },
 });

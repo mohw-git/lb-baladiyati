@@ -56,29 +56,38 @@ function KycScreenContent() {
   });
 
   const submitMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const idFront = photos.idFront;
       const idBack = photos.idBack;
       const selfie = photos.selfie;
       if (!idFront || !idBack || !selfie) {
         throw new Error(t('kyc.doc.idFront'));
       }
-      return kycApi.submit({
-        idFront: {
+      const { prepareImageForUpload } = await import('../lib/utils/prepare-upload-image');
+      const [front, back, face] = await Promise.all([
+        prepareImageForUpload({
           uri: idFront.uri,
-          name: `idFront.${idFront.uri.split('.').pop() || 'jpg'}`,
-          type: idFront.mimeType || 'image/jpeg',
-        },
-        idBack: {
+          width: idFront.width,
+          height: idFront.height,
+          kind: 'kyc',
+        }),
+        prepareImageForUpload({
           uri: idBack.uri,
-          name: `idBack.${idBack.uri.split('.').pop() || 'jpg'}`,
-          type: idBack.mimeType || 'image/jpeg',
-        },
-        selfie: {
+          width: idBack.width,
+          height: idBack.height,
+          kind: 'kyc',
+        }),
+        prepareImageForUpload({
           uri: selfie.uri,
-          name: `selfie.${selfie.uri.split('.').pop() || 'jpg'}`,
-          type: selfie.mimeType || 'image/jpeg',
-        },
+          width: selfie.width,
+          height: selfie.height,
+          kind: 'kyc',
+        }),
+      ]);
+      return kycApi.submit({
+        idFront: { uri: front.uri, name: front.name, type: front.type },
+        idBack: { uri: back.uri, name: back.name, type: back.type },
+        selfie: { uri: face.uri, name: face.name, type: face.type },
       });
     },
     onSuccess: async () => {

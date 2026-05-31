@@ -1,4 +1,4 @@
-# Baladi — production Compose for Docker Desktop on Windows Server
+# Baladiyati — production Compose for Docker Desktop on Windows Server
 #
 # Recommended for FYP: run API + web + Postgres as Windows services/PM2 (see DEPLOYMENT.md).
 # Use this compose when you prefer containerized Postgres + apps on the same host.

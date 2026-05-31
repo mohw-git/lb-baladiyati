@@ -35,6 +35,15 @@ export const authApi = {
     post<{ disabled: true }>('/auth/2fa/email/disable/confirm', data),
   disableTwoFactor: (data: { password: string; code: string }) =>
     post<{ disabled: true }>('/auth/2fa/disable', data),
+  setupTwoFactor: () =>
+    post<{ secret: string; otpauthUrl: string; qrCodeDataUrl: string }>('/auth/2fa/setup'),
+  verifyTwoFactor: (code: string) =>
+    post<{ enabled: true }>('/auth/2fa/verify', { code }),
+  uploadAvatar: (file: { uri: string; name: string; type: string }) => {
+    const formData = new FormData();
+    formData.append('avatar', { uri: file.uri, name: file.name, type: file.type } as any);
+    return postFormData<{ avatarUrl: string }>('/auth/me/avatar', formData);
+  },
   getProfile: () => get<any>('/auth/me'),
   updateProfile: (data: {
     firstName?: string;
@@ -68,6 +77,9 @@ export const complaintsApi = {
     if (data.latitude !== undefined && data.latitude !== null) formData.append('latitude', String(data.latitude));
     if (data.longitude !== undefined && data.longitude !== null) formData.append('longitude', String(data.longitude));
     if (data.address) formData.append('address', data.address);
+    if (data.selectedMunicipalityId) {
+      formData.append('selectedMunicipalityId', data.selectedMunicipalityId);
+    }
     if (photos && photos.length > 0) {
       photos.forEach((photo) => {
         formData.append('attachments', {
@@ -105,11 +117,20 @@ export const complaintsApi = {
   /** Get complaint statistics */
   getStats: () => get<any>('/complaints/stats/summary'),
   remove: (id: string) => del<any>(`/complaints/${id}`),
+  resolveLocation: (latitude: number, longitude: number) =>
+    get<{
+      status: string;
+      municipalityId: string | null;
+      method: string | null;
+      candidates: { id: string; name: string; code: string; nameAr?: string; nameFr?: string }[];
+      distanceMeters?: number;
+    }>(`/complaints/resolve-location?latitude=${latitude}&longitude=${longitude}`),
 };
 
 // Categories
 export const categoriesApi = {
-  list: () => get<any[]>('/categories'),
+  list: (municipalityId?: string) =>
+    get<any[]>(`/categories${municipalityId ? `?municipalityId=${encodeURIComponent(municipalityId)}` : ''}`),
 };
 
 // News
@@ -121,7 +142,10 @@ export const newsApi = {
 // Notifications
 export const notificationsApi = {
   list: (params: any = {}) => getPaginated<any>(`/notifications${qs(params)}`),
-  unreadCount: () => get<any>('/notifications/unread-count'),
+  unreadCount: async () => {
+    const data = await get<{ unreadCount?: number; count?: number }>('/notifications/unread-count');
+    return { unreadCount: data.unreadCount ?? data.count ?? 0 };
+  },
   markRead: (id: string) => patch<any>(`/notifications/${id}/read`),
   markAllRead: () => post<any>('/notifications/read-all'),
 };

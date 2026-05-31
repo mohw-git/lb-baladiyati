@@ -50,7 +50,7 @@ export class MunicipalitiesController {
   }
 
   /**
-   * Current user's municipality (with admin slot info) — used by /org-chart.
+   * Current user's municipality (with admin slot info) — used by Departments Overview.
    */
   @Get('me')
   @ApiBearerAuth('JWT-auth')

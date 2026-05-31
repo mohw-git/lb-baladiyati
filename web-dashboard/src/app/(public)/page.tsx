@@ -8,6 +8,8 @@ import { PublicAnnouncementsSection } from '@/components/public/public-announcem
 import { municipalitiesApi, MunicipalityPublic } from '@/lib/api/endpoints/municipalities';
 import { pickName } from '@shared/types/locale';
 import { PublicHeroBackground } from '@/components/brand/public-hero-background';
+import { hasAppDownloadConfig } from '@/components/public/app-download-section';
+import { LandingAppDownloadSection } from '@/components/public/landing-app-download-section';
 import {
   normalizeBannerFocal,
   resolveBrandMediaUrl,
@@ -76,7 +78,7 @@ export default function HomePage() {
   const supportWhatsApp = branding?.supportWhatsApp;
   const hasPlatformContact =
     Boolean(supportPhone || supportEmail || supportWhatsApp);
-  const appLinks = [branding?.appStoreUrl, branding?.googlePlayUrl, branding?.apkUrl].filter(Boolean);
+  const hasAppDownloads = hasAppDownloadConfig(branding);
 
   // Public service categories — generic municipal scope, citizen-relevant.
   const services: { icon: React.ElementType; key: string; tone: string }[] = [
@@ -150,7 +152,7 @@ export default function HomePage() {
                   <Eye className="h-4 w-4" />
                   {t('public.hero.trackComplaint')}
                 </Link>
-                {appLinks.length > 0 && (
+                {hasAppDownloads && (
                   <Link
                     href="/download-app"
                     className="inline-flex items-center gap-2 rounded-sm border border-white/40 bg-white/10 px-5 py-2.5 text-xs font-bold uppercase tracking-wide text-white backdrop-blur-sm transition-colors hover:bg-white/20"
@@ -334,57 +336,11 @@ export default function HomePage() {
       </section>
 
       {/* ───────────────────────────── MOBILE APP ───────────────────────────────────────── */}
-      {appLinks.length > 0 && (
-        <section className="border-b border-gray-200 bg-navy-950 py-10 text-white sm:py-12">
-          <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-            <div className="flex flex-col items-start gap-5 lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex items-start gap-4">
-                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded border border-white/20 bg-white/5">
-                  <Smartphone className="h-5 w-5" />
-                </div>
-                <div>
-                  <h2 className="text-base font-bold sm:text-lg">{t('public.download.title')}</h2>
-                  <p className="mt-1 max-w-md text-xs text-white/60 sm:text-[13px]">
-                    {t('public.download.subtitle')}
-                  </p>
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {branding?.appStoreUrl && (
-                  <a
-                    href={branding.appStoreUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="rounded-sm border border-white/30 bg-white/10 px-4 py-2 text-xs font-bold uppercase tracking-wide hover:bg-white/20"
-                  >
-                    {t('public.download.appStore')}
-                  </a>
-                )}
-                {branding?.googlePlayUrl && (
-                  <a
-                    href={branding.googlePlayUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="rounded-sm border border-white/30 bg-white/10 px-4 py-2 text-xs font-bold uppercase tracking-wide hover:bg-white/20"
-                  >
-                    {t('public.download.googlePlay')}
-                  </a>
-                )}
-                {branding?.apkUrl && (
-                  <a
-                    href={branding.apkUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="rounded-sm border border-white/30 bg-white/10 px-4 py-2 text-xs font-bold uppercase tracking-wide hover:bg-white/20"
-                  >
-                    {t('public.download.apk')}
-                  </a>
-                )}
-              </div>
-            </div>
-          </div>
-        </section>
-      )}
+      <section className="border-b border-gray-200 bg-navy-950 py-10 text-white sm:py-14">
+        <div className="mx-auto px-4 sm:px-6 lg:px-8">
+          <LandingAppDownloadSection branding={branding} />
+        </div>
+      </section>
 
       {/* ───────────────────────────── PLATFORM SUPPORT BAND ────────────────────────────── */}
       <section className="bg-white py-10 sm:py-12">

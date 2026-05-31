@@ -12,7 +12,11 @@ function payloadFromData(data: Record<string, unknown> | undefined): Notificatio
   };
 }
 
-function invalidateOnNotification(queryClient: QueryClient) {
+function notificationTypeFromData(data: Record<string, unknown> | undefined): string | undefined {
+  return typeof data?.type === 'string' ? data.type : undefined;
+}
+
+function invalidateOnNotification(queryClient: QueryClient, notificationType?: string) {
   queryClient.invalidateQueries({ queryKey: ['notifications'] });
   queryClient.invalidateQueries({ queryKey: ['unread-count'] });
   queryClient.invalidateQueries({ queryKey: ['complaint'] });
@@ -21,6 +25,15 @@ function invalidateOnNotification(queryClient: QueryClient) {
   queryClient.invalidateQueries({ queryKey: ['help-requests'] });
   queryClient.invalidateQueries({ queryKey: ['helpRequests'] });
   queryClient.invalidateQueries({ queryKey: ['transfers'] });
+
+  if (notificationType?.startsWith('NEWS_')) {
+    queryClient.invalidateQueries({ queryKey: ['news'] });
+  }
+
+  if (notificationType?.startsWith('KYC_')) {
+    queryClient.invalidateQueries({ queryKey: ['kycStatus'] });
+    queryClient.invalidateQueries({ queryKey: ['profile'] });
+  }
 }
 
 export function useNotificationHandlers(queryClient: QueryClient) {
@@ -53,7 +66,8 @@ export function useNotificationHandlers(queryClient: QueryClient) {
             const data = response.notification.request.content.data as
               | Record<string, unknown>
               | undefined;
-            invalidateOnNotification(queryClient);
+            const type = notificationTypeFromData(data);
+            invalidateOnNotification(queryClient, type);
             navigate(payloadFromData(data));
           }
         } catch {
@@ -61,15 +75,17 @@ export function useNotificationHandlers(queryClient: QueryClient) {
         }
       }
 
-      receivedSub = Notifications.addNotificationReceivedListener(() => {
-        invalidateOnNotification(queryClient);
+      receivedSub = Notifications.addNotificationReceivedListener((notification) => {
+        const data = notification.request.content.data as Record<string, unknown> | undefined;
+        invalidateOnNotification(queryClient, notificationTypeFromData(data));
       });
 
       responseSub = Notifications.addNotificationResponseReceivedListener((response) => {
         const data = response.notification.request.content.data as
           | Record<string, unknown>
           | undefined;
-        invalidateOnNotification(queryClient);
+        const type = notificationTypeFromData(data);
+        invalidateOnNotification(queryClient, type);
         navigate(payloadFromData(data));
       });
     })();

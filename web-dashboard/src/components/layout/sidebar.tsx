@@ -31,12 +31,12 @@ import {
   ListChecks,
   ArrowRightLeft,
   HandHelping,
-  Network,
   User,
   History,
   ChevronsLeft,
   ChevronsRight,
   Settings,
+  Map,
 } from 'lucide-react';
 
 interface NavItem {
@@ -108,7 +108,12 @@ const adminNavItems: NavItem[] = [
     labelKey: 'nav.departments',
     href: '/departments',
     icon: <Building className="h-4 w-4" />,
-    permissions: [PERMISSIONS.DEPARTMENT_CREATE, PERMISSIONS.DEPARTMENT_UPDATE],
+    permissions: [
+      PERMISSIONS.DEPARTMENT_CREATE,
+      PERMISSIONS.DEPARTMENT_UPDATE,
+      PERMISSIONS.COMPLAINT_VIEW_ALL,
+      PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT,
+    ],
   },
   {
     labelKey: 'nav.roles',
@@ -133,17 +138,6 @@ const adminNavItems: NavItem[] = [
     href: '/kyc',
     icon: <ShieldCheck className="h-4 w-4" />,
     permissions: [PERMISSIONS.KYC_VIEW_ALL, PERMISSIONS.KYC_REVIEW],
-  },
-  {
-    labelKey: 'nav.orgChart',
-    href: '/org-chart',
-    icon: <Network className="h-4 w-4" />,
-    permissions: [
-      PERMISSIONS.USER_VIEW_DEPARTMENT,
-      PERMISSIONS.USER_VIEW_ALL,
-      PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT,
-      PERMISSIONS.COMPLAINT_VIEW_ALL,
-    ],
   },
   {
     labelKey: 'nav.audit',
@@ -171,6 +165,11 @@ const platformNavItems: NavItem[] = [
     icon: <Globe className="h-4 w-4" />,
   },
   {
+    labelKey: 'nav.boundaryAssignment',
+    href: '/platform/boundaries',
+    icon: <Map className="h-4 w-4" />,
+  },
+  {
     labelKey: 'nav.allUsers',
     href: '/platform/users',
     icon: <UserCog className="h-4 w-4" />,
@@ -194,6 +193,11 @@ const platformNavItems: NavItem[] = [
     labelKey: 'nav.platformAnnouncements',
     href: '/platform/announcements',
     icon: <Megaphone className="h-4 w-4" />,
+  },
+  {
+    labelKey: 'nav.platformBroadcasts',
+    href: '/platform/broadcasts',
+    icon: <Bell className="h-4 w-4" />,
   },
 ];
 

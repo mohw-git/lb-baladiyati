@@ -6,11 +6,12 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from '../../core/prisma/prisma.service';
-import { ComplaintStatus, Prisma } from '@prisma/client';
+import { ComplaintStatus, NotificationType, Prisma } from '@prisma/client';
 import { PermissionsResolver } from '../../core/rbac/permissions.resolver';
 import { PERMISSIONS } from '../../core/rbac/permissions.constants';
 import { AuditService, AUDIT_ACTIONS } from '../audit/audit.service';
 import { RealtimeService } from '../../core/realtime/realtime.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   assertEligibleStaffAssignee,
   staffAssignableWhere,
@@ -23,6 +24,7 @@ export class AssignmentsService {
     private permissionsResolver: PermissionsResolver,
     private audit: AuditService,
     private realtime: RealtimeService,
+    private notifications: NotificationsService,
   ) {}
 
   /**
@@ -128,6 +130,12 @@ export class AssignmentsService {
         );
       }
     }
+
+    const priorActive = await this.prisma.complaintAssignment.findFirst({
+      where: { complaintId, isActive: true },
+      select: { assignedToId: true },
+    });
+    const assigneeChanged = priorActive?.assignedToId !== assignedToId;
 
     // Wrap deactivate + status-bump + new assignment in one transaction so
     // two concurrent assigns can't both succeed and leave the complaint
@@ -246,6 +254,24 @@ export class AssignmentsService {
       createdById: complaint.createdById,
       assignedUserIds: [assignedToId],
     });
+
+    if (assigneeChanged) {
+      const ref = complaint.referenceCode ?? complaintId;
+      await this.notifications
+        .createAndSend(
+          municipalityId,
+          [assignedToId],
+          NotificationType.COMPLAINT_ASSIGNED,
+          'Complaint assigned to you',
+          `You have been assigned complaint ${ref}.`,
+          {
+            complaintId,
+            referenceCode: ref,
+            deepLink: `/complaints/${complaintId}`,
+          },
+        )
+        .catch(() => undefined);
+    }
 
     return {
       complaintId,

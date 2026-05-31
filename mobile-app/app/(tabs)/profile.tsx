@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import {
   View, Text, TextInput, StyleSheet, Alert, ScrollView, Pressable,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,7 +19,7 @@ import {
 } from '../../lib/hooks/usePermission';
 import {
   GovCard, GovButton, ErrorBanner, LoadingState, EmptyState, TabScreenShell,
-  InfoRow, MenuRow,
+  InfoRow, MenuRow, UserAvatar,
 } from '../../components/ui';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../constants/theme';
 import { useLocale, useTranslate, useIsRtl } from '../../lib/i18n';
@@ -40,6 +41,9 @@ export default function ProfileScreen() {
 
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({ firstName: '', lastName: '', phone: '' });
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [avatarCacheBust, setAvatarCacheBust] = useState<string | number>(0);
+  const [resendingVerification, setResendingVerification] = useState(false);
 
   const { data: profile, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['profile'],
@@ -86,6 +90,100 @@ export default function ProfileScreen() {
       }
     },
   });
+
+  const handlePickAvatar = () => {
+    Alert.alert(t('profile.changePhoto'), undefined, [
+      {
+        text: t('submit.gallery'),
+        onPress: async () => {
+          const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+          if (status !== 'granted') {
+            Alert.alert(t('common.error'), t('submit.permission.camera'));
+            return;
+          }
+          const result = await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            allowsEditing: true,
+            aspect: [1, 1],
+            quality: 0.85,
+          });
+          if (!result.canceled && result.assets[0]) {
+            await uploadAvatarAsset(result.assets[0]);
+          }
+        },
+      },
+      {
+        text: t('submit.camera'),
+        onPress: async () => {
+          const { status } = await ImagePicker.requestCameraPermissionsAsync();
+          if (status !== 'granted') {
+            Alert.alert(t('common.error'), t('submit.permission.camera'));
+            return;
+          }
+          const result = await ImagePicker.launchCameraAsync({
+            allowsEditing: true,
+            aspect: [1, 1],
+            quality: 0.85,
+          });
+          if (!result.canceled && result.assets[0]) {
+            await uploadAvatarAsset(result.assets[0]);
+          }
+        },
+      },
+      { text: t('common.cancel'), style: 'cancel' },
+    ]);
+  };
+
+  const uploadAvatarAsset = async (asset: ImagePicker.ImagePickerAsset) => {
+    setUploadingAvatar(true);
+    try {
+      const { prepareImageForUpload } = await import('../../lib/utils/prepare-upload-image');
+      const prepared = await prepareImageForUpload({
+        uri: asset.uri,
+        width: asset.width,
+        height: asset.height,
+        kind: 'avatar',
+        square: true,
+      });
+      const { avatarUrl } = await authApi.uploadAvatar({
+        uri: prepared.uri,
+        name: prepared.name,
+        type: prepared.type,
+      });
+      const bust = Date.now();
+      setAvatarCacheBust(bust);
+      updateUser({ avatarUrl });
+      queryClient.setQueryData(['profile'], (old: typeof profile) =>
+        old ? { ...old, avatarUrl } : old,
+      );
+      await queryClient.refetchQueries({ queryKey: ['profile'] });
+      Alert.alert(t('common.success'), t('profile.photoUpdated'));
+    } catch (err) {
+      Alert.alert(
+        t('common.error'),
+        err instanceof ApiError ? err.message : t('profile.photoFailed'),
+      );
+    } finally {
+      setUploadingAvatar(false);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    const email = profile?.email || user?.email;
+    if (!email) return;
+    setResendingVerification(true);
+    try {
+      await authApi.resendVerification(email);
+      Alert.alert(t('common.success'), t('auth.unverified.resendSuccess'));
+    } catch (err) {
+      Alert.alert(
+        t('common.error'),
+        err instanceof ApiError ? err.message : t('common.error'),
+      );
+    } finally {
+      setResendingVerification(false);
+    }
+  };
 
   const handleLogout = () => {
     Alert.alert(t('profile.signOut'), t('profile.signOutConfirm'), [
@@ -138,6 +236,8 @@ export default function ProfileScreen() {
   }
 
   const displayUser = profile ?? user;
+  /** Auth store updates synchronously on upload; prefer it over stale query cache. */
+  const displayAvatarUrl = user?.avatarUrl ?? profile?.avatarUrl;
   const emailVerified = displayUser?.emailVerified !== false;
   const kycStatus = displayUser?.verificationStatus;
 
@@ -151,12 +251,24 @@ export default function ProfileScreen() {
     >
       <GovCard>
         <View style={[styles.avatarSection, rtl && styles.avatarSectionRtl]}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>
-              {displayUser?.firstName?.[0]}
-              {displayUser?.lastName?.[0]}
-            </Text>
-          </View>
+          <Pressable
+            onPress={handlePickAvatar}
+            disabled={uploadingAvatar}
+            style={styles.avatarWrap}
+            accessibilityLabel={t('profile.changePhoto')}
+          >
+            <UserAvatar
+              url={displayAvatarUrl}
+              firstName={displayUser?.firstName}
+              lastName={displayUser?.lastName}
+              size={80}
+              cacheBust={avatarCacheBust || displayAvatarUrl}
+              loading={uploadingAvatar}
+            />
+            <View style={styles.avatarBadge}>
+              <Ionicons name="camera" size={16} color={Colors.white} />
+            </View>
+          </Pressable>
           <Text style={[styles.name, textAlignStart(rtl)]}>
             {displayUser?.firstName} {displayUser?.lastName}
           </Text>
@@ -175,8 +287,17 @@ export default function ProfileScreen() {
         </View>
       </GovCard>
 
-      {!emailVerified && hasCitizenRole && (
-        <ErrorBanner title={t('auth.unverified.title')} message={t('profile.verifyEmailHint')} variant="warning" />
+      {!emailVerified && (
+        <GovCard accent="warning">
+          <ErrorBanner title={t('auth.unverified.title')} message={t('profile.verifyEmailHint')} variant="warning" />
+          <GovButton
+            label={resendingVerification ? t('auth.2fa.resending') : t('auth.unverified.resend')}
+            onPress={handleResendVerification}
+            loading={resendingVerification}
+            variant="outline"
+            style={{ marginTop: Spacing.sm }}
+          />
+        </GovCard>
       )}
 
       {hasCitizenRole && kycStatus !== 'VERIFIED' && (
@@ -292,22 +413,19 @@ export default function ProfileScreen() {
         )}
       </GovCard>
 
-      {isFieldWorker && (
-        <GovCard>
-          <Text style={[styles.cardTitle, textAlignStart(rtl)]}>{t('profile.security')}</Text>
-          <Text style={[styles.securityLine, textAlignStart(rtl)]}>
-            {(profile as { twoFactorEnabled?: boolean })?.twoFactorEnabled
-              ? (profile as { twoFactorMethod?: string })?.twoFactorMethod === 'EMAIL'
-                ? `${t('profile.2fa.enabled')} — ${t('profile.2fa.methodEmail')}`
-                : `${t('profile.2fa.enabled')} — ${t('profile.2fa.methodTotp')}`
-              : t('profile.2fa.disabled')}
-          </Text>
-          <Text style={[styles.hint, textAlignStart(rtl)]}>{t('profile.2fa.manageWeb')}</Text>
-        </GovCard>
-      )}
-
       <GovCard>
         <Text style={[styles.cardTitle, textAlignStart(rtl)]}>{t('profile.shortcuts')}</Text>
+        <MenuRow
+          rtl={rtl}
+          icon="shield-checkmark-outline"
+          label={t('profile.security')}
+          trailing={
+            (profile as { twoFactorEnabled?: boolean })?.twoFactorEnabled
+              ? t('profile.2fa.enabled')
+              : undefined
+          }
+          onPress={() => router.push('/security')}
+        />
         <MenuRow
           rtl={rtl}
           icon="notifications-outline"
@@ -342,16 +460,20 @@ const styles = StyleSheet.create({
   center: { flex: 1, justifyContent: 'center', backgroundColor: Colors.surface },
   avatarSection: { alignItems: 'center' },
   avatarSectionRtl: { alignItems: 'stretch' },
-  avatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: Colors.brand[100],
+  avatarWrap: { position: 'relative', marginBottom: Spacing.md },
+  avatarBadge: {
+    position: 'absolute',
+    right: 0,
+    bottom: 0,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: Colors.brand[600],
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: Spacing.md,
+    borderWidth: 2,
+    borderColor: Colors.white,
   },
-  avatarText: { fontSize: FontSize.xxl, fontWeight: '700', color: Colors.brand[700] },
   name: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.gray[900] },
   email: { fontSize: FontSize.sm, color: Colors.gray[500], marginTop: 2 },
   badgeRow: { marginTop: Spacing.sm, gap: Spacing.sm, flexWrap: 'wrap', justifyContent: 'center' },

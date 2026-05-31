@@ -30,7 +30,9 @@ export default function ProfilePage() {
   const locale = useLocale();
   const queryClient = useQueryClient();
   const setUser = useAuthStore((s) => s.setUser);
+  const authUser = useAuthStore((s) => s.user);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [avatarCacheBust, setAvatarCacheBust] = useState<number>(0);
 
   // Profile editing state
   const [form, setForm] = useState({ firstName: '', lastName: '', phone: '' });
@@ -93,15 +95,24 @@ export default function ProfilePage() {
 
   const avatarMutation = useMutation({
     mutationFn: (file: File) => authApi.uploadAvatar(file),
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       toast.success(t('upload.success'));
-      // Re-fetch the FULL profile (includes isSuperAdmin etc.) so the auth
-      // store is fresh and the navbar/sidebar avatar updates immediately.
+      const bust = Date.now();
+      setAvatarCacheBust(bust);
+      // Apply new URL immediately so profile UI updates before refetch finishes.
+      queryClient.setQueryData(['profile'], (old: typeof profile) =>
+        old ? { ...old, avatarUrl: result.avatarUrl } : old,
+      );
+      const sessionUser = useAuthStore.getState().user;
+      if (sessionUser) {
+        setUser({ ...sessionUser, avatarUrl: result.avatarUrl });
+      }
       const fresh = await authApi.getProfile();
       setUser(fresh);
+      queryClient.setQueryData(['profile'], fresh);
       queryClient.invalidateQueries({ queryKey: ['profile'] });
     },
-    onError: (err: ApiError) => toast.error(err.message),
+    onError: (err: ApiError) => toast.error(err.getDisplayMessage()),
   });
 
   const handleAvatarCropped = async (file: File) => {
@@ -220,7 +231,10 @@ export default function ProfilePage() {
   }
 
   const initials = `${profile.firstName?.[0] ?? ''}${profile.lastName?.[0] ?? ''}`.toUpperCase();
-  const avatarUrl = (profile as any).avatarUrl ? getFileUrl((profile as any).avatarUrl) : null;
+  const profileAvatarUrl =
+    (profile as { avatarUrl?: string | null })?.avatarUrl ??
+    authUser?.avatarUrl ??
+    null;
   const twoFaEnabled = !!(profile as any).twoFactorEnabled;
   const twoFaMethod = ((profile as any).twoFactorMethod as 'TOTP' | 'EMAIL' | null) ?? null;
   const emailVerified = !!(profile as any).emailVerifiedAt;
@@ -264,23 +278,24 @@ export default function ProfilePage() {
         {/* Avatar with crop UX */}
         <div className="mb-6 flex flex-col items-start gap-4 sm:flex-row sm:items-center">
           <Avatar
-            src={(profile as any).avatarUrl}
+            src={profileAvatarUrl}
             firstName={profile.firstName}
             lastName={profile.lastName}
             size={88}
-            cacheKey={(profile as any).avatarUrl}
+            cacheKey={avatarCacheBust || profileAvatarUrl || undefined}
           />
           <div className="flex-1">
             <p className="text-base font-semibold text-gray-900">{getFullName(profile)}</p>
             <p className="text-sm text-gray-500">{profile.email}</p>
             <div className="mt-3">
               <ImageUploadCropper
-                value={(profile as any).avatarUrl}
+                value={profileAvatarUrl}
                 onCropped={handleAvatarCropped}
-                onRemove={(profile as any).avatarUrl ? handleAvatarRemove : undefined}
+                onRemove={profileAvatarUrl ? handleAvatarRemove : undefined}
                 aspect={1}
                 circular
                 previewSize={56}
+                previewCacheBust={avatarCacheBust || profileAvatarUrl || undefined}
                 hint="JPG, PNG or WebP — max 5 MB"
               />
             </div>

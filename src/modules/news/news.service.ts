@@ -3,6 +3,7 @@ import { PrismaService } from '../../core/prisma/prisma.service';
 import { StorageService } from '../../core/storage/storage.service';
 import { PermissionsResolver } from '../../core/rbac/permissions.resolver';
 import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationRecipientsService } from '../notifications/notification-recipients.service';
 import { paginate } from '../../core/common/dto/pagination.dto';
 import { PERMISSIONS } from '../../core/rbac/permissions.constants';
 import { CreateNewsDto } from './dto/create-news.dto';
@@ -20,13 +21,14 @@ export class NewsService {
     private storageService: StorageService,
     private permissionsResolver: PermissionsResolver,
     private notifications: NotificationsService,
+    private notificationRecipients: NotificationRecipientsService,
     private mail: MailService,
     private config: ConfigService,
   ) {}
 
   /**
-   * Push an in-app + FCM notification to all citizens of the municipality
-   * announcing a newly-published post. Best-effort — failures are logged.
+   * In-app announcement for all municipality users; FCM push only for citizens.
+   * Email fan-out unchanged (all active users). Best-effort — failures are logged.
    */
   private async announceNewsToCitizens(news: {
     id: string;
@@ -36,32 +38,51 @@ export class NewsService {
     titleFr?: string | null;
   }) {
     try {
-      // Recipients: all active users in the municipality, citizens or staff.
-      // We pull email + locale to fan-out emails alongside in-app notifs.
       const recipients = await this.prisma.user.findMany({
-        where: { municipalityId: news.municipalityId, isActive: true },
+        where: {
+          municipalityId: news.municipalityId,
+          isActive: true,
+          isSuperAdmin: false,
+        },
         select: { id: true, email: true, locale: true },
       });
       if (!recipients.length) return;
 
-      const userIds = recipients.map((r) => r.id);
+      const payload = {
+        newsId: news.id,
+        titleAr: news.titleAr ?? null,
+        titleFr: news.titleFr ?? null,
+        deepLink: `/announcements/${news.id}`,
+      };
 
-      // Use the locale-neutral title that we have on every post; FCM
-      // payload also carries the deep link so the mobile app can open
-      // the announcement directly.
-      await this.notifications.createAndSend(
-        news.municipalityId,
-        userIds,
-        NotificationType.NEWS_PUBLISHED,
-        news.title,
-        news.title,
-        {
-          newsId: news.id,
-          titleAr: news.titleAr ?? null,
-          titleFr: news.titleFr ?? null,
-          deepLink: `/announcements/${news.id}`,
-        },
-      );
+      const [citizenIds, staffIds] = await Promise.all([
+        this.notificationRecipients.findCitizenRecipientIds(news.municipalityId),
+        this.notificationRecipients.findStaffRecipientIds(news.municipalityId),
+      ]);
+
+      if (citizenIds.length) {
+        await this.notifications.createAndSend(
+          news.municipalityId,
+          citizenIds,
+          NotificationType.NEWS_PUBLISHED,
+          news.title,
+          news.title,
+          payload,
+          { push: true },
+        );
+      }
+
+      if (staffIds.length) {
+        await this.notifications.createAndSend(
+          news.municipalityId,
+          staffIds,
+          NotificationType.NEWS_PUBLISHED,
+          news.title,
+          news.title,
+          payload,
+          { push: false },
+        );
+      }
 
       // Look up municipality name for the email subject. Best-effort.
       const muni = await this.prisma.municipality.findUnique({

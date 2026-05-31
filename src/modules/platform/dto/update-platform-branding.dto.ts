@@ -154,18 +154,20 @@ export class UpdatePlatformBrandingDto {
   @IsString()
   openingHoursFr?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: 'Apple App Store listing URL (public landing page)' })
   @IsOptional()
-  @IsString()
+  @IsUrl({ require_protocol: true })
   appStoreUrl?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: 'Google Play listing URL (public landing page)' })
   @IsOptional()
-  @IsString()
+  @IsUrl({ require_protocol: true })
   googlePlayUrl?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    description: 'Direct Android APK download URL; used for QR code on the public landing page',
+  })
   @IsOptional()
-  @IsString()
+  @IsUrl({ require_protocol: true })
   apkUrl?: string;
 }

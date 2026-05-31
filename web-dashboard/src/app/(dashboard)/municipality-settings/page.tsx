@@ -120,7 +120,7 @@ export default function MunicipalitySettingsPage() {
     onSuccess: () => {
       toast.success(t('municipality.settings.toast.saved'));
       queryClient.invalidateQueries({ queryKey: ['municipality', 'current'] });
-      queryClient.invalidateQueries({ queryKey: ['org-chart', 'municipality'] });
+      queryClient.invalidateQueries({ queryKey: ['complaints', 'department-workload'] });
     },
     onError: () => toast.error(t('municipality.settings.toast.failed')),
   });

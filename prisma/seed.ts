@@ -68,6 +68,8 @@ const PERMISSION_SEED_DATA = [
   { key: 'platform.view_audit', name: 'View System Audit Log', nameAr: 'عرض سجل تدقيق النظام', nameFr: 'Consulter le journal d\'audit système', module: 'platform' },
   { key: 'platform.impersonate', name: 'Impersonate Users', nameAr: 'انتحال هوية المستخدمين', nameFr: 'Emprunter l\'identité d\'utilisateurs', module: 'platform' },
   { key: 'platform.view_stats', name: 'View Platform Statistics', nameAr: 'عرض إحصاءات المنصة', nameFr: 'Consulter les statistiques de la plateforme', module: 'platform' },
+  { key: 'platform.manage_announcements', name: 'Manage Platform Announcements', nameAr: 'إدارة إعلانات المنصة', nameFr: 'Gérer les annonces de la plateforme', module: 'platform' },
+  { key: 'platform.send_notifications', name: 'Send Platform Broadcast Notifications', nameAr: 'إرسال إشعارات البث على المنصة', nameFr: 'Envoyer des notifications de diffusion plateforme', module: 'platform' },
   // Tasks
   { key: 'task.view_all', name: 'View All Internal Tasks', nameAr: 'عرض جميع المهام الداخلية', nameFr: 'Consulter toutes les tâches internes', module: 'tasks' },
   { key: 'task.view_department', name: 'View Department Tasks', nameAr: 'عرض مهام القسم', nameFr: 'Consulter les tâches du département', module: 'tasks' },
@@ -243,7 +245,11 @@ const DEFAULT_ROLES = {
       'complaint.view_all',
       'complaint.assign',
       'complaint.set_priority',
+      'complaint.classify',
       'user.view_all',
+      'category.create',
+      'category.update',
+      'category.delete',
     ],
   },
 
@@ -261,41 +267,6 @@ const DEFAULT_ROLES = {
       .filter(key => !key.startsWith('platform.')),
   },
 };
-
-// ============================================================
-// Department structure (multilingual)
-// ============================================================
-const DEPARTMENTS = [
-  { name: 'Roads & Infrastructure', nameAr: 'الطرق والبنية التحتية', nameFr: 'Voirie et infrastructure', description: 'Handles roads, bridges, sidewalks, potholes', descriptionAr: 'إدارة الطرق والجسور والأرصفة وإصلاح الحفر.', descriptionFr: 'Gestion des routes, ponts, trottoirs et nids-de-poule.' },
-  { name: 'Public Works', nameAr: 'الأشغال العامة', nameFr: 'Travaux publics', description: 'Street lights, traffic signs, public facilities', descriptionAr: 'إنارة الشوارع وإشارات المرور والمرافق العامة.', descriptionFr: 'Éclairage public, panneaux routiers, équipements publics.' },
-  { name: 'Sanitation', nameAr: 'الصحة العامة والنظافة', nameFr: 'Hygiène publique', description: 'Garbage collection, sewage, public cleaning', descriptionAr: 'جمع النفايات وتصريف الصرف الصحي والنظافة العامة.', descriptionFr: 'Collecte des déchets, assainissement et nettoyage public.' },
-  { name: 'Water Authority', nameAr: 'مصلحة المياه', nameFr: 'Régie des eaux', description: 'Water supply, pipes, drainage', descriptionAr: 'توزيع المياه والشبكات والتصريف.', descriptionFr: 'Adduction d\'eau, canalisations et drainage.' },
-  { name: 'Parks & Recreation', nameAr: 'الحدائق والترفيه', nameFr: 'Parcs et loisirs', description: 'Parks, green spaces, playgrounds', descriptionAr: 'الحدائق العامة والمساحات الخضراء والملاعب.', descriptionFr: 'Parcs publics, espaces verts et aires de jeux.' },
-  { name: 'Public Safety', nameAr: 'السلامة العامة', nameFr: 'Sécurité publique', description: 'Safety hazards, emergency issues', descriptionAr: 'الأخطار العامة والحالات الطارئة.', descriptionFr: 'Risques publics et situations d\'urgence.' },
-];
-
-// ============================================================
-// Categories linked to departments (multilingual)
-// ============================================================
-const CATEGORIES = [
-  { name: 'Potholes', nameAr: 'حفر الطرق', nameFr: 'Nids-de-poule', icon: 'road', department: 'Roads & Infrastructure' },
-  { name: 'Road Damage', nameAr: 'تلف الطرق', nameFr: 'Dégradation routière', icon: 'construction', department: 'Roads & Infrastructure' },
-  { name: 'Sidewalk Issues', nameAr: 'مشاكل الأرصفة', nameFr: 'Problèmes de trottoir', icon: 'walk', department: 'Roads & Infrastructure' },
-  { name: 'Street Lights', nameAr: 'إنارة الشوارع', nameFr: 'Éclairage public', icon: 'lightbulb', department: 'Public Works' },
-  { name: 'Traffic Signs', nameAr: 'إشارات المرور', nameFr: 'Panneaux de signalisation', icon: 'traffic', department: 'Public Works' },
-  { name: 'Public Facilities', nameAr: 'المرافق العامة', nameFr: 'Équipements publics', icon: 'building', department: 'Public Works' },
-  { name: 'Garbage Collection', nameAr: 'جمع النفايات', nameFr: 'Collecte des déchets', icon: 'trash', department: 'Sanitation' },
-  { name: 'Sewage Issues', nameAr: 'مشاكل الصرف الصحي', nameFr: 'Problèmes d\'assainissement', icon: 'pipe', department: 'Sanitation' },
-  { name: 'Street Cleaning', nameAr: 'تنظيف الشوارع', nameFr: 'Nettoyage des rues', icon: 'broom', department: 'Sanitation' },
-  { name: 'Water Supply', nameAr: 'إمداد المياه', nameFr: 'Adduction d\'eau', icon: 'water', department: 'Water Authority' },
-  { name: 'Water Leak', nameAr: 'تسرب المياه', nameFr: 'Fuite d\'eau', icon: 'droplet', department: 'Water Authority' },
-  { name: 'Drainage Problems', nameAr: 'مشاكل التصريف', nameFr: 'Problèmes de drainage', icon: 'drain', department: 'Water Authority' },
-  { name: 'Park Maintenance', nameAr: 'صيانة الحدائق', nameFr: 'Entretien des parcs', icon: 'tree', department: 'Parks & Recreation' },
-  { name: 'Playground Issues', nameAr: 'مشاكل الملاعب', nameFr: 'Problèmes d\'aires de jeux', icon: 'play', department: 'Parks & Recreation' },
-  { name: 'Safety Hazard', nameAr: 'خطر على السلامة', nameFr: 'Danger pour la sécurité', icon: 'alert', department: 'Public Safety' },
-  { name: 'Noise Complaint', nameAr: 'شكوى ضوضاء', nameFr: 'Nuisance sonore', icon: 'volume', department: 'Public Safety' },
-  { name: 'Other', nameAr: 'أخرى', nameFr: 'Autre', icon: 'more', department: null },
-];
 
 // ============================================================
 // Sample users for testing
@@ -381,75 +352,26 @@ async function createRolesForMunicipality(municipalityId: string) {
   console.log('  ✓ Default municipal roles provisioned (priority, isSystem, permissions)');
 }
 
-async function seedDepartments(municipalityId: string) {
-  console.log('Creating departments...');
-  
-  for (const dept of DEPARTMENTS) {
-    await prisma.department.upsert({
-      where: {
-        municipalityId_name: {
-          municipalityId,
-          name: dept.name,
-        },
-      },
-      update: {
-        nameAr: dept.nameAr,
-        nameFr: dept.nameFr,
-        description: dept.description,
-        descriptionAr: dept.descriptionAr,
-        descriptionFr: dept.descriptionFr,
-      },
-      create: {
-        municipalityId,
-        name: dept.name,
-        nameAr: dept.nameAr,
-        nameFr: dept.nameFr,
-        description: dept.description,
-        descriptionAr: dept.descriptionAr,
-        descriptionFr: dept.descriptionFr,
-      },
-    });
-  }
-  
-  console.log(`  ✓ Seeded ${DEPARTMENTS.length} departments (EN/AR/FR)`);
-}
+async function seedStarterTemplate(municipalityId: string) {
+  const {
+    applyMunicipalityStarterTemplate,
+    MunicipalityStarterTemplate,
+    STANDARD_STARTER_CATEGORIES,
+    STANDARD_STARTER_DEPARTMENTS,
+  } = await import('../src/core/provisioning/municipality-starter-templates');
 
-async function seedCategories(municipalityId: string) {
-  console.log('Creating categories...');
-
-  const departments = await prisma.department.findMany({
-    where: { municipalityId },
-  });
-  const deptMap = new Map(departments.map(d => [d.name, d.id]));
-
-  for (const cat of CATEGORIES) {
-    const departmentId = cat.department ? deptMap.get(cat.department) : null;
-    
-    await prisma.complaintCategory.upsert({
-      where: {
-        municipalityId_name: {
-          municipalityId,
-          name: cat.name,
-        },
-      },
-      update: {
-        nameAr: cat.nameAr,
-        nameFr: cat.nameFr,
-        icon: cat.icon,
-        departmentId,
-      },
-      create: {
-        municipalityId,
-        name: cat.name,
-        nameAr: cat.nameAr,
-        nameFr: cat.nameFr,
-        icon: cat.icon,
-        departmentId,
-      },
-    });
-  }
-  
-  console.log(`  ✓ Seeded ${CATEGORIES.length} categories (EN/AR/FR)`);
+  console.log('Applying FULL_GOVERNMENT starter template...');
+  const result = await applyMunicipalityStarterTemplate(
+    prisma,
+    municipalityId,
+    MunicipalityStarterTemplate.FULL_GOVERNMENT,
+  );
+  console.log(
+    `  ✓ Starter template: ${STANDARD_STARTER_DEPARTMENTS.length} departments, ${STANDARD_STARTER_CATEGORIES.length} categories (EN/AR/FR)`,
+  );
+  console.log(
+    `    created: ${result.departmentsCreated} depts, ${result.categoriesCreated} cats; updated: ${result.departmentsUpdated} depts, ${result.categoriesUpdated} cats`,
+  );
 }
 
 async function seedUsers(municipalityId: string) {
@@ -710,7 +632,7 @@ async function backfillStaffKyc(municipalityId: string) {
 
 async function main() {
   console.log('╔════════════════════════════════════════════════════════╗');
-  console.log('║     BALADI - Municipality Complaint System Seed        ║');
+  console.log('║     BALADIYATI - Municipality Complaint System Seed    ║');
   console.log('╚════════════════════════════════════════════════════════╝\n');
   
   try {
@@ -718,8 +640,7 @@ async function main() {
     await seedSuperAdmin();
     const municipality = await seedMunicipality();
     await createRolesForMunicipality(municipality.id);
-    await seedDepartments(municipality.id);
-    await seedCategories(municipality.id);
+    await seedStarterTemplate(municipality.id);
     await seedUsers(municipality.id);
     await backfillPositionalSlots(municipality.id);
     await backfillStaffKyc(municipality.id);

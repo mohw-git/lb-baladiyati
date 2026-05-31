@@ -3,7 +3,7 @@
 import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import { complaintsApi } from '@/lib/api';
-import { useAuth, usePermission } from '@/lib/auth';
+import { useAuth, usePermission, useAnyPermission } from '@/lib/auth';
 import { useTranslate, useLocale } from '@/lib/i18n';
 import { PERMISSIONS } from '@shared/constants/permissions';
 import { StatusBadge } from '@/components/features/complaints/status-badge';
@@ -27,6 +27,8 @@ import {
   Inbox,
   ListChecks,
 } from 'lucide-react';
+import { ComplaintHotspotsSection } from '@/components/features/dashboard/complaint-hotspots-section';
+import { healthScoreTextClass } from '@/lib/departments/department-health-ui';
 import {
   AreaChart,
   Area,
@@ -115,10 +117,19 @@ export default function DashboardPage() {
   const locale = useLocale();
   const canViewComplaints = usePermission(PERMISSIONS.COMPLAINT_VIEW_ALL);
   const canViewDeptComplaints = usePermission(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT);
-  const canViewAny = canViewComplaints || canViewDeptComplaints;
+  const canViewAssignedComplaints = usePermission(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED);
+  const canViewAny =
+    canViewComplaints || canViewDeptComplaints || canViewAssignedComplaints;
   const canManageUsers = usePermission(PERMISSIONS.USER_VIEW_ALL);
   const canManageNews = usePermission(PERMISSIONS.NEWS_CREATE);
   const canManageRoles = usePermission(PERMISSIONS.ROLE_VIEW);
+  const showDeptWorkload = canViewComplaints || canViewDeptComplaints;
+  const canViewDeptOverview = showDeptWorkload;
+  const canManageDepartments = useAnyPermission(
+    PERMISSIONS.DEPARTMENT_CREATE,
+    PERMISSIONS.DEPARTMENT_UPDATE,
+  );
+  const canLinkDeptDirectory = canViewDeptOverview;
   const isRtl = locale === 'ar';
   const municipalityName = (user as any)?.municipality?.name || '';
 
@@ -165,7 +176,7 @@ export default function DashboardPage() {
   const { data: deptWorkload } = useQuery({
     queryKey: ['complaints', 'department-workload'],
     queryFn: () => complaintsApi.getDepartmentWorkload(),
-    enabled: canViewAny,
+    enabled: showDeptWorkload,
     staleTime: 120_000,
     refetchOnWindowFocus: true,
   });
@@ -341,7 +352,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* ═══ MAIN OPERATIONAL GRID ═══════════════════════════════════════════ */}
+      {/* ═══ MAIN OPERATIONAL GRID (priority — above map & analytics) ═══════ */}
       <div className="grid grid-cols-1 gap-0 divide-y divide-gray-200 xl:grid-cols-3 xl:divide-x xl:divide-y-0">
 
         {/* ── LEFT: Open Complaint Queue (2/3) ──────────────────────────── */}
@@ -367,7 +378,7 @@ export default function DashboardPage() {
                   <Loader2 className="h-4 w-4 animate-spin text-gray-400" />
                 </div>
               ) : (
-                <div className="overflow-x-auto">
+                <div className="max-h-[min(200px,28vh)] overflow-auto">
                   <table className="w-full text-xs">
                     <tbody className="divide-y divide-alert-100">
                       {overdueData?.items?.map((c: any) => (
@@ -428,9 +439,9 @@ export default function DashboardPage() {
             </span>
           </SectionHeader>
 
-          <div className="overflow-x-auto">
+          <div className="max-h-[min(380px,46vh)] overflow-auto">
             <table className="w-full text-xs">
-              <thead className="border-b border-gray-200 bg-gray-50/80">
+              <thead className="sticky top-0 z-10 border-b border-gray-200 bg-gray-50/95 backdrop-blur-sm">
                 <tr className="text-left">
                   <th className="px-3 py-2 font-semibold uppercase tracking-wide text-gray-500">
                     {t('dashboard.col.ref')}
@@ -531,78 +542,110 @@ export default function DashboardPage() {
         {/* ── RIGHT PANEL (1/3) ─────────────────────────────────────────── */}
         <div className="flex flex-col divide-y divide-gray-200">
 
-          {/* Department Workload Table */}
-          <div>
-            <SectionHeader>
-              <span className="flex items-center gap-1.5">
-                <Building2 className="h-3 w-3" />
-                {t('dashboard.section.deptWorkload')}
-              </span>
-            </SectionHeader>
-            {!deptWorkload ? (
-              <div className="flex justify-center py-6">
-                <Loader2 className="h-4 w-4 animate-spin text-gray-300" />
-              </div>
-            ) : deptWorkload.length === 0 ? (
-              <p className="px-3 py-4 text-xs text-gray-400">{t('common.noData')}</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead className="border-b border-gray-200 bg-gray-50/80">
-                    <tr className="text-left">
-                      <th className="px-3 py-2 font-semibold uppercase tracking-wide text-gray-500">
-                        {t('common.department')}
-                      </th>
-                      <th className="px-2 py-2 text-center font-semibold uppercase tracking-wide text-gray-500">
-                        {t('dashboard.col.activeComplaints')}
-                      </th>
-                      <th className="px-2 py-2 text-center font-semibold uppercase tracking-wide text-gray-500">
-                        {t('dashboard.col.staff')}
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {deptWorkload
-                      .slice()
-                      .sort((a, b) => b.activeComplaints - a.activeComplaints)
-                      .map((dept) => (
-                        <tr key={dept.id} className="hover:bg-gray-50">
-                          <td className="max-w-[130px] px-3 py-2">
-                            <Link
-                              href={`/departments/${dept.id}`}
-                              className="truncate block font-medium text-gray-800 hover:text-brand-700 hover:underline"
-                            >
-                              {dept.name}
-                            </Link>
-                            {dept.head && (
-                              <span className="text-gray-400">
-                                {getFullName(dept.head as any)}
+          {/* Department Workload — hidden for field workers (assigned-only) */}
+          {showDeptWorkload && (
+            <div>
+              <SectionHeader
+                action={
+                  canLinkDeptDirectory ? (
+                    <Link href="/departments?tab=overview" className="text-[11px] font-semibold text-brand-600 hover:underline">
+                      {t('dashboard.deptOverviewLink')}
+                    </Link>
+                  ) : undefined
+                }
+              >
+                <span className="flex items-center gap-1.5">
+                  <Building2 className="h-3 w-3" />
+                  {t('dashboard.section.deptWorkload')}
+                </span>
+              </SectionHeader>
+              {!deptWorkload ? (
+                <div className="flex justify-center py-6">
+                  <Loader2 className="h-4 w-4 animate-spin text-gray-300" />
+                </div>
+              ) : deptWorkload.length === 0 ? (
+                <p className="px-3 py-4 text-xs text-gray-400">{t('common.noData')}</p>
+              ) : (
+                <div className="max-h-[min(220px,28vh)] overflow-auto">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 z-10 border-b border-gray-200 bg-gray-50/95 backdrop-blur-sm">
+                      <tr className="text-left">
+                        <th className="px-3 py-2 font-semibold uppercase tracking-wide text-gray-500">
+                          {t('common.department')}
+                        </th>
+                        <th className="px-2 py-2 text-center font-semibold uppercase tracking-wide text-gray-500">
+                          {t('dashboard.col.activeComplaints')}
+                        </th>
+                        <th className="px-2 py-2 text-center font-semibold uppercase tracking-wide text-gray-500">
+                          {t('dashboard.col.overdue')}
+                        </th>
+                        <th className="px-2 py-2 text-center font-semibold uppercase tracking-wide text-gray-500">
+                          {t('dashboard.col.healthScore')}
+                        </th>
+                        <th className="px-2 py-2 text-center font-semibold uppercase tracking-wide text-gray-500">
+                          {t('dashboard.col.staff')}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {deptWorkload
+                        .slice()
+                        .sort((a, b) => b.healthScore - a.healthScore)
+                        .map((dept) => (
+                          <tr key={dept.id} className="hover:bg-gray-50">
+                            <td className="max-w-[130px] px-3 py-2">
+                              {canLinkDeptDirectory ? (
+                                <Link
+                                  href="/departments?tab=overview"
+                                  className="truncate block font-medium text-gray-800 hover:text-brand-700 hover:underline"
+                                >
+                                  {dept.name}
+                                </Link>
+                              ) : (
+                                <span className="truncate block font-medium text-gray-800">
+                                  {dept.name}
+                                </span>
+                              )}
+                              {dept.head && (
+                                <span className="text-gray-400">
+                                  {getFullName(dept.head as any)}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-2 py-2 text-center">
+                              <span className={`font-bold ${healthScoreTextClass(dept.health)}`}>
+                                {dept.activeComplaints}
                               </span>
-                            )}
-                          </td>
-                          <td className="px-2 py-2 text-center">
-                            <span
-                              className={`font-bold ${
-                                dept.activeComplaints > 10
-                                  ? 'text-alert-700'
-                                  : dept.activeComplaints > 5
-                                  ? 'text-warn-700'
-                                  : 'text-gray-700'
-                              }`}
-                            >
-                              {dept.activeComplaints}
-                            </span>
-                          </td>
-                          <td className="px-2 py-2 text-center text-gray-500">
-                            {dept.staffCount ?? 0}
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+                            </td>
+                            <td className="px-2 py-2 text-center">
+                              <span
+                                className={`font-bold ${
+                                  dept.overdueComplaints > 0
+                                    ? 'text-alert-700'
+                                    : 'text-gray-500'
+                                }`}
+                              >
+                                {dept.overdueComplaints}
+                              </span>
+                            </td>
+                            <td className="px-2 py-2 text-center">
+                              <span
+                                className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold ${healthScoreTextClass(dept.health)}`}
+                              >
+                                {dept.healthScore}
+                              </span>
+                            </td>
+                            <td className="px-2 py-2 text-center text-gray-500">
+                              {dept.staffCount ?? 0}
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Operational Quick Links */}
           <div>
@@ -756,7 +799,10 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* ═══ SECONDARY ROW: Trend chart (small) ══════════════════════════════ */}
+      {/* ═══ GEOGRAPHIC VIEW (secondary — after operational console) ═════════ */}
+      <ComplaintHotspotsSection />
+
+      {/* ═══ TRENDS / ANALYTICS ══════════════════════════════════════════════ */}
       <div className="grid grid-cols-1 gap-0 divide-y divide-gray-200 xl:grid-cols-3 xl:divide-x xl:divide-y-0">
 
         {/* Trend chart (2/3) — small height, operationally useful */}

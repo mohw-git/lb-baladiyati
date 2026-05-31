@@ -114,14 +114,21 @@ export function WorkerWorkPanel({
     setProofPreviews([]);
   };
 
-  const addProofFiles = (incoming: FileList | null) => {
+  const addProofFiles = async (incoming: FileList | null) => {
     if (!incoming?.length) return;
     const images = Array.from(incoming).filter((f) => f.type.startsWith('image/'));
     if (!images.length) {
       toast.error(t('complaints.worker.proofImagesOnly'));
       return;
     }
-    const merged = [...proofFiles, ...images].slice(0, MAX_PROOF_FILES);
+    const oversize = images.find((f) => f.size > 10 * 1024 * 1024);
+    if (oversize) {
+      toast.error(t('upload.error.tooLarge'));
+      return;
+    }
+    const { compressImages } = await import('@/lib/utils/image-compress');
+    const compressed = await compressImages(images, { maxLongEdge: 1920, quality: 0.82 });
+    const merged = [...proofFiles, ...compressed].slice(0, MAX_PROOF_FILES);
     proofPreviews.forEach((url) => URL.revokeObjectURL(url));
     setProofFiles(merged);
     setProofPreviews(merged.map((f) => URL.createObjectURL(f)));

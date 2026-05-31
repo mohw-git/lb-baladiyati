@@ -32,7 +32,7 @@ $dirs = @(
 )
 
 try {
-  Write-Step 'First-time Baladi server setup'
+  Write-Step 'First-time Baladiyati server setup'
 
   foreach ($d in $dirs) {
     if (-not (Test-Path -LiteralPath $d)) {

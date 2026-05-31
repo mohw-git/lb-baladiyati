@@ -1,5 +1,5 @@
 export const PERMISSIONS = {
-  // Complaints (12)
+  // Complaints (13)
   COMPLAINT_CREATE: 'complaint.create',
   COMPLAINT_VIEW_OWN: 'complaint.view_own',
   COMPLAINT_VIEW_ALL: 'complaint.view_all',
@@ -12,6 +12,7 @@ export const PERMISSIONS = {
   COMPLAINT_APPROVE: 'complaint.approve',
   COMPLAINT_REJECT: 'complaint.reject',
   COMPLAINT_SET_PRIORITY: 'complaint.set_priority',
+  COMPLAINT_CLASSIFY: 'complaint.classify',
 
   // Categories (3)
   CATEGORY_CREATE: 'category.create',
@@ -68,6 +69,7 @@ export const PERMISSIONS = {
   PLATFORM_IMPERSONATE: 'platform.impersonate',
   PLATFORM_VIEW_STATS: 'platform.view_stats',
   PLATFORM_MANAGE_ANNOUNCEMENTS: 'platform.manage_announcements',
+  PLATFORM_SEND_NOTIFICATIONS: 'platform.send_notifications',
 
   // Internal Tasks (8) — staff-only work items, separate from citizen complaints
   TASK_VIEW_ALL: 'task.view_all',
@@ -115,6 +117,7 @@ export const PLATFORM_ONLY_PERMISSIONS: string[] = [
   PERMISSIONS.PLATFORM_IMPERSONATE,
   PERMISSIONS.PLATFORM_VIEW_STATS,
   PERMISSIONS.PLATFORM_MANAGE_ANNOUNCEMENTS,
+  PERMISSIONS.PLATFORM_SEND_NOTIFICATIONS,
 ];
 
 /** Permissions safe to grant to a municipality-level Admin (everything except platform.*) */
@@ -140,6 +143,7 @@ export const PERMISSION_SEED_DATA = [
   { key: PERMISSIONS.COMPLAINT_APPROVE, name: 'Approve Closure', nameAr: 'اعتماد الإغلاق', nameFr: 'Approuver la clôture', module: 'complaints' },
   { key: PERMISSIONS.COMPLAINT_REJECT, name: 'Reject Complaints', nameAr: 'رفض الشكاوى', nameFr: 'Refuser des réclamations', module: 'complaints' },
   { key: PERMISSIONS.COMPLAINT_SET_PRIORITY, name: 'Set Priority & SLA', nameAr: 'تحديد الأولوية ومدة الإنجاز', nameFr: 'Définir la priorité et le délai (SLA)', module: 'complaints' },
+  { key: PERMISSIONS.COMPLAINT_CLASSIFY, name: 'Classify Complaints', nameAr: 'تصنيف الشكاوى', nameFr: 'Classifier les réclamations', module: 'complaints' },
   // Categories
   { key: PERMISSIONS.CATEGORY_CREATE, name: 'Create Categories', nameAr: 'إنشاء الفئات', nameFr: 'Créer des catégories', module: 'categories' },
   { key: PERMISSIONS.CATEGORY_UPDATE, name: 'Update Categories', nameAr: 'تحديث الفئات', nameFr: 'Mettre à jour les catégories', module: 'categories' },
@@ -354,7 +358,11 @@ export const DEFAULT_ROLES = {
       PERMISSIONS.COMPLAINT_VIEW_ALL,
       PERMISSIONS.COMPLAINT_ASSIGN,
       PERMISSIONS.COMPLAINT_SET_PRIORITY,
+      PERMISSIONS.COMPLAINT_CLASSIFY,
       PERMISSIONS.USER_VIEW_ALL,
+      PERMISSIONS.CATEGORY_CREATE,
+      PERMISSIONS.CATEGORY_UPDATE,
+      PERMISSIONS.CATEGORY_DELETE,
     ],
   },
   ADMIN: {

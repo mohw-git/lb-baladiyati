@@ -76,6 +76,10 @@ Caddyfile.autosave
 # PM2
 .pm2/
 
+# Vendor badge download archives (use web-dashboard/public/store-badges/ only)
+pngs/
+*.zip
+
 # Windows
 *.bak
 

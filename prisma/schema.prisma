@@ -49,6 +49,17 @@ enum AttachmentStage {
   INSPECTION // Supervisor inspection photos
 }
 
+enum BoundarySourceImportStatus {
+  IMPORTING
+  ACTIVE
+  ARCHIVED
+}
+
+enum MunicipalityBoundarySourceType {
+  AUTO_FROM_SOURCE
+  MANUAL_GEOJSON
+}
+
 enum NotificationType {
   COMPLAINT_SUBMITTED
   COMPLAINT_ASSIGNED
@@ -74,6 +85,7 @@ enum NotificationType {
   HELP_COMPLETED
   HELP_REJECTED
   HELP_CANCELLED
+  PLATFORM_BROADCAST
 }
 
 // ==================== TASK / TRANSFER ENUMS ====================
@@ -206,6 +218,8 @@ model Municipality {
   bannerOverlayOpacity Float?   @map("banner_overlay_opacity")
   // Optional branding customization (institutional hex color, e.g. "#0f2555")
   primaryColor String? @map("primary_color")
+  /// Hex color for boundary assignment map (e.g. "#2563eb").
+  boundaryColor String? @map("boundary_color")
   // Public contact information (shown on municipality profile pages)
   email         String?  @map("email")
   phone         String?  @map("phone")
@@ -233,15 +247,102 @@ model Municipality {
   users               User[]                 @relation("MunicipalityMembers")
   roles               Role[]
   complaintCategories ComplaintCategory[]
-  complaints          Complaint[]
+  complaints                 Complaint[]
+  complaintsReportedByCitizens Complaint[] @relation("ComplaintReporterMunicipality")
   newsPosts           NewsPost[]
   notifications       Notification[]
   kycSubmissions      KycSubmission[]
   tasks               Task[]                 @relation("MunicipalityTasks")
   transferRequests    TransferRequest[]      @relation("MunicipalityTransfers")
   helpRequests        ComplaintHelpRequest[] @relation("MunicipalityHelpRequests")
+  boundary            MunicipalityBoundary?
+  boundarySourceAssignments BoundarySourceAssignment[]
 
   @@map("municipalities")
+}
+
+/// GeoJSON boundary for incident-location routing (one active polygon set per municipality).
+model MunicipalityBoundary {
+  id             String   @id @default(uuid())
+  municipalityId String   @unique @map("municipality_id")
+  /// GeoJSON Polygon or MultiPolygon (WGS84, coordinates [lng, lat]).
+  geojson        Json
+  /// When the point is outside the polygon, treat as inside if within this distance (meters).
+  bufferMeters   Int      @default(0) @map("buffer_meters")
+  isActive       Boolean  @default(true) @map("is_active")
+  sourceType     MunicipalityBoundarySourceType @default(MANUAL_GEOJSON) @map("source_type")
+  sourceImportId String?  @map("source_import_id")
+  lastGeneratedAt DateTime? @map("last_generated_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  municipality   Municipality @relation(fields: [municipalityId], references: [id], onDelete: Cascade)
+  sourceImport   BoundarySourceImport? @relation(fields: [sourceImportId], references: [id], onDelete: SetNull)
+
+  @@index([municipalityId])
+  @@index([sourceImportId])
+  @@map("municipality_boundaries")
+}
+
+/// One uploaded Admin3 (or similar) cadastral layer — only one ACTIVE at a time.
+model BoundarySourceImport {
+  id               String                     @id @default(uuid())
+  name             String
+  fileName         String                     @map("file_name")
+  validOn          String?                    @map("valid_on")
+  version          String?
+  featureCount     Int                        @default(0) @map("feature_count")
+  status           BoundarySourceImportStatus @default(IMPORTING)
+  importedAt       DateTime                   @default(now()) @map("imported_at")
+  importedByUserId String?                  @map("imported_by_user_id")
+
+  importedByUser User? @relation("BoundarySourceImports", fields: [importedByUserId], references: [id], onDelete: SetNull)
+  features       BoundarySourceFeature[]
+  boundaries     MunicipalityBoundary[]
+
+  @@index([status])
+  @@map("boundary_source_imports")
+}
+
+model BoundarySourceFeature {
+  id          String @id @default(uuid())
+  importId    String @map("import_id")
+  featureKey  String @map("feature_key")
+  adm3Name    String @map("adm3_name")
+  adm3Name1   String? @map("adm3_name1")
+  adm3Pcode   String @map("adm3_pcode")
+  adm2Name    String @map("adm2_name")
+  adm1Name    String @map("adm1_name")
+  areaSqkm    Float? @map("area_sqkm")
+  centerLat   Float? @map("center_lat")
+  centerLon   Float? @map("center_lon")
+  geometry    Json
+
+  import      BoundarySourceImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+  assignments BoundarySourceAssignment[]
+
+  @@unique([importId, featureKey])
+  @@index([importId])
+  @@index([adm3Pcode])
+  @@map("boundary_source_features")
+}
+
+/// Maps a source cadastral feature to exactly one municipality (active row per feature).
+model BoundarySourceAssignment {
+  id              String    @id @default(uuid())
+  featureId       String    @map("feature_id")
+  municipalityId  String    @map("municipality_id")
+  assignedAt      DateTime  @default(now()) @map("assigned_at")
+  assignedByUserId String?  @map("assigned_by_user_id")
+  revokedAt       DateTime? @map("revoked_at")
+
+  feature       BoundarySourceFeature @relation(fields: [featureId], references: [id], onDelete: Cascade)
+  municipality  Municipality @relation(fields: [municipalityId], references: [id], onDelete: Cascade)
+  assignedByUser User? @relation("BoundarySourceAssignments", fields: [assignedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([featureId, revokedAt])
+  @@index([municipalityId, revokedAt])
+  @@map("boundary_source_assignments")
 }
 
 // ==================== DEPARTMENTS ====================
@@ -312,6 +413,8 @@ model User {
   updatedAt          DateTime           @updatedAt @map("updated_at")
 
   municipality          Municipality?          @relation("MunicipalityMembers", fields: [municipalityId], references: [id])
+  boundarySourceImports BoundarySourceImport[] @relation("BoundarySourceImports")
+  boundarySourceAssignments BoundarySourceAssignment[] @relation("BoundarySourceAssignments")
   department            Department?            @relation("DepartmentMembers", fields: [departmentId], references: [id])
   supervisor            User?                  @relation("Supervisor", fields: [supervisorId], references: [id])
   subordinates          User[]                 @relation("Supervisor")
@@ -329,6 +432,7 @@ model User {
   emailOtps             EmailOtp[]
   newsPosts             NewsPost[]             @relation("Author")
   platformAnnouncements PlatformAnnouncement[] @relation("PlatformAnnouncementAuthor")
+  platformBroadcasts    PlatformBroadcast[]    @relation("PlatformBroadcastAuthor")
   feedbackGiven         ComplaintFeedback[]    @relation("FeedbackBy")
   refreshTokens         RefreshToken[]
   kycSubmissions        KycSubmission[]
@@ -417,9 +521,9 @@ model PlatformBranding {
   authBackgroundFocalY         Float?   @default(50) @map("auth_background_focal_y")
   authBackgroundOverlayOpacity Float?   @map("auth_background_overlay_opacity")
   // Platform name (shown next to logo in public header)
-  platformName          String?  @default("Baladi") @map("platform_name")
-  platformNameAr        String?  @default("بلدي") @map("platform_name_ar")
-  platformNameFr        String?  @default("Baladi") @map("platform_name_fr")
+  platformName          String?  @default("Baladiyati") @map("platform_name")
+  platformNameAr        String?  @default("بلديتي") @map("platform_name_ar")
+  platformNameFr        String?  @default("Baladiyati") @map("platform_name_fr")
   // Short description shown in homepage hero
   platformDescription   String?  @db.Text @map("platform_description")
   platformDescriptionAr String?  @db.Text @map("platform_description_ar")
@@ -485,6 +589,55 @@ model PlatformAnnouncement {
   @@index([expiresAt])
   @@index([isPinned, priority])
   @@map("platform_announcements")
+}
+
+enum PlatformBroadcastAudience {
+  ALL_USERS
+  CITIZENS
+  STAFF
+  MUNICIPALITIES
+  ROLES
+  USERS
+}
+
+enum PlatformBroadcastChannel {
+  IN_APP
+  PUSH
+  BOTH
+}
+
+enum PlatformBroadcastStatus {
+  SCHEDULED
+  SENDING
+  SENT
+  FAILED
+}
+
+/// Super-admin push/in-app broadcasts (separate from public PlatformAnnouncement CMS).
+model PlatformBroadcast {
+  id              String                    @id @default(uuid())
+  title           String
+  body            String                    @db.Text
+  deepLink        String?                   @map("deep_link")
+  audience        PlatformBroadcastAudience
+  /// JSON: { municipalityIds?, roleIds?, userIds? } depending on audience
+  audienceConfig  Json?                     @map("audience_config")
+  channels        PlatformBroadcastChannel
+  status          PlatformBroadcastStatus   @default(SCHEDULED)
+  scheduledAt     DateTime?                 @map("scheduled_at")
+  sentAt          DateTime?                 @map("sent_at")
+  recipientCount  Int?                      @map("recipient_count")
+  idempotencyKey  String?                   @unique @map("idempotency_key")
+  failureReason   String?                   @map("failure_reason") @db.Text
+  createdById     String                    @map("created_by_id")
+  createdAt       DateTime                  @default(now()) @map("created_at")
+  updatedAt       DateTime                  @updatedAt @map("updated_at")
+
+  createdBy User @relation("PlatformBroadcastAuthor", fields: [createdById], references: [id])
+
+  @@index([status, scheduledAt])
+  @@index([createdAt])
+  @@map("platform_broadcasts")
 }
 
 // ==================== RBAC ====================
@@ -620,6 +773,14 @@ model Complaint {
   submittedByEmailVerified Boolean? @map("submitted_by_email_verified")
   submittedByKycVerified   Boolean? @map("submitted_by_kyc_verified")
 
+  /// Citizen's registered municipality at submit time (may differ from operational municipalityId).
+  reporterRegisteredMunicipalityId String? @map("reporter_registered_municipality_id")
+  /// How operational municipalityId was chosen (BOUNDARY_EXACT, BOUNDARY_BUFFER, USER_SELECTED_AMBIGUOUS, LEGACY_USER_MUNICIPALITY, …).
+  municipalityResolutionMethod     String? @map("municipality_resolution_method")
+  /// Candidate municipalities when resolution was ambiguous (audit only).
+  municipalityResolutionCandidates Json?   @map("municipality_resolution_candidates")
+  locationResolvedAt               DateTime? @map("location_resolved_at")
+
   // Resolution tracking
   rejectionReason RejectionReason? @map("rejection_reason")
   rejectionNotes  String?          @map("rejection_notes")
@@ -630,6 +791,7 @@ model Complaint {
   updatedAt DateTime  @updatedAt @map("updated_at")
 
   municipality Municipality           @relation(fields: [municipalityId], references: [id])
+  reporterRegisteredMunicipality Municipality? @relation("ComplaintReporterMunicipality", fields: [reporterRegisteredMunicipalityId], references: [id])
   category     ComplaintCategory      @relation(fields: [categoryId], references: [id])
   department   Department?            @relation(fields: [departmentId], references: [id])
   createdBy    User                   @relation("CreatedBy", fields: [createdById], references: [id])

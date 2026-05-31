@@ -12,6 +12,21 @@ export type CompressImagesOptions = {
  * Compress complaint attachment images before upload.
  * Returns originals for any file that cannot be compressed.
  */
+/** Compress a single image file (complaint, proof, news cover, etc.). */
+export async function compressImageFile(
+  file: File,
+  options: CompressImagesOptions = {},
+): Promise<File> {
+  const maxLongEdge = options.maxLongEdge ?? 1920;
+  const quality = options.quality ?? 0.82;
+  if (!file.type.startsWith('image/')) return file;
+  try {
+    return await compressImageFileInternal(file, maxLongEdge, quality);
+  } catch {
+    return file;
+  }
+}
+
 export async function compressImages(
   files: File[],
   options: CompressImagesOptions = {},
@@ -21,7 +36,7 @@ export async function compressImages(
   const results: File[] = [];
   for (const file of files) {
     try {
-      results.push(await compressImageFile(file, maxLongEdge, quality));
+      results.push(await compressImageFileInternal(file, maxLongEdge, quality));
     } catch {
       results.push(file);
     }
@@ -29,7 +44,7 @@ export async function compressImages(
   return results;
 }
 
-async function compressImageFile(
+async function compressImageFileInternal(
   file: File,
   maxLongEdge: number,
   quality: number,

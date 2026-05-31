@@ -32,11 +32,28 @@ export function formatApiErrorMessage(err: unknown, t: (k: MessageKey) => string
  * Map API / transport errors to user-facing copy.
  * 403/404 and other HTTP errors must never read as "no internet".
  */
+const COMPLAINT_ROUTING_ERROR_KEYS: Partial<Record<string, MessageKey>> = {
+  LOCATION_REQUIRED: 'submit.validation.locationRequired',
+  OUT_OF_COVERAGE: 'submit.routing.outOfCoverage',
+  MUNICIPALITY_AMBIGUOUS: 'submit.errors.municipalityAmbiguous',
+  INVALID_MUNICIPALITY_SELECTION: 'submit.errors.invalidMunicipalitySelection',
+  CATEGORY_MUNICIPALITY_MISMATCH: 'submit.errors.categoryMismatch',
+};
+
 export function getErrorPresentation(
   err: unknown,
   t: (k: MessageKey) => string,
 ): ErrorPresentation {
   if (err instanceof ApiError) {
+    const routingKey = COMPLAINT_ROUTING_ERROR_KEYS[err.code];
+    if (routingKey) {
+      return {
+        titleKey: 'common.error',
+        message: t(routingKey),
+        isNetwork: false,
+        status: err.status,
+      };
+    }
     if (err.status === 403) {
       return {
         titleKey: 'errors.forbidden.title',

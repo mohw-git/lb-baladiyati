@@ -10,6 +10,11 @@ import {
   toUploadUrlPath,
   UPLOAD_URL_PREFIX,
 } from './upload-path.util';
+import {
+  isProcessableImageMime,
+  processImageBuffer,
+  resolveImageCategoryFromFolder,
+} from './image-processing.util';
 
 @Injectable()
 export class StorageService {
@@ -43,15 +48,34 @@ export class StorageService {
     file: Express.Multer.File,
     folder: string = '',
   ): Promise<string> {
-    const ext = path.extname(file.originalname).toLowerCase();
+    let buffer = file.buffer;
+    let ext = path.extname(file.originalname).toLowerCase();
+
+    if (isProcessableImageMime(file.mimetype)) {
+      const category = resolveImageCategoryFromFolder(folder);
+      if (category) {
+        const processed = await processImageBuffer(
+          file.buffer,
+          file.mimetype,
+          category,
+        );
+        buffer = processed.buffer;
+        ext = processed.ext;
+      }
+    }
+
+    if (!ext) {
+      ext = file.mimetype === 'application/pdf' ? '.pdf' : '.bin';
+    }
+
     const filename = `${uuid()}${ext}`;
     const relativePath = path.join(folder, filename);
     const fullPath = path.join(this.uploadPath, relativePath);
 
     ensureUploadDir(path.dirname(fullPath));
 
-    fs.writeFileSync(fullPath, file.buffer);
-    this.logger.debug(`Saved file: ${fullPath}`);
+    fs.writeFileSync(fullPath, buffer);
+    this.logger.debug(`Saved file: ${fullPath} (${buffer.length} bytes)`);
 
     return toUploadUrlPath(relativePath.replace(/\\/g, '/'));
   }

@@ -5,6 +5,9 @@ import * as admin from 'firebase-admin';
 import * as fs from 'fs';
 import * as path from 'path';
 
+/** Firebase `sendEachForMulticast` hard limit per request. */
+export const FCM_MULTICAST_TOKEN_LIMIT = 500;
+
 /**
  * Push-notification service backed by Firebase Cloud Messaging via the
  * official Admin SDK.
@@ -120,45 +123,54 @@ export class FcmService implements OnModuleInit {
     if (!tokens.length) return;
 
     const messaging = admin.messaging(this.app);
-    // Use sendEachForMulticast which returns per-token success/failure
+    const invalidTokens: string[] = [];
+    let totalSuccess = 0;
+    let totalFailed = 0;
+
     try {
-      const result = await messaging.sendEachForMulticast({
-        tokens,
-        notification: { title, body },
-        data: data ?? {},
-        android: {
-          priority: 'high',
-          notification: {
-            channelId: 'baladi-default',
-            sound: 'default',
+      for (let offset = 0; offset < tokens.length; offset += FCM_MULTICAST_TOKEN_LIMIT) {
+        const chunk = tokens.slice(offset, offset + FCM_MULTICAST_TOKEN_LIMIT);
+        const result = await messaging.sendEachForMulticast({
+          tokens: chunk,
+          notification: { title, body },
+          data: data ?? {},
+          android: {
+            priority: 'high',
+            notification: {
+              channelId: 'baladi-default',
+              sound: 'default',
+            },
           },
-        },
-        apns: {
-          payload: {
-            aps: { sound: 'default' },
+          apns: {
+            payload: {
+              aps: { sound: 'default' },
+            },
           },
-        },
-      });
+        });
+
+        totalSuccess += result.successCount;
+        totalFailed += result.failureCount;
+
+        result.responses.forEach((resp, i) => {
+          if (!resp.success && resp.error) {
+            const code = resp.error.code;
+            if (
+              code === 'messaging/registration-token-not-registered' ||
+              code === 'messaging/invalid-registration-token' ||
+              code === 'messaging/invalid-argument'
+            ) {
+              invalidTokens.push(chunk[i]);
+            } else {
+              this.logger.warn(`FCM error for token chunk ${offset + i}: ${code}`);
+            }
+          }
+        });
+      }
 
       this.logger.debug(
-        `FCM batch: ${result.successCount} delivered, ${result.failureCount} failed.`,
+        `FCM: ${totalSuccess} delivered, ${totalFailed} failed (${tokens.length} tokens, ${Math.ceil(tokens.length / FCM_MULTICAST_TOKEN_LIMIT)} chunk(s)).`,
       );
 
-      const invalidTokens: string[] = [];
-      result.responses.forEach((resp, i) => {
-        if (!resp.success && resp.error) {
-          const code = resp.error.code;
-          if (
-            code === 'messaging/registration-token-not-registered' ||
-            code === 'messaging/invalid-registration-token' ||
-            code === 'messaging/invalid-argument'
-          ) {
-            invalidTokens.push(tokens[i]);
-          } else {
-            this.logger.warn(`FCM error for token ${i}: ${code}`);
-          }
-        }
-      });
       if (invalidTokens.length) {
         await this.removeInvalidTokens(invalidTokens);
       }

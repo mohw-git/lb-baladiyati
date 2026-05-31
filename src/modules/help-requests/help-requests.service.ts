@@ -443,6 +443,10 @@ export class HelpRequestsService {
       'Help request not approved',
       `Your help request was not approved: ${dto.note}`,
       [updated.requestedById],
+      {
+        helpRejectPhase: 'SOURCE',
+        action: 'help_reject_source',
+      },
     );
     await this.logHelpEvent(
       hr.complaintId,
@@ -638,7 +642,7 @@ export class HelpRequestsService {
     await this.notify(updated, NotificationType.HELP_ASSIGNED,
       'You have been assigned to help on a complaint',
       `${updated.fromDepartment.name} requested help: "${updated.complaint.title}". Reason: ${updated.reason}`,
-      [dto.helperAssigneeId, updated.requestedById],
+      [dto.helperAssigneeId],
     );
     await this.logHelpEvent(
       hr.complaintId,
@@ -824,6 +828,10 @@ export class HelpRequestsService {
       'Helper work rejected',
       `${updated.fromDepartment.name} rejected the helper work for "${updated.complaint.title}": ${dto.reason}`,
       this.contributorsOf(updated),
+      {
+        helpRejectPhase: 'HELPER_WORK',
+        action: 'help_reject_helper_work',
+      },
     );
     await this.logHelpEvent(
       hr.complaintId,
@@ -1734,6 +1742,7 @@ export class HelpRequestsService {
     title: string,
     body: string,
     userIds: string[],
+    extraData?: Record<string, unknown>,
   ) {
     const ids = Array.from(new Set(userIds.filter(Boolean)));
     if (!ids.length) return;
@@ -1741,6 +1750,9 @@ export class HelpRequestsService {
       .createAndSend(hr.municipalityId, ids, type, title, body, {
         helpRequestId: hr.id,
         complaintId: hr.complaintId,
+        referenceCode: hr.complaint?.referenceCode ?? undefined,
+        deepLink: `/complaints/${hr.complaintId}`,
+        ...extraData,
       })
       .catch(() => undefined);
   }

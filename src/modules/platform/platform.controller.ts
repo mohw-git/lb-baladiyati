@@ -20,6 +20,11 @@ import { multerConfig } from '../../core/storage/multer.config';
 import { SuperAdminGuard } from './super-admin.guard';
 import { Request } from 'express';
 import { PlatformService } from './platform.service';
+import { PlatformBoundaryService } from './platform-boundary.service';
+import {
+  UpsertMunicipalityBoundaryDto,
+  ValidateMunicipalityBoundaryDto,
+} from './dto/upsert-municipality-boundary.dto';
 import { AuditService } from '../audit/audit.service';
 import { CurrentUser } from '../../core/auth/decorators/current-user.decorator';
 import { CurrentUserData } from '../../core/auth/types/jwt-payload';
@@ -40,6 +45,7 @@ import { BadRequestException } from '@nestjs/common';
 export class PlatformController {
   constructor(
     private readonly platformService: PlatformService,
+    private readonly boundaryService: PlatformBoundaryService,
     private readonly auditService: AuditService,
     private readonly mailService: MailService,
   ) {}
@@ -55,6 +61,15 @@ export class PlatformController {
     return this.platformService.listMunicipalities(includeInactive === 'true');
   }
 
+  @Get('municipalities/boundaries')
+  @RequirePermissions(PERMISSIONS.PLATFORM_MANAGE_MUNICIPALITIES)
+  @ApiOperation({ summary: 'List municipality boundaries for map editor (super admin)' })
+  async listMunicipalityBoundaries(
+    @Query('includeInactive') includeInactive?: string,
+  ) {
+    return this.boundaryService.listBoundariesForMap(includeInactive === 'true');
+  }
+
   @Get('municipalities/:id')
   @RequirePermissions(PERMISSIONS.PLATFORM_MANAGE_MUNICIPALITIES)
   @ApiOperation({ summary: 'Get municipality details' })
@@ -67,13 +82,31 @@ export class PlatformController {
   @ApiOperation({
     summary: 'Create a new municipality',
     description:
-      'Creates a municipality and bootstraps it with standard roles, default departments, and a first admin user.',
+      'Creates a municipality and bootstraps it with standard roles, a starter template (departments/categories), and a first admin user.',
   })
   async createMunicipality(
     @Body() dto: CreateMunicipalityDto,
     @CurrentUser() user: CurrentUserData,
   ) {
     return this.platformService.createMunicipality(dto, user.id, user.email);
+  }
+
+  @Post('municipalities/:id/apply-starter-categories')
+  @RequirePermissions(PERMISSIONS.PLATFORM_MANAGE_MUNICIPALITIES)
+  @ApiOperation({
+    summary: 'Apply standard complaint categories',
+    description:
+      'Adds the standard starter categories when the municipality has departments but no categories yet.',
+  })
+  async applyStarterCategories(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentUserData,
+  ) {
+    return this.platformService.applyStarterCategoriesToMunicipality(
+      id,
+      user.id,
+      user.email,
+    );
   }
 
   @Patch('municipalities/:id')
@@ -85,6 +118,44 @@ export class PlatformController {
     @CurrentUser() user: CurrentUserData,
   ) {
     return this.platformService.updateMunicipality(id, dto, user.id, user.email);
+  }
+
+  @Get('municipalities/:id/boundary')
+  @RequirePermissions(PERMISSIONS.PLATFORM_MANAGE_MUNICIPALITIES)
+  @ApiOperation({ summary: 'Get municipality boundary for incident routing' })
+  async getMunicipalityBoundary(@Param('id') id: string) {
+    return this.boundaryService.getBoundary(id);
+  }
+
+  @Post('municipalities/:id/boundary/validate')
+  @RequirePermissions(PERMISSIONS.PLATFORM_MANAGE_MUNICIPALITIES)
+  @ApiOperation({ summary: 'Validate GeoJSON boundary without saving' })
+  async validateMunicipalityBoundary(
+    @Param('id') id: string,
+    @Body() dto: ValidateMunicipalityBoundaryDto,
+  ) {
+    return this.boundaryService.validateBoundary(id, dto);
+  }
+
+  @Put('municipalities/:id/boundary')
+  @RequirePermissions(PERMISSIONS.PLATFORM_MANAGE_MUNICIPALITIES)
+  @ApiOperation({ summary: 'Create or update municipality boundary' })
+  async upsertMunicipalityBoundary(
+    @Param('id') id: string,
+    @Body() dto: UpsertMunicipalityBoundaryDto,
+    @CurrentUser() user: CurrentUserData,
+  ) {
+    return this.boundaryService.upsertBoundary(id, dto, user.id, user.email);
+  }
+
+  @Delete('municipalities/:id/boundary')
+  @RequirePermissions(PERMISSIONS.PLATFORM_MANAGE_MUNICIPALITIES)
+  @ApiOperation({ summary: 'Deactivate municipality boundary (soft delete)' })
+  async deactivateMunicipalityBoundary(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentUserData,
+  ) {
+    return this.boundaryService.deactivateBoundary(id, user.id, user.email);
   }
 
   // ============================================================
@@ -155,6 +226,16 @@ export class PlatformController {
     @CurrentUser() user: CurrentUserData,
   ) {
     return this.platformService.resetUser2FA(id, user.id, user.email);
+  }
+
+  @Post('users/:id/verify-email')
+  @RequirePermissions(PERMISSIONS.PLATFORM_MANAGE_USERS)
+  @ApiOperation({ summary: 'Mark a user email as verified (super admin)' })
+  async verifyUserEmail(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentUserData,
+  ) {
+    return this.platformService.verifyUserEmail(id, user.id, user.email);
   }
 
   @Post('users/:id/force-logout')

@@ -107,16 +107,27 @@ function ComplaintDetailContent() {
     setShowProofModal(true);
   };
 
+  const appendProofAssets = async (
+    assets: ImagePicker.ImagePickerAsset[],
+  ) => {
+    const { prepareImagesForUpload } = await import('../../lib/utils/prepare-upload-image');
+    const prepared = await prepareImagesForUpload(
+      assets.map((a) => ({ uri: a.uri, width: a.width, height: a.height })),
+      'complaint',
+    );
+    setProofPhotos((prev) => [...prev, ...prepared.map((p) => p.uri)].slice(0, 5));
+  };
+
   const pickProofPhoto = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsMultipleSelection: true,
-      quality: 0.8,
-      selectionLimit: 5,
+      quality: 1,
+      selectionLimit: Math.max(1, 5 - proofPhotos.length),
     });
-    
+
     if (!result.canceled && result.assets?.length) {
-      setProofPhotos([...proofPhotos, ...result.assets.map((a) => a.uri)].slice(0, 5));
+      await appendProofAssets(result.assets);
     }
   };
 
@@ -126,13 +137,11 @@ function ComplaintDetailContent() {
       Alert.alert(t('common.error'), t('submit.permission.camera'));
       return;
     }
-    
-    const result = await ImagePicker.launchCameraAsync({
-      quality: 0.8,
-    });
-    
+
+    const result = await ImagePicker.launchCameraAsync({ quality: 1 });
+
     if (!result.canceled && result.assets?.[0]) {
-      setProofPhotos([...proofPhotos, result.assets[0].uri].slice(0, 5));
+      await appendProofAssets([result.assets[0]]);
     }
   };
 

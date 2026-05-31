@@ -99,7 +99,9 @@ export function CitizenHome() {
         <CitizenDashboardHeader
           greeting={t('home.greeting', { name: user?.firstName ?? '' })}
           municipalityLine={muniName || t('home.citizen.subtitle')}
-          initials={`${user?.firstName?.[0] ?? ''}${user?.lastName?.[0] ?? ''}`}
+          avatarUrl={user?.avatarUrl}
+          firstName={user?.firstName}
+          lastName={user?.lastName}
           rtl={rtl}
         />
         <View style={styles.heroCardSpacer} />

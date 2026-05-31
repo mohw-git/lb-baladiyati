@@ -111,6 +111,8 @@ export function useRealtime(queryClient: QueryClient) {
       'notification:new': () => {
         queryClient.invalidateQueries({ queryKey: ['notifications'] });
         queryClient.invalidateQueries({ queryKey: ['unread-count'] });
+        // NEWS_PUBLISHED fans out via createAndSend (no dedicated news socket event).
+        queryClient.invalidateQueries({ queryKey: ['news'] });
       },
     };
 

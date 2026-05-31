@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { toast } from 'sonner';
-import { complaintsApi, transfersApi, helpRequestsApi, ApiError, getFileUrl } from '@/lib/api';
+import { complaintsApi, categoriesApi, transfersApi, helpRequestsApi, ApiError, getFileUrl } from '@/lib/api';
 import { TransferModal } from '@/components/transfers/transfer-modal';
 import { TransferTimeline } from '@/components/transfers/transfer-timeline';
 import { RequestHelpModal } from '@/components/help-requests/request-help-modal';
@@ -16,13 +16,14 @@ import { ComplaintStatus, ComplaintPriority, RejectionReason } from '@shared/typ
 import { STATUS_LABELS } from '@shared/constants/status';
 import { StatusBadge } from '@/components/features/complaints/status-badge';
 import { UnverifiedSubmitterBadge } from '@/components/features/complaints/unverified-submitter-badge';
+import { UnroutedBadge } from '@/components/features/complaints/unrouted-badge';
 import { PriorityBadge } from '@/components/features/complaints/priority-badge';
 import { WorkerWorkPanel } from '@/components/features/complaints/worker-work-panel';
 import type { ComplaintRiskReason } from '@shared/types/complaint';
 import { formatDate, getFullName } from '@/lib/utils';
 import {
   ArrowLeft, MapPin, Calendar, User as UserIcon, Tag, Building,
-  Paperclip, History, UserPlus, RefreshCw, Loader2, Trash2, Image, Flag, XCircle, Send,
+  Paperclip, History, UserPlus, RefreshCw, Loader2, Trash2, Image, Flag, XCircle, Send, FolderTree,
   HandHelping, Eye, CheckCircle, RotateCcw,
 } from 'lucide-react';
 import { useTranslate, useLocale, isRtl, pickName } from '@/lib/i18n';
@@ -116,6 +117,7 @@ export default function ComplaintDetailPage() {
   const canChangeStatus = usePermission(PERMISSIONS.COMPLAINT_CHANGE_STATUS);
   const canSetPriority = usePermission(PERMISSIONS.COMPLAINT_SET_PRIORITY);
   const canReject = usePermission(PERMISSIONS.COMPLAINT_REJECT);
+  const canClassify = usePermission(PERMISSIONS.COMPLAINT_CLASSIFY);
   const canTransfer = usePermission(PERMISSIONS.TRANSFER_REQUEST);
   const canHelpRequest = usePermission(PERMISSIONS.HELP_REQUEST);
   const canDelete = usePermission(PERMISSIONS.COMPLAINT_VIEW_ALL);
@@ -131,6 +133,8 @@ export default function ComplaintDetailPage() {
   const [showReturnModal, setShowReturnModal] = useState(false);
   const [returnNotes, setReturnNotes] = useState('');
   const [showPriorityModal, setShowPriorityModal] = useState(false);
+  const [showClassifyModal, setShowClassifyModal] = useState(false);
+  const [classifyCategoryId, setClassifyCategoryId] = useState('');
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [assignUserId, setAssignUserId] = useState('');
   const [assignNotes, setAssignNotes] = useState('');
@@ -183,6 +187,18 @@ export default function ComplaintDetailPage() {
     enabled: showAssignModal,
   });
 
+  const { data: classifyCategories = [] } = useQuery({
+    queryKey: ['categories', 'classify'],
+    queryFn: () => categoriesApi.list(),
+    enabled: showClassifyModal,
+  });
+
+  const selectedClassifyCategory = useMemo(
+    () => (classifyCategories as { id: string; name: string; nameAr?: string | null; nameFr?: string | null; department?: { id: string; name: string; nameAr?: string | null; nameFr?: string | null } | null }[])
+      .find((c) => c.id === classifyCategoryId),
+    [classifyCategories, classifyCategoryId],
+  );
+
   // Derived UI state. Keep these as plain const so it's obvious which
   // conditions apply to each button — easier to audit than mixing them
   // inline in JSX. Each `reason` is shown via `title` for disabled buttons.
@@ -204,7 +220,10 @@ export default function ComplaintDetailPage() {
     label: isAssigned ? t('complaints.detail.action.reassign') : t('complaints.detail.action.assign'),
   };
   if (assignState.show) {
-    if (!status || !ASSIGNABLE_STATUSES.has(status)) {
+    if (!hasDepartment) {
+      assignState.disabled = true;
+      assignState.reason = t('complaints.detail.action.disabled.needsClassification');
+    } else if (!status || !ASSIGNABLE_STATUSES.has(status)) {
       assignState.disabled = true;
       assignState.reason = isTerminal
         ? t('complaints.detail.action.disabled.terminal')
@@ -364,6 +383,23 @@ export default function ComplaintDetailPage() {
     onError: (err: ApiError) => toast.error(err.message),
   });
 
+  const classifyMutation = useMutation({
+    mutationFn: () => complaintsApi.classify(id, { categoryId: classifyCategoryId }),
+    onSuccess: () => {
+      toast.success(t('complaints.detail.classify.saved'));
+      setShowClassifyModal(false);
+      queryClient.invalidateQueries({ queryKey: ['complaint', id] });
+      queryClient.invalidateQueries({ queryKey: ['complaints'] });
+    },
+    onError: (err: unknown) => {
+      if (err instanceof ApiError && err.code === 'CLASSIFICATION_ASSIGNMENT_CONFLICT') {
+        toast.error(t('complaints.detail.classify.conflict'));
+        return;
+      }
+      toast.error(complaintActionErrorMessage(err, t));
+    },
+  });
+
   const rejectMutation = useMutation({
     mutationFn: () => complaintsApi.reject(id, {
       reason: rejectReason,
@@ -404,6 +440,7 @@ export default function ComplaintDetailPage() {
             <span className="font-mono">{complaint.referenceCode}</span>
             <StatusBadge status={complaint.status} />
             <PriorityBadge priority={complaint.priority} />
+            {!hasDepartment && <UnroutedBadge />}
             {complaint.isRiskySubmission && (
               <UnverifiedSubmitterBadge
                 riskReasons={complaint.riskReasons as ComplaintRiskReason[] | undefined}
@@ -412,6 +449,51 @@ export default function ComplaintDetailPage() {
           </div>
           {complaint.isRiskySubmission && (
             <p className="mt-1 text-xs text-amber-800">{t('complaints.risk.forcedLow')}</p>
+          )}
+          {!hasDepartment && !isPreview && (
+            <p className="mt-2 max-w-xl rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              {t('complaints.detail.classify.unroutedBanner')}
+            </p>
+          )}
+          {(complaint.isExternalCitizenReport ||
+            complaint.municipalityResolutionMethod) && (
+            <div className="mt-3 max-w-xl rounded border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+              {complaint.isExternalCitizenReport && (
+                <p className="font-medium">{t('complaints.detail.routing.external')}</p>
+              )}
+              <ul className="mt-1 space-y-0.5 text-xs text-blue-800">
+                {complaint.operationalMunicipality && (
+                  <li>
+                    {t('complaints.detail.routing.operational')}:{' '}
+                    <span className="font-medium">{complaint.operationalMunicipality.name}</span>
+                  </li>
+                )}
+                {complaint.reporterRegisteredMunicipality && (
+                  <li>
+                    {t('complaints.detail.routing.reporterRegistered')}:{' '}
+                    <span className="font-medium">
+                      {complaint.reporterRegisteredMunicipality.name}
+                    </span>
+                  </li>
+                )}
+                {complaint.municipalityResolutionMethod && (
+                  <li>
+                    {t('complaints.detail.routing.method')}:{' '}
+                    <span className="font-medium">
+                      {t(
+                        `complaints.detail.routing.method.${complaint.municipalityResolutionMethod}` as MessageKey,
+                      )}
+                    </span>
+                  </li>
+                )}
+                {complaint.reporterVerificationStatus && (
+                  <li>
+                    {t('complaints.detail.routing.reporterKyc')}:{' '}
+                    <span className="font-medium">{complaint.reporterVerificationStatus}</span>
+                  </li>
+                )}
+              </ul>
+            </div>
           )}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
@@ -442,6 +524,21 @@ export default function ComplaintDetailPage() {
                 {t('complaints.detail.action.returnForWork')}
               </button>
             </>
+          )}
+          {canClassify && !isPreview && (
+            <button
+              type="button"
+              onClick={() => {
+                setClassifyCategoryId(complaint.category?.id ?? '');
+                setShowClassifyModal(true);
+              }}
+              className="flex items-center gap-1.5 rounded border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-900 hover:bg-amber-100"
+            >
+              <FolderTree className="h-4 w-4" />
+              {hasDepartment
+                ? t('complaints.detail.action.classify')
+                : t('complaints.detail.action.classifyFirst')}
+            </button>
           )}
           {assignState.show && (
             <button
@@ -698,18 +795,23 @@ export default function ComplaintDetailPage() {
                 <Tag className="mt-0.5 h-4 w-4 text-gray-400" />
                 <div>
                   <dt className="font-medium text-gray-500">{t('common.category')}</dt>
-                  <dd className="text-gray-900">{complaint.category ? pickName(complaint.category as any, locale) : '—'}</dd>
+                  <dd className="flex flex-wrap items-center gap-2 text-gray-900">
+                    {complaint.category ? pickName(complaint.category as any, locale) : '—'}
+                    {!hasDepartment && <UnroutedBadge />}
+                  </dd>
                 </div>
               </div>
-              {complaint.department && (
-                <div className="flex items-start gap-3">
-                  <Building className="mt-0.5 h-4 w-4 text-gray-400" />
-                  <div>
-                    <dt className="font-medium text-gray-500">{t('common.department')}</dt>
-                    <dd className="text-gray-900">{pickName(complaint.department as any, locale)}</dd>
-                  </div>
+              <div className="flex items-start gap-3">
+                <Building className="mt-0.5 h-4 w-4 text-gray-400" />
+                <div>
+                  <dt className="font-medium text-gray-500">{t('common.department')}</dt>
+                  <dd className="text-gray-900">
+                    {complaint.department
+                      ? pickName(complaint.department as any, locale)
+                      : t('complaints.detail.classify.noDepartment')}
+                  </dd>
                 </div>
-              )}
+              </div>
               <div className="flex items-start gap-3">
                 <UserIcon className="mt-0.5 h-4 w-4 text-gray-400" />
                 <div>
@@ -955,6 +1057,56 @@ export default function ComplaintDetailPage() {
                   className="rounded-lg bg-brand-600 px-4 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
                 >
                   {statusMutation.isPending ? 'Updating...' : 'Update Status'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Classify Modal */}
+      {showClassifyModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowClassifyModal(false)}>
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="mb-1 text-lg font-semibold">{t('complaints.detail.classify.title')}</h3>
+            <p className="mb-4 text-sm text-gray-600">{t('complaints.detail.classify.hint')}</p>
+            <div className="space-y-4">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('complaints.detail.classify.category')}
+                </label>
+                <select
+                  value={classifyCategoryId}
+                  onChange={(e) => setClassifyCategoryId(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
+                >
+                  <option value="">—</option>
+                  {(classifyCategories as { id: string; name: string; nameAr?: string | null; nameFr?: string | null }[]).map((c) => (
+                    <option key={c.id} value={c.id}>{pickName(c as any, locale)}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm">
+                <span className="font-medium text-gray-700">
+                  {t('complaints.detail.classify.resultingDepartment')}:{' '}
+                </span>
+                <span className="text-gray-900">
+                  {selectedClassifyCategory?.department
+                    ? pickName(selectedClassifyCategory.department as any, locale)
+                    : t('complaints.detail.classify.noDepartment')}
+                </span>
+              </div>
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setShowClassifyModal(false)} className="rounded-lg border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50">
+                  {t('common.cancel')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => classifyMutation.mutate()}
+                  disabled={!classifyCategoryId || classifyMutation.isPending}
+                  className="rounded-lg bg-brand-600 px-4 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
+                >
+                  {classifyMutation.isPending ? '…' : t('common.save')}
                 </button>
               </div>
             </div>

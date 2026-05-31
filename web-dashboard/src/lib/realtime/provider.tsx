@@ -43,16 +43,15 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     // Event → React Query keys to invalidate. Granular enough that we don't
     // refetch unrelated lists; broad enough that we don't have to enumerate
     // every page.
+    const invalidateComplaintQueries = () => {
+      queryClient.invalidateQueries({ queryKey: ['complaints'] });
+      queryClient.invalidateQueries({ queryKey: ['complaint'] });
+    };
+
     const invalidations: Record<string, () => void> = {
-      'complaint:created': () => {
-        queryClient.invalidateQueries({ queryKey: ['complaints'] });
-      },
-      'complaint:updated': () => {
-        queryClient.invalidateQueries({ queryKey: ['complaints'] });
-      },
-      'complaint:deleted': () => {
-        queryClient.invalidateQueries({ queryKey: ['complaints'] });
-      },
+      'complaint:created': () => invalidateComplaintQueries(),
+      'complaint:updated': () => invalidateComplaintQueries(),
+      'complaint:deleted': () => invalidateComplaintQueries(),
       'task:created': () => {
         queryClient.invalidateQueries({ queryKey: ['tasks'] });
       },
@@ -61,13 +60,13 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       },
       'transfer:created': () => {
         queryClient.invalidateQueries({ queryKey: ['transfers'] });
-        queryClient.invalidateQueries({ queryKey: ['org-chart'] });
+        queryClient.invalidateQueries({ queryKey: ['complaints', 'department-workload'] });
       },
       'transfer:updated': () => {
         queryClient.invalidateQueries({ queryKey: ['transfers'] });
-        queryClient.invalidateQueries({ queryKey: ['org-chart'] });
         queryClient.invalidateQueries({ queryKey: ['complaints'] });
         queryClient.invalidateQueries({ queryKey: ['complaint'] });
+        queryClient.invalidateQueries({ queryKey: ['complaints', 'department-workload'] });
       },
       'help-request:created': () => {
         queryClient.invalidateQueries({ queryKey: ['help-requests'] });
@@ -81,6 +80,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       },
       'kyc:updated': () => {
         queryClient.invalidateQueries({ queryKey: ['kyc'] });
+        queryClient.invalidateQueries({ queryKey: ['kyc-submissions'] });
         queryClient.invalidateQueries({ queryKey: ['users'] });
         queryClient.invalidateQueries({ queryKey: ['user'] });
         queryClient.invalidateQueries({ queryKey: ['profile'] });
@@ -88,10 +88,11 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       'user:updated': () => {
         queryClient.invalidateQueries({ queryKey: ['users'] });
         queryClient.invalidateQueries({ queryKey: ['user'] });
-        queryClient.invalidateQueries({ queryKey: ['org-chart'] });
+        queryClient.invalidateQueries({ queryKey: ['complaints', 'department-workload'] });
       },
       'notification:new': () => {
         queryClient.invalidateQueries({ queryKey: ['notifications'] });
+        queryClient.invalidateQueries({ queryKey: ['notifications', 'unread-count'] });
       },
     };
 

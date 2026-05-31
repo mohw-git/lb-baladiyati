@@ -54,7 +54,7 @@ export default function PublicLayout({ children }: { children: React.ReactNode }
     }
   }, [isHydrated, user, router]);
 
-  const platformName = localizedField(branding, 'platformName', locale) || 'Baladi';
+  const platformName = localizedField(branding, 'platformName', locale) || 'Baladiyati';
   const operatorName = localizedField(branding, 'operatorName', locale);
   const officeAddress = localizedField(branding, 'officeAddress', locale);
   const openingHours = localizedField(branding, 'openingHours', locale);
@@ -62,7 +62,11 @@ export default function PublicLayout({ children }: { children: React.ReactNode }
   const supportEmail = branding?.supportEmail;
   const logoUrl = branding?.logoUrl ? getFileUrl(branding.logoUrl) : '';
   const year = new Date().getFullYear();
-  const appLinks = [branding?.appStoreUrl, branding?.googlePlayUrl, branding?.apkUrl].filter(Boolean);
+  const appLinks = [
+    branding?.appStoreUrl?.trim(),
+    branding?.googlePlayUrl?.trim(),
+    branding?.apkUrl?.trim(),
+  ].filter(Boolean);
 
   const navLinks: { label: string; href: string }[] = [
     { label: t('public.nav.municipalities'), href: '/municipalities' },

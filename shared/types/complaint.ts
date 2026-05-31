@@ -43,6 +43,16 @@ export enum AttachmentStage {
 
 export type ComplaintRiskReason = 'UNVERIFIED_EMAIL' | 'UNVERIFIED_KYC';
 
+/** Staff-only metadata for location-based municipality routing. */
+export interface ComplaintLocationRoutingInfo {
+  isExternalCitizenReport?: boolean;
+  operationalMunicipality?: { id: string; name: string; code: string } | null;
+  reporterRegisteredMunicipality?: { id: string; name: string; code: string } | null;
+  municipalityResolutionMethod?: string | null;
+  municipalityResolutionCandidates?: unknown;
+  reporterVerificationStatus?: string | null;
+}
+
 /** Staff-only metadata for lower-trust citizen submissions. */
 export interface ComplaintRiskInfo {
   isRiskySubmission: boolean;
@@ -51,7 +61,7 @@ export interface ComplaintRiskInfo {
   submittedByKycVerified?: boolean | null;
 }
 
-export interface ComplaintSummary {
+export interface ComplaintSummary extends ComplaintLocationRoutingInfo {
   id: string;
   referenceCode: string | null;
   title: string;
@@ -161,6 +171,8 @@ export interface ComplaintQueryParams {
   priority?: ComplaintPriority | ComplaintPriority[];
   categoryId?: string;
   departmentId?: string;
+  /** Staff (view_all): complaints with departmentId = null */
+  unrouted?: boolean;
   myAssignments?: boolean;
   unassigned?: boolean;
   overdue?: boolean;
@@ -197,6 +209,61 @@ export interface SetPriorityRequest {
 export interface RejectComplaintRequest {
   reason: RejectionReason;
   notes?: string;
+}
+
+export interface ClassifyComplaintRequest {
+  categoryId: string;
+}
+
+export interface ClassifyComplaintResponse {
+  id: string;
+  categoryId: string;
+  departmentId: string | null;
+  category: { id: string; name: string };
+}
+
+export interface ComplaintMapPoint {
+  id: string;
+  referenceCode: string | null;
+  title: string;
+  latitude: number;
+  longitude: number;
+  status: ComplaintStatus;
+  priority: ComplaintPriority;
+  category: {
+    id: string;
+    name: string;
+    nameAr?: string | null;
+    nameFr?: string | null;
+  };
+  department?: {
+    id: string;
+    name: string;
+    nameAr?: string | null;
+    nameFr?: string | null;
+  } | null;
+  address?: string | null;
+  createdAt: string;
+}
+
+export interface ComplaintMapPointsResponse {
+  points: ComplaintMapPoint[];
+  center: { latitude: number; longitude: number };
+  boundary?: {
+    geojson: { type: string; coordinates: unknown };
+    bounds: [number, number, number, number];
+  } | null;
+  total: number;
+}
+
+export interface ComplaintMapPointsQueryParams {
+  status?: ComplaintStatus | ComplaintStatus[];
+  priority?: ComplaintPriority | ComplaintPriority[];
+  categoryId?: string;
+  departmentId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  search?: string;
 }
 
 export interface SubmitFeedbackRequest {

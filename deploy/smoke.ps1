@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  HTTP smoke tests for Baladi production (local and/or public).
+  HTTP smoke tests for Baladiyati production (local and/or public).
 
 .PARAMETER ApiBase
   API base URL (default local http://127.0.0.1:3000).
@@ -86,7 +86,7 @@ function Invoke-SmokeSuite {
 }
 
 try {
-  Write-Host 'Baladi smoke tests' -ForegroundColor Cyan
+  Write-Host 'Baladiyati smoke tests' -ForegroundColor Cyan
 
   $runBoth = $IncludePublic -or $IncludeLocal
   if ($PublicOnly) {

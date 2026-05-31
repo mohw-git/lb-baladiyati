@@ -1,4 +1,4 @@
-# Shared helpers for Baladi production deploy scripts (Windows Server).
+# Shared helpers for Baladiyati production deploy scripts (Windows Server).
 # Dot-source from deploy\*.ps1 - do not run directly.
 
 $script:BaladiDefaults = @{

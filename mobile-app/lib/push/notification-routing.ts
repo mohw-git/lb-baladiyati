@@ -24,21 +24,28 @@ export function resolveNotificationHref(payload: NotificationPayload): Href | nu
   const targetType = str(data, 'targetType');
   const targetId = str(data, 'targetId');
   const newsId = str(data, 'newsId') ?? str(data, 'articleId');
+  const taskId = str(data, 'taskId');
+  const deepLink = str(data, 'deepLink');
 
-  if (complaintId) {
-    return `/complaint/${complaintId}` as Href;
+  if (type === 'PLATFORM_BROADCAST' || type.startsWith('PLATFORM_')) {
+    if (deepLink?.startsWith('/')) {
+      return deepLink as Href;
+    }
+    return '/notifications' as Href;
   }
 
-  if (helpRequestId || type.startsWith('HELP_')) {
+  if (type.startsWith('HELP_')) {
     if (helpRequestId) return `/help-request/${helpRequestId}` as Href;
-    return '/(tabs)/inbox' as Href;
+    if (complaintId) return `/complaint/${complaintId}` as Href;
+    return null;
   }
 
   if (type.startsWith('TRANSFER_')) {
     if (targetType === 'COMPLAINT' && targetId) {
       return `/complaint/${targetId}` as Href;
     }
-    return '/(tabs)/inbox' as Href;
+    if (complaintId) return `/complaint/${complaintId}` as Href;
+    return null;
   }
 
   if (type.startsWith('KYC_')) {
@@ -50,11 +57,13 @@ export function resolveNotificationHref(payload: NotificationPayload): Href | nu
   }
 
   if (type.startsWith('TASK_')) {
+    // No dedicated task detail screen on mobile — open tasks tab.
     return '/(tabs)/tasks' as Href;
   }
 
-  if (type.startsWith('COMPLAINT_')) {
-    return complaintId ? (`/complaint/${complaintId}` as Href) : ('/(tabs)/complaints' as Href);
+  if (complaintId || type.startsWith('COMPLAINT_')) {
+    if (complaintId) return `/complaint/${complaintId}` as Href;
+    return '/(tabs)/complaints' as Href;
   }
 
   return null;

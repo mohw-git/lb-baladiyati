@@ -1,4 +1,4 @@
-# Baladi — Windows Server production startup & daily operations
+# Baladiyati — Windows Server production startup & daily operations
 
 Canonical guide for **PM2**, **Caddy**, and **production PowerShell scripts** under `deploy\`.
 

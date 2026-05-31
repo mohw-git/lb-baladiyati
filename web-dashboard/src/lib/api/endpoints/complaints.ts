@@ -8,7 +8,12 @@ import type {
   ChangeStatusRequest,
   SetPriorityRequest,
   RejectComplaintRequest,
+  ClassifyComplaintRequest,
+  ClassifyComplaintResponse,
+  ComplaintMapPointsResponse,
+  ComplaintMapPointsQueryParams,
 } from '@shared/types/complaint';
+import type { DepartmentWorkloadRow } from '@shared/types/department';
 
 interface ComplaintStats {
   total: number;
@@ -44,9 +49,10 @@ export interface CreateComplaintRequest {
   categoryId: string;
   title: string;
   description: string;
-  latitude?: number;
-  longitude?: number;
+  latitude: number;
+  longitude: number;
   address?: string;
+  selectedMunicipalityId?: string;
 }
 
 export const complaintsApi = {
@@ -56,6 +62,15 @@ export const complaintsApi = {
   getById: (id: string) =>
     get<ComplaintDetail>(`/complaints/${id}`),
 
+  resolveLocation: (latitude: number, longitude: number) =>
+    get<{
+      status: string;
+      municipalityId: string | null;
+      method: string | null;
+      candidates: { id: string; name: string; code: string; nameAr?: string; nameFr?: string }[];
+      distanceMeters?: number;
+    }>(`/complaints/resolve-location?latitude=${latitude}&longitude=${longitude}`),
+
   create: (data: CreateComplaintRequest, files?: File[]) => {
     const fd = new FormData();
     fd.append('categoryId', data.categoryId);
@@ -64,6 +79,9 @@ export const complaintsApi = {
     if (data.latitude !== undefined) fd.append('latitude', String(data.latitude));
     if (data.longitude !== undefined) fd.append('longitude', String(data.longitude));
     if (data.address) fd.append('address', data.address);
+    if (data.selectedMunicipalityId) {
+      fd.append('selectedMunicipalityId', data.selectedMunicipalityId);
+    }
     if (files && files.length) {
       files.forEach((f) => fd.append('attachments', f));
     }
@@ -77,24 +95,7 @@ export const complaintsApi = {
     get<ComplaintBuckets>('/complaints/stats/buckets'),
 
   getDepartmentWorkload: () =>
-    get<
-      {
-        id: string;
-        name: string;
-        nameAr?: string | null;
-        nameFr?: string | null;
-        head?: {
-          id: string;
-          firstName: string;
-          lastName: string;
-          email?: string;
-          avatarUrl?: string | null;
-          isActive?: boolean;
-        } | null;
-        staffCount: number;
-        activeComplaints: number;
-      }[]
-    >('/complaints/stats/department-workload'),
+    get<DepartmentWorkloadRow[]>('/complaints/stats/department-workload'),
 
   getCharts: () =>
     get<{
@@ -103,6 +104,15 @@ export const complaintsApi = {
       byPriority: { priority: string; count: number }[];
       avgResolutionHours: number;
     }>('/complaints/stats/charts'),
+
+  getMapPoints: (
+    params: ComplaintMapPointsQueryParams = {},
+    options?: { signal?: AbortSignal },
+  ) =>
+    get<ComplaintMapPointsResponse>(
+      `/complaints/map-points${buildQueryString(params as Record<string, unknown>)}`,
+      options,
+    ),
 
   assign: (id: string, data: AssignComplaintRequest) =>
     post<ComplaintDetail>(`/complaints/${id}/assign`, data),
@@ -122,6 +132,9 @@ export const complaintsApi = {
 
   setPriority: (id: string, data: SetPriorityRequest) =>
     patch<ComplaintDetail>(`/complaints/${id}/priority`, data),
+
+  classify: (id: string, data: ClassifyComplaintRequest) =>
+    patch<ClassifyComplaintResponse>(`/complaints/${id}/classification`, data),
 
   reject: (id: string, data: RejectComplaintRequest) =>
     post<ComplaintDetail>(`/complaints/${id}/reject`, data),

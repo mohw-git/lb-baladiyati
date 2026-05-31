@@ -3,8 +3,13 @@ import type { Category, CreateCategoryRequest, UpdateCategoryRequest } from '@sh
 
 export const categoriesApi = {
   /** List categories. Pass includeAll=true for admin to see inactive ones too */
-  list: (includeAll = false) =>
-    get<Category[]>(`/categories${includeAll ? '?all=true' : ''}`),
+  list: (options?: { includeAll?: boolean; municipalityId?: string }) => {
+    const params = new URLSearchParams();
+    if (options?.includeAll) params.set('all', 'true');
+    if (options?.municipalityId) params.set('municipalityId', options.municipalityId);
+    const q = params.toString();
+    return get<Category[]>(`/categories${q ? `?${q}` : ''}`);
+  },
 
   getById: (id: string) =>
     get<Category>(`/categories/${id}`),

@@ -57,7 +57,7 @@ export class DepartmentsController {
   })
   @ApiUnauthorizedResponse({ description: 'Unauthorized', type: ApiErrorResponseDto })
   async findAll(@CurrentUser() user: CurrentUserData) {
-    return this.departmentsService.findAll(user.municipalityId);
+    return this.departmentsService.findAll(user.id, user.municipalityId);
   }
 
   /**
@@ -78,7 +78,7 @@ export class DepartmentsController {
     @Param('id') id: string,
     @CurrentUser() user: CurrentUserData,
   ) {
-    return this.departmentsService.findOne(id, user.municipalityId);
+    return this.departmentsService.findOne(id, user.municipalityId, user.id);
   }
 
   /**
@@ -127,7 +127,7 @@ export class DepartmentsController {
     @CurrentUser() user: CurrentUserData,
     @Body() dto: UpdateDepartmentDto,
   ) {
-    return this.departmentsService.update(id, user.municipalityId, dto);
+    return this.departmentsService.update(id, user.municipalityId, user.id, dto);
   }
 
   /**
@@ -150,7 +150,7 @@ export class DepartmentsController {
     @Param('id') id: string,
     @CurrentUser() user: CurrentUserData,
   ) {
-    return this.departmentsService.remove(id, user.municipalityId);
+    return this.departmentsService.remove(id, user.municipalityId, user.id);
   }
 
   /**
@@ -213,7 +213,7 @@ export class DepartmentsController {
     @Param('id') id: string,
     @CurrentUser() user: CurrentUserData,
   ) {
-    return this.departmentsService.listMembers(id, user.municipalityId);
+    return this.departmentsService.listMembers(id, user.municipalityId, user.id);
   }
 
   /**

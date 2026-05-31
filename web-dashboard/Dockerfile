@@ -1,4 +1,4 @@
-# Baladi Next.js web dashboard — build from repo root:
+# Baladiyati Next.js web dashboard — build from repo root:
 #   docker build -f web-dashboard/Dockerfile -t baladi-web .
 FROM node:20-alpine AS deps
 WORKDIR /app/web-dashboard

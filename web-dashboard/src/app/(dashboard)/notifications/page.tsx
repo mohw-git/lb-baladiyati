@@ -1,9 +1,11 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { notificationsApi, ApiError } from '@/lib/api';
+import { resolveNotificationRoute } from '@/lib/notifications/resolve-notification-route';
 import { formatRelative, cn } from '@/lib/utils';
 import { Bell, CheckCheck, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { useTranslate, notificationTypeKey } from '@/lib/i18n';
@@ -43,8 +45,19 @@ const TYPE_TINT: Record<string, string> = {
 
 const FALLBACK_TINT = 'bg-gray-100 text-gray-700';
 
+type NotificationRow = {
+  id: string;
+  type: string;
+  title: string;
+  body: string;
+  data?: Record<string, unknown> | null;
+  isRead: boolean;
+  createdAt: string;
+};
+
 export default function NotificationsPage() {
   const t = useTranslate();
+  const router = useRouter();
   const [page, setPage] = useState(1);
   const limit = 20;
   const queryClient = useQueryClient();
@@ -56,7 +69,10 @@ export default function NotificationsPage() {
 
   const markReadMutation = useMutation({
     mutationFn: (id: string) => notificationsApi.markRead(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notifications'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
+      queryClient.invalidateQueries({ queryKey: ['notifications', 'unread-count'] });
+    },
     onError: (err: ApiError) => toast.error(err.message),
   });
 
@@ -65,9 +81,31 @@ export default function NotificationsPage() {
     onSuccess: () => {
       toast.success(t('notifications.markAllRead'));
       queryClient.invalidateQueries({ queryKey: ['notifications'] });
+      queryClient.invalidateQueries({ queryKey: ['notifications', 'unread-count'] });
     },
     onError: (err: ApiError) => toast.error(err.message),
   });
+
+  const handleNotificationClick = (n: NotificationRow) => {
+    const href = resolveNotificationRoute(
+      n.type,
+      (n.data as Record<string, unknown> | null) ?? null,
+    );
+
+    const navigate = () => {
+      if (href) router.push(href);
+    };
+
+    if (!n.isRead) {
+      markReadMutation.mutate(n.id, {
+        onSuccess: navigate,
+        onError: () => navigate(),
+      });
+      return;
+    }
+
+    navigate();
+  };
 
   return (
     <div className="space-y-4">
@@ -98,16 +136,25 @@ export default function NotificationsPage() {
         ) : (
           <div className="divide-y divide-gray-100">
             {data?.items.map((n) => {
-              // Localize the badge: `notifications.type.<ENUM>` -> human label.
-              // Falls back to the raw enum (last resort, only seen if a new
-              // backend enum value ships before the i18n catalog updates).
               const localized = t(notificationTypeKey(n.type));
               const label = localized.startsWith('notifications.type.') ? n.type : localized;
               const tint = TYPE_TINT[n.type] ?? FALLBACK_TINT;
+              const href = resolveNotificationRoute(
+                n.type,
+                (n.data as Record<string, unknown> | null) ?? null,
+              );
               return (
                 <div
                   key={n.id}
-                  onClick={() => !n.isRead && markReadMutation.mutate(n.id)}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => handleNotificationClick(n)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleNotificationClick(n);
+                    }
+                  }}
                   className={cn(
                     'flex cursor-pointer items-start gap-4 px-6 py-4 transition-colors hover:bg-gray-50',
                     !n.isRead && 'bg-brand-50/50',
@@ -121,6 +168,9 @@ export default function NotificationsPage() {
                     </div>
                     <p className="mt-0.5 text-sm text-gray-500">{n.body}</p>
                     <p className="mt-1 text-xs text-gray-400">{formatRelative(n.createdAt)}</p>
+                    {href ? (
+                      <p className="mt-1 text-xs font-medium text-brand-600">{t('notifications.targetHint')}</p>
+                    ) : null}
                   </div>
                 </div>
               );

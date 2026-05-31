@@ -33,6 +33,16 @@ export class ComplaintQueryDto extends PaginationDto {
   @IsUUID()
   departmentId?: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Staff (view_all): complaints with no routed department (departmentId is null)',
+    example: true,
+  })
+  @IsOptional()
+  @Transform(({ value }) => value === 'true')
+  @IsBoolean()
+  unrouted?: boolean;
+
   @ApiPropertyOptional({ description: 'Show only my assigned complaints', example: true })
   @IsOptional()
   @Transform(({ value }) => value === 'true')

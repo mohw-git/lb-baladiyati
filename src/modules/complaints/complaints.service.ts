@@ -13,12 +13,19 @@ import { paginate } from '../../core/common/dto/pagination.dto';
 import { PERMISSIONS } from '../../core/rbac/permissions.constants';
 import { CreateComplaintDto } from './dto/create-complaint.dto';
 import { ComplaintQueryDto } from './dto/complaint-query.dto';
+import { ComplaintMapPointsQueryDto } from './dto/complaint-map-points-query.dto';
 import { ChangeStatusDto } from './dto/change-status.dto';
 import { StatusService } from './status.service';
 import { AssignmentsService } from './assignments.service';
 import { AuditService, AUDIT_ACTIONS } from '../audit/audit.service';
 import { RealtimeService } from '../../core/realtime/realtime.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationRecipientsService } from '../notifications/notification-recipients.service';
+import { excludeRecipientIds } from '../notifications/notification-recipient.util';
+import { shouldNotifyCitizenOfStatusChange } from '../notifications/complaint-notification-policy';
+import { MunicipalityResolutionService } from '../municipalities/municipality-resolution.service';
+import { MunicipalityResolutionError } from '../municipalities/municipality-resolution.error';
+import type { MunicipalityResolutionResult } from '../municipalities/municipality-resolution.types';
 import { MailService } from '../../core/mail/mail.service';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -29,8 +36,10 @@ import {
   RejectionReason,
   VerificationStatus,
   NotificationType,
+  TransferStatus,
   Prisma,
 } from '@prisma/client';
+import { deriveDepartmentHealth } from '@shared/utils/department-health';
 import {
   TERMINAL_COMPLAINT_STATUSES,
   activeStatusWhere,
@@ -40,6 +49,10 @@ import {
   buildOverdueWhere,
   buildNeedsAttentionWhere,
 } from './complaint-filters';
+import { isCitizenOnlyViewer as checkCitizenOnlyViewer } from './complaints-access.util';
+import { classificationConflictsWithAssignment } from './complaints-classification.util';
+import { boundaryBounds } from '../../core/geo/geojson-boundary.util';
+import type { GeoJsonGeometry } from '../../core/geo/geojson-location.util';
 
 export { TERMINAL_COMPLAINT_STATUSES } from './complaint-filters';
 
@@ -124,9 +137,62 @@ export class ComplaintsService {
     private audit: AuditService,
     private realtime: RealtimeService,
     private notifications: NotificationsService,
+    private notificationRecipients: NotificationRecipientsService,
+    private municipalityResolution: MunicipalityResolutionService,
     private mail: MailService,
     private config: ConfigService,
   ) {}
+
+  private isCitizenOnlyViewer(permissions: string[]): boolean {
+    return checkCitizenOnlyViewer(permissions);
+  }
+
+  private buildStaffRoutingInfo(complaint: {
+    municipalityId: string;
+    reporterRegisteredMunicipalityId: string | null;
+    municipalityResolutionMethod: string | null;
+    municipalityResolutionCandidates: unknown;
+    municipality?: { id: string; name: string; code: string } | null;
+    reporterRegisteredMunicipality?: { id: string; name: string; code: string } | null;
+    createdBy?: { verificationStatus: VerificationStatus } | null;
+  }) {
+    const isExternalCitizenReport = !!(
+      complaint.reporterRegisteredMunicipalityId &&
+      complaint.reporterRegisteredMunicipalityId !== complaint.municipalityId
+    );
+    return {
+      isExternalCitizenReport,
+      operationalMunicipality: complaint.municipality
+        ? {
+            id: complaint.municipality.id,
+            name: complaint.municipality.name,
+            code: complaint.municipality.code,
+          }
+        : null,
+      reporterRegisteredMunicipality: complaint.reporterRegisteredMunicipality
+        ? {
+            id: complaint.reporterRegisteredMunicipality.id,
+            name: complaint.reporterRegisteredMunicipality.name,
+            code: complaint.reporterRegisteredMunicipality.code,
+          }
+        : null,
+      municipalityResolutionMethod: complaint.municipalityResolutionMethod,
+      municipalityResolutionCandidates: complaint.municipalityResolutionCandidates,
+      reporterVerificationStatus: complaint.createdBy?.verificationStatus ?? null,
+    };
+  }
+
+  async resolveIncidentLocation(
+    latitude: number,
+    longitude: number,
+    userMunicipalityId: string | null,
+  ): Promise<MunicipalityResolutionResult> {
+    return this.municipalityResolution.resolveFromCoordinates(
+      latitude,
+      longitude,
+      userMunicipalityId || null,
+    );
+  }
 
   private async isAllowUnverifiedCitizenComplaints(): Promise<boolean> {
     const row = await this.prisma.platformSetting.findUnique({
@@ -177,6 +243,9 @@ export class ComplaintsService {
     complaint: { id: string; createdById: string; municipalityId: string; referenceCode?: string | null },
     newStatus: ComplaintStatus,
   ) {
+    if (!shouldNotifyCitizenOfStatusChange(newStatus)) {
+      return;
+    }
     try {
       const creator = await this.prisma.user.findUnique({
         where: { id: complaint.createdById },
@@ -226,6 +295,70 @@ export class ComplaintsService {
       // Notification failure must never break the underlying business event.
       console.warn(
         `Failed to send status notification for complaint ${complaint.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  /** Staff triage + optional department oversight when a complaint is filed. */
+  private async notifyComplaintCreated(
+    complaint: {
+      id: string;
+      municipalityId: string;
+      referenceCode: string;
+      departmentId: string | null;
+    },
+    departmentName: string | null,
+  ) {
+    try {
+      const triageIds =
+        await this.notificationRecipients.findComplaintTriageRecipientIds(
+          complaint.municipalityId,
+        );
+
+      if (triageIds.length) {
+        await this.notifications.createAndSend(
+          complaint.municipalityId,
+          triageIds,
+          NotificationType.COMPLAINT_SUBMITTED,
+          'New complaint submitted',
+          `Complaint ${complaint.referenceCode} needs review.`,
+          {
+            complaintId: complaint.id,
+            referenceCode: complaint.referenceCode,
+            deepLink: `/complaints/${complaint.id}`,
+          },
+        );
+      }
+
+      if (complaint.departmentId) {
+        const deptIds =
+          await this.notificationRecipients.findDepartmentComplaintRecipientIds(
+            complaint.municipalityId,
+            complaint.departmentId,
+          );
+        const deptOnly = excludeRecipientIds(deptIds, triageIds);
+        if (deptOnly.length) {
+          const deptLabel = departmentName ?? 'your department';
+          await this.notifications.createAndSend(
+            complaint.municipalityId,
+            deptOnly,
+            NotificationType.COMPLAINT_SUBMITTED,
+            'New complaint for your department',
+            `Complaint ${complaint.referenceCode} was routed to ${deptLabel}.`,
+            {
+              complaintId: complaint.id,
+              referenceCode: complaint.referenceCode,
+              departmentId: complaint.departmentId,
+              departmentName: departmentName ?? undefined,
+              deepLink: `/complaints/${complaint.id}`,
+            },
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `Failed to send complaint-created notifications for ${complaint.id}:`,
         err instanceof Error ? err.message : err,
       );
     }
@@ -307,42 +440,93 @@ export class ComplaintsService {
       }
     }
 
-    // Verify category exists
+    const reporterRegisteredMunicipalityId = municipalityId || null;
+
+    let routing: Awaited<
+      ReturnType<MunicipalityResolutionService['resolveForComplaintCreate']>
+    >;
+    try {
+      routing = await this.municipalityResolution.resolveForComplaintCreate(
+        dto.latitude,
+        dto.longitude,
+        reporterRegisteredMunicipalityId,
+        dto.selectedMunicipalityId,
+      );
+    } catch (err: unknown) {
+      if (err instanceof MunicipalityResolutionError) {
+        throw new BadRequestException({
+          statusCode: 400,
+          code: err.code,
+          message: err.message,
+          ...(err.candidates.length ? { candidates: err.candidates } : {}),
+        });
+      }
+      throw new BadRequestException({
+        statusCode: 400,
+        code: 'LOCATION_RESOLUTION_FAILED',
+        message: 'Unable to resolve municipality for this location.',
+      });
+    }
+
+    const operationalMunicipalityId = routing.operationalMunicipalityId;
+
+    // Verify category exists in the operational municipality
     const category = await this.prisma.complaintCategory.findFirst({
       where: {
         id: dto.categoryId,
-        municipalityId,
+        municipalityId: operationalMunicipalityId,
         isActive: true,
+      },
+      include: {
+        department: { select: { id: true, name: true } },
       },
     });
 
     if (!category) {
-      throw new NotFoundException('Category not found');
+      throw new BadRequestException({
+        statusCode: 400,
+        code: 'CATEGORY_MUNICIPALITY_MISMATCH',
+        message:
+          'The selected category does not belong to the municipality for this incident location.',
+      });
     }
 
     // Get municipality code for reference
     const municipality = await this.prisma.municipality.findUnique({
-      where: { id: municipalityId },
+      where: { id: operationalMunicipalityId },
       select: { code: true },
     });
+
+    if (!municipality) {
+      throw new NotFoundException('Municipality not found');
+    }
 
     // Generate sequential reference code (BEI-CMP-2026-000001)
     const referenceCode = await generateReferenceCode(
       this.prisma,
-      municipalityId,
-      municipality!.code,
+      operationalMunicipalityId,
+      municipality.code,
     );
+
+    const resolutionCandidatesJson =
+      routing.candidates.length > 0
+        ? (routing.candidates as Prisma.InputJsonValue)
+        : undefined;
 
     // Create complaint
     const complaint = await this.prisma.complaint.create({
       data: {
-        municipalityId,
+        municipalityId: operationalMunicipalityId,
+        reporterRegisteredMunicipalityId,
+        municipalityResolutionMethod: routing.method,
+        municipalityResolutionCandidates: resolutionCandidatesJson,
+        locationResolvedAt: routing.locationResolvedAt,
         categoryId: dto.categoryId,
         departmentId: category.departmentId,
         createdById: userId,
         referenceCode,
-        title: dto.title,
-        description: dto.description,
+        title: dto.title.trim(),
+        description: dto.description.trim(),
         latitude: dto.latitude,
         longitude: dto.longitude,
         address: dto.address,
@@ -405,7 +589,7 @@ export class ComplaintsService {
     await this.audit.log({
       actorId: userId,
       actorEmail: creatorEmail,
-      municipalityId,
+      municipalityId: operationalMunicipalityId,
       action: AUDIT_ACTIONS.COMPLAINT_CREATE,
       resourceType: 'Complaint',
       resourceId: complaint.id,
@@ -415,6 +599,9 @@ export class ComplaintsService {
         attachmentCount: attachments.length,
         isRiskySubmission,
         riskReasons: isRiskySubmission ? riskReasons : undefined,
+        reporterRegisteredMunicipalityId,
+        municipalityResolutionMethod: routing.method,
+        municipalityResolutionStatus: routing.status,
       },
     });
 
@@ -422,7 +609,7 @@ export class ComplaintsService {
       await this.audit.log({
         actorId: userId,
         actorEmail: creatorEmail,
-        municipalityId,
+        municipalityId: operationalMunicipalityId,
         action: AUDIT_ACTIONS.COMPLAINT_RISKY_ACCEPTED,
         resourceType: 'Complaint',
         resourceId: complaint.id,
@@ -435,13 +622,23 @@ export class ComplaintsService {
       });
     }
 
-    // Realtime: tell HODs/Assigners/Admins in this muni a new complaint landed
+    // Realtime: tell HODs/Assigners/Admins in the operational muni a new complaint landed
     this.realtime.complaintCreated({
       id: complaint.id,
-      municipalityId,
+      municipalityId: operationalMunicipalityId,
       departmentId: complaint.departmentId,
       createdById: userId,
     });
+
+    void this.notifyComplaintCreated(
+      {
+        id: complaint.id,
+        municipalityId: operationalMunicipalityId,
+        referenceCode: complaint.referenceCode ?? complaint.id,
+        departmentId: complaint.departmentId,
+      },
+      category.department?.name ?? null,
+    );
 
     return {
       id: complaint.id,
@@ -456,15 +653,19 @@ export class ComplaintsService {
   async findAll(userId: string, municipalityId: string, query: ComplaintQueryDto) {
     const effectiveQuery = resolveQueryFromBucket(query);
     const permissions = await this.permissionsResolver.getUserPermissions(userId);
+    const citizenOnly = this.isCitizenOnlyViewer(permissions);
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { departmentId: true },
     });
-    
+
     const where: any = {
-      municipalityId,
       deletedAt: null,
     };
+
+    if (!citizenOnly) {
+      where.municipalityId = municipalityId;
+    }
 
     // Initialize AND array for combining filters
     where.AND = where.AND || [];
@@ -512,7 +713,7 @@ export class ComplaintsService {
         );
       }
     } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_OWN)) {
-      // Citizens see their own complaints
+      // Citizens see all complaints they created, including cross-municipality reports.
       where.createdById = userId;
     } else {
       // No view permission - return empty
@@ -531,6 +732,20 @@ export class ComplaintsService {
     // Only apply department filter if user has permission to view all
     if (effectiveQuery.departmentId && permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
       where.departmentId = effectiveQuery.departmentId;
+    }
+
+    if (effectiveQuery.unrouted) {
+      if (!permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
+        throw new ForbiddenException(
+          'You do not have permission to filter unrouted complaints',
+        );
+      }
+      if (effectiveQuery.departmentId) {
+        throw new BadRequestException(
+          'Cannot combine departmentId filter with unrouted=true',
+        );
+      }
+      where.departmentId = null;
     }
 
     // Priority filter
@@ -623,12 +838,21 @@ export class ComplaintsService {
           riskReasons: true,
           submittedByEmailVerified: true,
           submittedByKycVerified: true,
+          municipalityId: true,
+          reporterRegisteredMunicipalityId: true,
+          municipalityResolutionMethod: true,
+          municipalityResolutionCandidates: true,
           category: {
             select: { id: true, name: true },
           },
           department: {
             select: { id: true, name: true },
           },
+          municipality: { select: { id: true, name: true, code: true } },
+          reporterRegisteredMunicipality: {
+            select: { id: true, name: true, code: true },
+          },
+          createdBy: { select: { verificationStatus: true } },
           createdAt: true,
         },
         skip: effectiveQuery.skip,
@@ -663,10 +887,226 @@ export class ComplaintsService {
           : false,
       };
       if (!showRisk) return base;
-      return { ...base, ...this.mapRiskForStaff(c) };
+      return {
+        ...base,
+        ...this.mapRiskForStaff(c),
+        ...this.buildStaffRoutingInfo(c),
+      };
     });
 
     return paginate(complaintsWithOverdue, total, effectiveQuery);
+  }
+
+  /**
+   * Lightweight geolocated complaints for the staff dashboard map.
+   * Uses the same visibility rules as findAll; citizens cannot access.
+   */
+  async findMapPoints(
+    userId: string,
+    municipalityId: string,
+    query: ComplaintMapPointsQueryDto,
+  ) {
+    const permissions = await this.permissionsResolver.getUserPermissions(userId);
+    if (this.isCitizenOnlyViewer(permissions)) {
+      throw new ForbiddenException('Complaint map is not available for citizen accounts');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { departmentId: true },
+    });
+
+    const where: Prisma.ComplaintWhereInput = {
+      deletedAt: null,
+      municipalityId,
+      latitude: { not: null },
+      longitude: { not: null },
+      AND: [],
+    };
+
+    if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
+      // full municipality scope
+    } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT)) {
+      if (!user?.departmentId) {
+        return this.buildMapPointsResponse(municipalityId, []);
+      }
+      (where.AND as Prisma.ComplaintWhereInput[]).push({
+        departmentId: user.departmentId,
+      });
+    } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED)) {
+      (where.AND as Prisma.ComplaintWhereInput[]).push(
+        this.assignmentsService.buildActiveAssignmentVisibilityFilter(
+          userId,
+          user?.departmentId,
+        ),
+      );
+    } else {
+      throw new ForbiddenException('You do not have permission to view complaint map data');
+    }
+
+    if (query.status?.length) {
+      where.status = { in: query.status };
+    }
+    if (query.priority?.length) {
+      where.priority = { in: query.priority };
+    }
+    if (query.categoryId) {
+      where.categoryId = query.categoryId;
+    }
+    if (query.departmentId) {
+      if (!permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
+        throw new ForbiddenException(
+          'You do not have permission to filter by department',
+        );
+      }
+      where.departmentId = query.departmentId;
+    }
+    if (query.dateFrom || query.dateTo) {
+      where.createdAt = {
+        ...(query.dateFrom ? { gte: new Date(query.dateFrom) } : {}),
+        ...(query.dateTo ? { lte: new Date(query.dateTo) } : {}),
+      };
+    }
+    if (query.search?.trim()) {
+      (where.AND as Prisma.ComplaintWhereInput[]).push({
+        OR: [
+          { title: { contains: query.search.trim(), mode: 'insensitive' } },
+          {
+            referenceCode: {
+              contains: query.search.trim(),
+              mode: 'insensitive',
+            },
+          },
+        ],
+      });
+    }
+
+    if ((where.AND as Prisma.ComplaintWhereInput[]).length === 0) {
+      delete where.AND;
+    }
+
+    const rows = await this.prisma.complaint.findMany({
+      where,
+      select: {
+        id: true,
+        referenceCode: true,
+        title: true,
+        latitude: true,
+        longitude: true,
+        status: true,
+        priority: true,
+        address: true,
+        createdAt: true,
+        category: { select: { id: true, name: true, nameAr: true, nameFr: true } },
+        department: {
+          select: { id: true, name: true, nameAr: true, nameFr: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 10_000,
+    });
+
+    const points = rows.map((c) => ({
+      id: c.id,
+      referenceCode: c.referenceCode,
+      title: c.title,
+      latitude: Number(c.latitude),
+      longitude: Number(c.longitude),
+      status: c.status,
+      priority: c.priority,
+      category: c.category,
+      department: c.department,
+      address: c.address,
+      createdAt: c.createdAt,
+    }));
+
+    return this.buildMapPointsResponse(municipalityId, points);
+  }
+
+  private async buildMapPointsResponse(
+    municipalityId: string,
+    points: {
+      id: string;
+      referenceCode: string | null;
+      title: string;
+      latitude: number;
+      longitude: number;
+      status: ComplaintStatus;
+      priority: ComplaintPriority;
+      category: { id: string; name: string; nameAr: string | null; nameFr: string | null };
+      department: {
+        id: string;
+        name: string;
+        nameAr: string | null;
+        nameFr: string | null;
+      } | null;
+      address: string | null;
+      createdAt: Date;
+    }[],
+  ) {
+    const DEFAULT_CENTER = { latitude: 33.8938, longitude: 35.5018 };
+
+    const [municipality, boundaryRow] = await Promise.all([
+      this.prisma.municipality.findUnique({
+        where: { id: municipalityId },
+        select: { latitude: true, longitude: true },
+      }),
+      this.prisma.municipalityBoundary.findFirst({
+        where: { municipalityId, isActive: true },
+        select: { geojson: true },
+      }),
+    ]);
+
+    let boundary: {
+      geojson: GeoJsonGeometry;
+      bounds: [number, number, number, number];
+    } | null = null;
+
+    if (boundaryRow?.geojson) {
+      try {
+        const geojson = boundaryRow.geojson as GeoJsonGeometry;
+        const bounds = boundaryBounds(geojson);
+        boundary = { geojson, bounds };
+      } catch {
+        // Invalid stored boundary must not break map-points for staff dashboards.
+        boundary = null;
+      }
+    }
+
+    const muniLat =
+      municipality?.latitude != null ? Number(municipality.latitude) : null;
+    const muniLng =
+      municipality?.longitude != null ? Number(municipality.longitude) : null;
+
+    let center = DEFAULT_CENTER;
+    if (boundary) {
+      const [minLat, minLng, maxLat, maxLng] = boundary.bounds;
+      center = {
+        latitude: (minLat + maxLat) / 2,
+        longitude: (minLng + maxLng) / 2,
+      };
+    } else if (muniLat != null && muniLng != null) {
+      center = { latitude: muniLat, longitude: muniLng };
+    } else if (points.length > 0) {
+      const sum = points.reduce(
+        (acc, p) => ({
+          lat: acc.lat + p.latitude,
+          lng: acc.lng + p.longitude,
+        }),
+        { lat: 0, lng: 0 },
+      );
+      center = {
+        latitude: sum.lat / points.length,
+        longitude: sum.lng / points.length,
+      };
+    }
+
+    return {
+      points,
+      center,
+      boundary,
+      total: points.length,
+    };
   }
 
   /**
@@ -709,13 +1149,24 @@ export class ComplaintsService {
     const complaint = await this.prisma.complaint.findFirst({
       where: {
         id: complaintId,
-        municipalityId,
         deletedAt: null,
       },
       include: {
         category: { select: { id: true, name: true } },
         department: { select: { id: true, name: true } },
-        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+        municipality: { select: { id: true, name: true, code: true } },
+        reporterRegisteredMunicipality: {
+          select: { id: true, name: true, code: true },
+        },
+        createdBy: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            verificationStatus: true,
+          },
+        },
         attachments: {
           where: { deletedAt: null },
           select: {
@@ -767,7 +1218,17 @@ export class ComplaintsService {
     const canViewAll = permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
     const canViewDepartment = permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT);
     const isOwner = complaint.createdById === userId;
+    const citizenOnly = this.isCitizenOnlyViewer(permissions);
     const isAssigned = await this.assignmentsService.isAssignedTo(complaintId, userId);
+
+    if (
+      !isOwner &&
+      !citizenOnly &&
+      municipalityId &&
+      complaint.municipalityId !== municipalityId
+    ) {
+      throw new NotFoundException('Complaint not found');
+    }
     // HOD/Supervisor can ONLY view complaints in their own department.
     // Unrouted complaints (departmentId=null) are the Assigner's queue —
     // HOD has no operational authority there and shouldn't read them.
@@ -894,7 +1355,10 @@ export class ComplaintsService {
       // that would fail backend authz anyway.
       previewOnly: isPreviewOnly,
       ...(!isCitizenOnly && !isPreviewOnly
-        ? this.mapRiskForStaff(complaint)
+        ? {
+            ...this.mapRiskForStaff(complaint),
+            ...this.buildStaffRoutingInfo(complaint),
+          }
         : {}),
     };
   }
@@ -1247,6 +1711,135 @@ export class ComplaintsService {
   }
 
   /**
+   * Reclassify a complaint (category + derived department).
+   * Used when citizens pick "Other" or the wrong category, or for unrouted queue triage.
+   *
+   * Future: COMPLAINT_ACTION_REQUIRED notifications / offline draft completion flows
+   * may call this after citizen selects a category on a pending report.
+   */
+  async classifyComplaint(
+    complaintId: string,
+    userId: string,
+    municipalityId: string,
+    categoryId: string,
+  ) {
+    const complaint = await this.prisma.complaint.findFirst({
+      where: {
+        id: complaintId,
+        municipalityId,
+        deletedAt: null,
+      },
+      include: {
+        assignments: {
+          where: { isActive: true },
+          take: 1,
+          include: {
+            assignedTo: { select: { departmentId: true } },
+          },
+        },
+      },
+    });
+
+    if (!complaint) {
+      throw new NotFoundException('Complaint not found');
+    }
+
+    const category = await this.prisma.complaintCategory.findFirst({
+      where: {
+        id: categoryId,
+        municipalityId: complaint.municipalityId,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        name: true,
+        departmentId: true,
+      },
+    });
+
+    if (!category) {
+      throw new BadRequestException(
+        'Category not found or does not belong to this municipality',
+      );
+    }
+
+    const newDepartmentId = category.departmentId;
+    const previousCategoryId = complaint.categoryId;
+    const previousDepartmentId = complaint.departmentId;
+
+    if (
+      previousCategoryId === categoryId &&
+      previousDepartmentId === newDepartmentId
+    ) {
+      return {
+        id: complaintId,
+        categoryId,
+        departmentId: newDepartmentId,
+        category: { id: category.id, name: category.name },
+      };
+    }
+
+    const activeAssignment = complaint.assignments[0];
+    const assigneeDepartmentId =
+      activeAssignment?.assignedTo?.departmentId ?? null;
+
+    if (
+      activeAssignment &&
+      classificationConflictsWithAssignment(newDepartmentId, assigneeDepartmentId)
+    ) {
+      throw new ConflictException({
+        statusCode: 409,
+        code: 'CLASSIFICATION_ASSIGNMENT_CONFLICT',
+        message:
+          'Cannot change category while an active assignment conflicts with the new department. Remove or reassign the worker first.',
+      });
+    }
+
+    await this.prisma.complaint.update({
+      where: { id: complaintId },
+      data: {
+        categoryId,
+        departmentId: newDepartmentId,
+      },
+    });
+
+    const actor = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
+    await this.audit.log({
+      actorId: userId,
+      actorEmail: actor?.email,
+      municipalityId,
+      action: AUDIT_ACTIONS.COMPLAINT_CLASSIFY,
+      resourceType: 'Complaint',
+      resourceId: complaintId,
+      metadata: {
+        fromCategoryId: previousCategoryId,
+        toCategoryId: categoryId,
+        fromDepartmentId: previousDepartmentId,
+        toDepartmentId: newDepartmentId,
+      },
+    });
+
+    const assignedUserIds = complaint.assignments.map((a) => a.assignedToId);
+    this.realtime.complaintUpdated({
+      id: complaintId,
+      municipalityId,
+      departmentId: newDepartmentId,
+      createdById: complaint.createdById,
+      assignedUserIds,
+    });
+
+    return {
+      id: complaintId,
+      categoryId,
+      departmentId: newDepartmentId,
+      category: { id: category.id, name: category.name },
+    };
+  }
+
+  /**
    * Reject a complaint with reason (HOD/Supervisor only)
    */
   async rejectComplaint(
@@ -1513,16 +2106,15 @@ export class ComplaintsService {
       }),
     ]);
 
+    const citizenOnly = this.isCitizenOnlyViewer(permissions);
+
     // Permission-scoped base: identical to findAll's permission branch.
-    // CRITICAL: keep this in lock-step with findAll() or tab badges drift
-    // from the actual list contents. HOD/Supervisor sees only own dept,
-    // NOT unrouted (null-dept) complaints — those belong to Assigner queue.
-    const scopedWhere: any = { municipalityId, deletedAt: null };
-    // For the History bucket, workers should see closed work they personally
-    // touched even though their assignment is no longer active. We compute
-    // a "history scope" alongside the active scope so the badge still shows
-    // a meaningful number after a complaint goes terminal.
-    const historyScopedWhere: any = { municipalityId, deletedAt: null };
+    const scopedWhere: any = { deletedAt: null };
+    const historyScopedWhere: any = { deletedAt: null };
+    if (!citizenOnly) {
+      scopedWhere.municipalityId = municipalityId;
+      historyScopedWhere.municipalityId = municipalityId;
+    }
 
     if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
       // no extra filter
@@ -1549,6 +2141,8 @@ export class ComplaintsService {
     } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_OWN)) {
       scopedWhere.createdById = userId;
       historyScopedWhere.createdById = userId;
+      delete scopedWhere.municipalityId;
+      delete historyScopedWhere.municipalityId;
     } else {
       return {
         needsAttention: 0,
@@ -1602,7 +2196,7 @@ export class ComplaintsService {
     };
 
     const myReportsWhere = permissions.includes(PERMISSIONS.COMPLAINT_VIEW_OWN)
-      ? { municipalityId, deletedAt: null, createdById: userId }
+      ? { deletedAt: null, createdById: userId }
       : null;
 
     // History buckets — terminal complaints scoped to what the caller may
@@ -1677,9 +2271,39 @@ export class ComplaintsService {
    * Active operational workload per department for the dashboard panel.
    * Counts only non-terminal complaints currently owned by each department.
    */
-  async getDepartmentWorkload(municipalityId: string) {
+  async getDepartmentWorkload(userId: string, municipalityId: string) {
+    const [permissions, user] = await Promise.all([
+      this.permissionsResolver.getUserPermissions(userId),
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { departmentId: true },
+      }),
+    ]);
+
+    if (
+      !permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL) &&
+      !permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT)
+    ) {
+      throw new ForbiddenException(
+        'You do not have permission to view department workload',
+      );
+    }
+
+    let departmentIdFilter: string | undefined;
+    if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
+      departmentIdFilter = undefined;
+    } else if (user?.departmentId) {
+      departmentIdFilter = user.departmentId;
+    } else {
+      return [];
+    }
+
     const departments = await this.prisma.department.findMany({
-      where: { municipalityId, deletedAt: null },
+      where: {
+        municipalityId,
+        deletedAt: null,
+        ...(departmentIdFilter ? { id: departmentIdFilter } : {}),
+      },
       select: {
         id: true,
         name: true,
@@ -1701,30 +2325,92 @@ export class ComplaintsService {
       orderBy: { name: 'asc' },
     });
 
-    const activeByDept = await this.prisma.complaint.groupBy({
-      by: ['departmentId'],
-      where: {
-        municipalityId,
-        deletedAt: null,
-        departmentId: { not: null },
-        status: activeStatusWhere(),
-      },
-      _count: { _all: true },
-    });
+    const now = new Date();
+    const includeTransferOutbound =
+      permissions.includes(PERMISSIONS.DEPARTMENT_CREATE) ||
+      permissions.includes(PERMISSIONS.DEPARTMENT_UPDATE);
+
+    const [activeByDept, overdueByDept, transfersIn, transfersOut] =
+      await Promise.all([
+        this.prisma.complaint.groupBy({
+          by: ['departmentId'],
+          where: {
+            municipalityId,
+            deletedAt: null,
+            departmentId: { not: null },
+            status: activeStatusWhere(),
+          },
+          _count: { _all: true },
+        }),
+        this.prisma.complaint.groupBy({
+          by: ['departmentId'],
+          where: {
+            municipalityId,
+            deletedAt: null,
+            departmentId: { not: null },
+            AND: [buildOverdueWhere(now)],
+          },
+          _count: { _all: true },
+        }),
+        this.prisma.transferRequest.groupBy({
+          by: ['toDepartmentId'],
+          where: {
+            municipalityId,
+            status: TransferStatus.PENDING,
+          },
+          _count: { _all: true },
+        }),
+        includeTransferOutbound
+          ? this.prisma.transferRequest.groupBy({
+              by: ['fromDepartmentId'],
+              where: {
+                municipalityId,
+                status: TransferStatus.PENDING,
+              },
+              _count: { _all: true },
+            })
+          : Promise.resolve([]),
+      ]);
 
     const activeMap = new Map(
       activeByDept.map((row) => [row.departmentId, row._count._all]),
     );
+    const overdueMap = new Map(
+      overdueByDept.map((row) => [row.departmentId, row._count._all]),
+    );
+    const transfersInMap = new Map(
+      transfersIn.map((row) => [row.toDepartmentId, row._count._all]),
+    );
+    const transfersOutMap = new Map(
+      transfersOut.map((row) => [row.fromDepartmentId, row._count._all]),
+    );
 
-    return departments.map((dept) => ({
-      id: dept.id,
-      name: dept.name,
-      nameAr: dept.nameAr,
-      nameFr: dept.nameFr,
-      head: dept.head,
-      staffCount: dept._count.users,
-      activeComplaints: activeMap.get(dept.id) ?? 0,
-    }));
+    return departments.map((dept) => {
+      const activeComplaints = activeMap.get(dept.id) ?? 0;
+      const overdueComplaints = overdueMap.get(dept.id) ?? 0;
+      const { healthScore, health } = deriveDepartmentHealth(
+        activeComplaints,
+        overdueComplaints,
+      );
+      return {
+        id: dept.id,
+        name: dept.name,
+        nameAr: dept.nameAr,
+        nameFr: dept.nameFr,
+        head: dept.head,
+        staffCount: dept._count.users,
+        activeComplaints,
+        overdueComplaints,
+        pendingTransfersIn: transfersInMap.get(dept.id) ?? 0,
+        ...(includeTransferOutbound
+          ? {
+              pendingTransfersOut: transfersOutMap.get(dept.id) ?? 0,
+            }
+          : {}),
+        healthScore,
+        health,
+      };
+    });
   }
 
   /**
@@ -1892,6 +2578,21 @@ export class ComplaintsService {
       });
     }
 
+    const assignedUserIds = await this.prisma.complaintAssignment
+      .findMany({
+        where: { complaintId, isActive: true },
+        select: { assignedToId: true },
+      })
+      .then((rows) => rows.map((r) => r.assignedToId));
+
+    this.realtime.complaintUpdated({
+      id: complaintId,
+      municipalityId,
+      departmentId: complaint.departmentId,
+      createdById: complaint.createdById,
+      assignedUserIds,
+    });
+
     return { attachments };
   }
 
@@ -1912,6 +2613,21 @@ export class ComplaintsService {
     await this.prisma.complaint.update({
       where: { id: complaintId },
       data: { deletedAt: new Date() },
+    });
+
+    const assignedUserIds = await this.prisma.complaintAssignment
+      .findMany({
+        where: { complaintId },
+        select: { assignedToId: true },
+      })
+      .then((rows) => rows.map((r) => r.assignedToId));
+
+    this.realtime.complaintDeleted({
+      id: complaintId,
+      municipalityId,
+      departmentId: complaint.departmentId,
+      createdById: complaint.createdById,
+      assignedUserIds,
     });
 
     return { message: 'Complaint deleted successfully' };

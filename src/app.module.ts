@@ -3,6 +3,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ScheduleModule } from '@nestjs/schedule';
 import { LoggerModule } from 'nestjs-pino';
 import { randomUUID } from 'crypto';
 
@@ -111,6 +112,7 @@ import { MaintenanceGuard } from './core/maintenance/maintenance.guard';
         limit: 100,
       },
     ]),
+    ScheduleModule.forRoot(),
 
     // Core modules
     ConfigModule,

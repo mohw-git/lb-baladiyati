@@ -1,19 +1,42 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { categoriesApi, departmentsApi, ApiError } from '@/lib/api';
 import { cn } from '@/lib/utils';
-import { Loader2, Plus, Pencil, Trash2, ToggleLeft, ToggleRight } from 'lucide-react';
+import { Loader2, Plus, Pencil, Trash2, ToggleLeft, ToggleRight, AlertTriangle } from 'lucide-react';
 import type { Category } from '@shared/types/category';
 import { useLocale, useTranslate } from '@/lib/i18n';
 import { pickName } from '@shared/types/locale';
+import { useAnyPermission, useAuth, usePermission } from '@/lib/auth';
+import { PERMISSIONS } from '@shared/constants/permissions';
+import { hasMunicipalityWideCategoryManagement } from '@shared/utils/category-access';
 
 export default function CategoriesPage() {
+  const router = useRouter();
   const queryClient = useQueryClient();
   const locale = useLocale();
   const t = useTranslate();
+  const { user } = useAuth();
+  const canManageCategories = useAnyPermission(
+    PERMISSIONS.CATEGORY_CREATE,
+    PERMISSIONS.CATEGORY_UPDATE,
+  );
+  const canDeleteCategories = usePermission(PERMISSIONS.CATEGORY_DELETE);
+  const isMunicipalityWide = useMemo(
+    () => hasMunicipalityWideCategoryManagement(user?.permissions ?? []),
+    [user?.permissions],
+  );
+  const userDepartmentId = user?.department?.id ?? null;
+
+  useEffect(() => {
+    if (!canManageCategories) {
+      router.replace('/dashboard');
+    }
+  }, [canManageCategories, router]);
+
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<Category | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Category | null>(null);
@@ -27,21 +50,34 @@ export default function CategoriesPage() {
 
   const { data: categoriesRaw, isLoading } = useQuery({
     queryKey: ['categories', 'admin'],
-    queryFn: () => categoriesApi.list(true),
+    queryFn: () => categoriesApi.list({ includeAll: true }),
   });
 
   const categories: Category[] = Array.isArray(categoriesRaw)
     ? categoriesRaw
     : (categoriesRaw as any)?.data ?? [];
 
+  const visibleCategories = useMemo(() => {
+    if (isMunicipalityWide) return categories;
+    if (!userDepartmentId) return [];
+    return categories.filter(
+      (c) => c.department?.id === userDepartmentId || (c as any).departmentId === userDepartmentId,
+    );
+  }, [categories, isMunicipalityWide, userDepartmentId]);
+
   const { data: departmentsRaw } = useQuery({
     queryKey: ['departments'],
     queryFn: () => departmentsApi.list(),
+    enabled: isMunicipalityWide,
   });
 
   const departments = Array.isArray(departmentsRaw)
     ? departmentsRaw
     : (departmentsRaw as any)?.data ?? [];
+
+  const submitDepartmentId = isMunicipalityWide
+    ? form.departmentId || undefined
+    : userDepartmentId || undefined;
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -50,7 +86,7 @@ export default function CategoriesPage() {
         nameAr: form.nameAr || undefined,
         nameFr: form.nameFr || undefined,
         icon: form.icon || undefined,
-        departmentId: form.departmentId || undefined,
+        departmentId: submitDepartmentId,
       }),
     onSuccess: () => {
       toast.success(t('categories.toast.created'));
@@ -70,7 +106,9 @@ export default function CategoriesPage() {
             nameAr: form.nameAr || undefined,
             nameFr: form.nameFr || undefined,
             icon: form.icon || undefined,
-            departmentId: form.departmentId || undefined,
+            ...(isMunicipalityWide
+              ? { departmentId: form.departmentId || undefined }
+              : {}),
           })
         : Promise.reject(new Error('No category')),
     onSuccess: () => {
@@ -113,7 +151,13 @@ export default function CategoriesPage() {
   });
 
   const resetForm = () =>
-    setForm({ name: '', nameAr: '', nameFr: '', icon: '', departmentId: '' });
+    setForm({
+      name: '',
+      nameAr: '',
+      nameFr: '',
+      icon: '',
+      departmentId: isMunicipalityWide ? '' : userDepartmentId ?? '',
+    });
 
   const openAddModal = () => {
     setEditing(null);
@@ -153,16 +197,29 @@ export default function CategoriesPage() {
   const isPending = createMutation.isPending || updateMutation.isPending;
   const isToggling = activateMutation.isPending || deactivateMutation.isPending;
 
+  if (!canManageCategories) {
+    return null;
+  }
+
   return (
     <div className="space-y-4">
+      {!isMunicipalityWide && !userDepartmentId && (
+        <div className="flex items-start gap-3 rounded border border-amber-200 bg-amber-50 p-3">
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+          <p className="text-sm text-amber-900">{t('categories.hod.noDepartment')}</p>
+        </div>
+      )}
+
       <div className="flex items-center justify-between border-b border-gray-200 pb-4">
         <div>
           <h1 className="text-xl font-bold text-gray-900">{t('categories.title')}</h1>
           <p className="mt-0.5 text-sm text-gray-500">{t('categories.subtitle')}</p>
         </div>
-        <button onClick={openAddModal} className="btn-gov-primary">
-          <Plus className="h-4 w-4" /> {t('categories.new')}
-        </button>
+        {(isMunicipalityWide || userDepartmentId) && (
+          <button onClick={openAddModal} className="btn-gov-primary">
+            <Plus className="h-4 w-4" /> {t('categories.new')}
+          </button>
+        )}
       </div>
 
       <div className="gov-card overflow-hidden">
@@ -184,14 +241,14 @@ export default function CategoriesPage() {
                   <Loader2 className="mx-auto h-6 w-6 animate-spin text-gray-400" />
                 </td>
               </tr>
-            ) : !categories.length ? (
+            ) : !visibleCategories.length ? (
               <tr>
                 <td colSpan={6} className="py-10 text-center text-sm text-gray-500">
                   {t('categories.empty')}
                 </td>
               </tr>
             ) : (
-              categories.map((c) => (
+              visibleCategories.map((c) => (
                 <tr key={c.id} className={cn(!c.isActive && 'opacity-60')}>
                   <td className="font-medium text-gray-900">{pickName(c as any, locale)}</td>
                   <td className="text-gray-500">{c.icon || '—'}</td>
@@ -232,12 +289,14 @@ export default function CategoriesPage() {
                       >
                         <Pencil className="h-4 w-4" /> {t('common.edit')}
                       </button>
-                      <button
-                        onClick={() => setDeleteTarget(c)}
-                        className="flex items-center gap-1 text-red-600 hover:text-red-700"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      {canDeleteCategories && (
+                        <button
+                          onClick={() => setDeleteTarget(c)}
+                          className="flex items-center gap-1 text-red-600 hover:text-red-700"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -314,18 +373,24 @@ export default function CategoriesPage() {
                 <label className="mb-1 block text-sm font-medium text-gray-700">
                   {t('categories.form.department')}
                 </label>
-                <select
-                  value={form.departmentId}
-                  onChange={(e) => setForm({ ...form, departmentId: e.target.value })}
-                  className="select-gov"
-                >
-                  <option value="">{t('categories.form.noDept')}</option>
-                  {departments.map((d: any) => (
-                    <option key={d.id} value={d.id}>
-                      {pickName(d, locale)}
-                    </option>
-                  ))}
-                </select>
+                {isMunicipalityWide ? (
+                  <select
+                    value={form.departmentId}
+                    onChange={(e) => setForm({ ...form, departmentId: e.target.value })}
+                    className="select-gov"
+                  >
+                    <option value="">{t('categories.form.noDept')}</option>
+                    {departments.map((d: any) => (
+                      <option key={d.id} value={d.id}>
+                        {pickName(d, locale)}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <p className="rounded border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-800">
+                    {user?.department ? pickName(user.department as any, locale) : '—'}
+                  </p>
+                )}
               </div>
               <div className="flex justify-end gap-2 pt-2">
                 <button

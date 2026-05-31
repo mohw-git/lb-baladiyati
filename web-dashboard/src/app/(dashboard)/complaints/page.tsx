@@ -8,6 +8,7 @@ import { complaintsApi, categoriesApi, departmentsApi } from '@/lib/api';
 import { StatusBadge } from '@/components/features/complaints/status-badge';
 import { PriorityBadge } from '@/components/features/complaints/priority-badge';
 import { UnverifiedSubmitterBadge } from '@/components/features/complaints/unverified-submitter-badge';
+import { UnroutedBadge } from '@/components/features/complaints/unrouted-badge';
 import type { ComplaintRiskReason } from '@shared/types/complaint';
 import { ComplaintStatus, ComplaintPriority } from '@shared/types/complaint';
 import type { ComplaintBucketId } from '@shared/types/complaint';
@@ -229,6 +230,7 @@ export default function ComplaintsPage() {
   const [categoryFilter, setCategoryFilter] = useState(searchParams.get('categoryId') ?? '');
   const [departmentFilter, setDepartmentFilter] = useState(searchParams.get('departmentId') ?? '');
   const [riskyOnly, setRiskyOnly] = useState(searchParams.get('riskyOnly') === 'true');
+  const [unroutedOnly, setUnroutedOnly] = useState(searchParams.get('unrouted') === 'true');
 
   const debouncedSearch = useDebouncedValue(search, 300);
   const activeBucket = visibleBuckets.find((b) => b.id === bucketId) ?? visibleBuckets[0];
@@ -268,6 +270,7 @@ export default function ComplaintsPage() {
       priority: priorityFilter ? [priorityFilter] : undefined,
       categoryId: categoryFilter || undefined,
       departmentId: departmentFilter || undefined,
+      unrouted: unroutedOnly || undefined,
       riskyOnly: riskyOnly || undefined,
     };
     if (!isActiveOperational && statusFilter) {
@@ -282,6 +285,7 @@ export default function ComplaintsPage() {
     priorityFilter,
     categoryFilter,
     departmentFilter,
+    unroutedOnly,
     riskyOnly,
     isActiveOperational,
     statusFilter,
@@ -321,6 +325,7 @@ export default function ComplaintsPage() {
     setCategoryFilter('');
     setDepartmentFilter('');
     setRiskyOnly(false);
+    setUnroutedOnly(false);
     syncUrl({
       bucket: next,
       page: '1',
@@ -328,6 +333,7 @@ export default function ComplaintsPage() {
       priority: undefined,
       categoryId: undefined,
       departmentId: undefined,
+      unrouted: undefined,
       riskyOnly: undefined,
     });
   };
@@ -339,6 +345,7 @@ export default function ComplaintsPage() {
     setCategoryFilter('');
     setDepartmentFilter('');
     setRiskyOnly(false);
+    setUnroutedOnly(false);
     setPage(1);
     syncUrl({
       search: undefined,
@@ -346,13 +353,20 @@ export default function ComplaintsPage() {
       priority: undefined,
       categoryId: undefined,
       departmentId: undefined,
+      unrouted: undefined,
       riskyOnly: undefined,
       page: '1',
     });
   };
 
   const hasFilters =
-    search || (!isActiveOperational && statusFilter) || priorityFilter || categoryFilter || departmentFilter || riskyOnly;
+    search ||
+    (!isActiveOperational && statusFilter) ||
+    priorityFilter ||
+    categoryFilter ||
+    departmentFilter ||
+    riskyOnly ||
+    unroutedOnly;
 
   const statusLabels: Record<ComplaintStatus, string> = {
     [ComplaintStatus.SUBMITTED]: t('status.SUBMITTED'),
@@ -586,6 +600,29 @@ export default function ComplaintsPage() {
             ))}
           </select>
 
+          {perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL) && (
+            <label className="flex items-center gap-2 rounded border border-amber-200 bg-amber-50 px-2 py-2 text-xs text-amber-900">
+              <input
+                type="checkbox"
+                checked={unroutedOnly}
+                onChange={(e) => {
+                  setUnroutedOnly(e.target.checked);
+                  if (e.target.checked) {
+                    setDepartmentFilter('');
+                  }
+                  setPage(1);
+                  syncUrl({
+                    unrouted: e.target.checked ? 'true' : undefined,
+                    departmentId: undefined,
+                    page: '1',
+                  });
+                }}
+                className="h-3.5 w-3.5 rounded border-amber-300 text-amber-600"
+              />
+              {t('complaints.filter.unroutedOnly')}
+            </label>
+          )}
+
           {isStaffView && (
             <label className="flex items-center gap-2 rounded border border-gray-200 bg-white px-2 py-2 text-xs text-gray-700">
               <input
@@ -658,6 +695,7 @@ export default function ComplaintsPage() {
                             riskReasons={c.riskReasons as ComplaintRiskReason[] | undefined}
                           />
                         )}
+                        {!c.department && isStaffView && <UnroutedBadge />}
                         <span className="truncate font-medium text-gray-900 block">{c.title}</span>
                       </div>
                     </td>

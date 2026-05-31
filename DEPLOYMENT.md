@@ -1,4 +1,4 @@
-# Baladi — Windows Server deployment guide
+# Baladiyati — Windows Server deployment guide
 
 This document covers **local development**, **Windows Server production** (Caddy + Node), and an **optional Docker Compose** path. It does not deploy for you — run these steps on the server when ready.
 

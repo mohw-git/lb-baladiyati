@@ -83,6 +83,23 @@ export class RealtimeService {
     });
   }
 
+  complaintDeleted(c: {
+    id: string;
+    municipalityId: string;
+    departmentId?: string | null;
+    createdById?: string | null;
+    assignedUserIds?: string[];
+  }) {
+    this.emit('complaint:deleted', { id: c.id }, {
+      municipalityId: c.municipalityId,
+      departmentId: c.departmentId,
+      userIds: [
+        ...(c.createdById ? [c.createdById] : []),
+        ...(c.assignedUserIds ?? []),
+      ],
+    });
+  }
+
   taskUpdated(t: {
     id: string;
     municipalityId: string;

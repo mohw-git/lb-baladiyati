@@ -24,26 +24,18 @@ export function Header({ onOpenMobileNav }: HeaderProps) {
   const { user, logout } = useAuth();
   const userName = useUserName();
   const router = useRouter();
-  const [unreadCount, setUnreadCount] = useState(0);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!user) return;
-    const fetchCount = () => {
-      notificationsApi
-        .unreadCount()
-        .then((data) => setUnreadCount(data.unreadCount))
-        .catch((err) => {
-          if (err?.status && err.status !== 401) {
-            console.warn('[notifications] Failed to fetch unread count:', err.message);
-          }
-        });
-    };
-    fetchCount();
-    const interval = setInterval(fetchCount, 60000);
-    return () => clearInterval(interval);
-  }, [user]);
+  const { data: unreadData } = useQuery({
+    queryKey: ['notifications', 'unread-count'],
+    queryFn: () => notificationsApi.unreadCount(),
+    enabled: !!user,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+  });
+
+  const unreadCount = unreadData?.unreadCount ?? 0;
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -164,6 +156,7 @@ export function Header({ onOpenMobileNav }: HeaderProps) {
                 firstName={user.firstName}
                 lastName={user.lastName}
                 size={28}
+                cacheKey={user.avatarUrl ?? undefined}
               />
               <div className="hidden text-start md:block">
                 <p className="text-xs font-semibold text-gray-900 leading-tight">{userName}</p>
