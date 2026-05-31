@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { MapContainer, TileLayer, GeoJSON, useMap } from 'react-leaflet';
 import type { LatLngBoundsExpression } from 'leaflet';
+import type { GeoJsonObject } from 'geojson';
 
 /** Default map view: Lebanon (Beirut area) when no boundary is loaded. */
 const DEFAULT_CENTER: [number, number] = [33.8938, 35.5018];
@@ -83,8 +84,7 @@ export default function BoundaryMapPreview({
         {geojson ? (
           <GeoJSON
             key={JSON.stringify(geojson)}
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            data={geojson as any}
+            data={geojson as GeoJsonObject}
             pathOptions={{
               color: '#0f2555',
               weight: 2,
