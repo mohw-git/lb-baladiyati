@@ -8,6 +8,8 @@ import { useTranslate, useLocale, type MessageKey } from '@/lib/i18n';
 import { PERMISSIONS } from '@shared/constants/permissions';
 import { useQuery } from '@tanstack/react-query';
 import { municipalitiesApi } from '@/lib/api';
+import { MunicipalityBrandHeader } from '@/components/municipality/municipality-brand-header';
+import { resolveMunicipalityMediaUrl } from '@/lib/municipality-branding';
 import {
   LayoutDashboard,
   MessageSquareWarning,
@@ -25,15 +27,16 @@ import {
   ScrollText,
   Wrench,
   Paintbrush,
+  Megaphone,
   ListChecks,
   ArrowRightLeft,
   HandHelping,
-  Network,
   User,
   History,
   ChevronsLeft,
   ChevronsRight,
   Settings,
+  Map,
 } from 'lucide-react';
 
 interface NavItem {
@@ -105,7 +108,12 @@ const adminNavItems: NavItem[] = [
     labelKey: 'nav.departments',
     href: '/departments',
     icon: <Building className="h-4 w-4" />,
-    permissions: [PERMISSIONS.DEPARTMENT_CREATE, PERMISSIONS.DEPARTMENT_UPDATE],
+    permissions: [
+      PERMISSIONS.DEPARTMENT_CREATE,
+      PERMISSIONS.DEPARTMENT_UPDATE,
+      PERMISSIONS.COMPLAINT_VIEW_ALL,
+      PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT,
+    ],
   },
   {
     labelKey: 'nav.roles',
@@ -132,17 +140,6 @@ const adminNavItems: NavItem[] = [
     permissions: [PERMISSIONS.KYC_VIEW_ALL, PERMISSIONS.KYC_REVIEW],
   },
   {
-    labelKey: 'nav.orgChart',
-    href: '/org-chart',
-    icon: <Network className="h-4 w-4" />,
-    permissions: [
-      PERMISSIONS.USER_VIEW_DEPARTMENT,
-      PERMISSIONS.USER_VIEW_ALL,
-      PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT,
-      PERMISSIONS.COMPLAINT_VIEW_ALL,
-    ],
-  },
-  {
     labelKey: 'nav.audit',
     href: '/audit',
     icon: <History className="h-4 w-4" />,
@@ -152,7 +149,7 @@ const adminNavItems: NavItem[] = [
     labelKey: 'nav.municipalitySettings',
     href: '/municipality-settings',
     icon: <Settings className="h-4 w-4" />,
-    permissions: [PERMISSIONS.DEPARTMENT_CREATE, PERMISSIONS.DEPARTMENT_UPDATE],
+    permissions: [PERMISSIONS.MUNICIPALITY_UPDATE],
   },
 ];
 
@@ -166,6 +163,11 @@ const platformNavItems: NavItem[] = [
     labelKey: 'nav.municipalities',
     href: '/platform/municipalities',
     icon: <Globe className="h-4 w-4" />,
+  },
+  {
+    labelKey: 'nav.boundaryAssignment',
+    href: '/platform/boundaries',
+    icon: <Map className="h-4 w-4" />,
   },
   {
     labelKey: 'nav.allUsers',
@@ -187,11 +189,23 @@ const platformNavItems: NavItem[] = [
     href: '/platform/branding',
     icon: <Paintbrush className="h-4 w-4" />,
   },
+  {
+    labelKey: 'nav.platformAnnouncements',
+    href: '/platform/announcements',
+    icon: <Megaphone className="h-4 w-4" />,
+  },
+  {
+    labelKey: 'nav.platformBroadcasts',
+    href: '/platform/broadcasts',
+    icon: <Bell className="h-4 w-4" />,
+  },
 ];
 
 interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
 }
 
 function NavLink({
@@ -201,6 +215,7 @@ function NavLink({
   activeClass,
   inactiveClass,
   label,
+  onNavigate,
 }: {
   item: NavItem;
   isActive: boolean;
@@ -208,13 +223,15 @@ function NavLink({
   activeClass: string;
   inactiveClass: string;
   label: string;
+  onNavigate?: () => void;
 }) {
   return (
     <li>
       <Link
         href={item.href}
+        onClick={onNavigate}
         className={cn(
-          'flex items-center gap-2.5 rounded px-2.5 py-2 text-sm font-medium transition-colors',
+          'flex min-h-[44px] items-center gap-2.5 rounded px-2.5 py-2.5 text-sm font-medium transition-colors',
           isActive ? activeClass : inactiveClass,
           collapsed && 'justify-center px-2',
         )}
@@ -227,7 +244,7 @@ function NavLink({
   );
 }
 
-export function Sidebar({ collapsed, onToggle }: SidebarProps) {
+export function Sidebar({ collapsed, onToggle, mobileOpen = false, onMobileClose }: SidebarProps) {
   const pathname = usePathname();
   const { user } = useAuth();
   const t = useTranslate();
@@ -247,13 +264,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     : (muniData as any)?.nameFr && locale === 'fr'
     ? (muniData as any).nameFr
     : muniData?.name;
-  const muniLogo = muniData?.logoUrl;
-  const muniBanner = (muniData as any)?.bannerImageUrl;
-  const muniOverlay = (muniData as any)?.bannerOverlayColor || '#0f2555';
-  const muniOverlayOpacity =
-    typeof (muniData as any)?.bannerOverlayOpacity === 'number'
-      ? (muniData as any).bannerOverlayOpacity
-      : 0.7;
+  const muniLogoSrc = resolveMunicipalityMediaUrl(muniData?.logoUrl);
 
   const filterByPerms = (items: NavItem[]) =>
     items.filter((item) => {
@@ -274,66 +285,68 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     ? (isRtl ? ChevronsLeft : ChevronsRight)
     : (isRtl ? ChevronsRight : ChevronsLeft);
 
+  const closeMobile = () => onMobileClose?.();
+
   return (
     <aside
       className={cn(
-        // Use logical properties — start-0 mirrors to right in RTL via html dir
-        'fixed start-0 top-0 z-30 flex h-screen flex-col border-e border-gray-700 bg-navy-900 transition-all duration-300 sidebar-transition',
-        collapsed ? 'w-14' : 'w-60',
+        'fixed start-0 top-0 z-40 flex h-screen flex-col border-e border-gray-700 bg-navy-900 transition-transform duration-300 sidebar-transition',
+        'w-[min(85vw,20rem)] lg:z-30',
+        collapsed ? 'lg:w-14' : 'lg:w-60',
+        mobileOpen ? 'flex max-lg:translate-x-0' : 'hidden max-lg:-translate-x-full max-lg:rtl:translate-x-full lg:flex lg:translate-x-0',
       )}
+      aria-hidden={!mobileOpen ? undefined : false}
     >
       {/* ── Logo / Brand ─────────────────────────────────────────── */}
-      <div className="relative h-14 shrink-0 overflow-hidden border-b border-navy-700">
-        {/* Optional municipal banner image (Beirut skyline / Saida Sea Castle / etc.) */}
-        {!isSuperAdmin && muniBanner && (
-          <>
+      {isSuperAdmin ? (
+        <div className="relative flex h-14 shrink-0 items-center border-b border-navy-700 bg-navy-900 px-3">
+          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-amber-600">
+            <Globe className="h-4 w-4 text-white" />
+          </div>
+          {!collapsed && (
+            <div className="ms-2.5 min-w-0">
+              <p className="truncate text-sm font-bold text-white leading-tight">
+                {t('common.appName')}
+              </p>
+              <p className="text-[9px] font-semibold uppercase tracking-widest text-amber-400 leading-tight">
+                Platform
+              </p>
+            </div>
+          )}
+        </div>
+      ) : collapsed ? (
+        <div className="flex h-14 shrink-0 items-center justify-center border-b border-navy-700 bg-navy-900">
+          {muniLogoSrc ? (
+            // eslint-disable-next-line @next/next/no-img-element
             <img
-              src={muniBanner}
+              src={muniLogoSrc}
               alt=""
-              className="absolute inset-0 h-full w-full object-cover"
+              className="h-8 w-8 rounded object-contain"
               onError={(e) => {
                 (e.target as HTMLImageElement).style.display = 'none';
               }}
             />
-            <div
-              className="absolute inset-0"
-              style={{
-                backgroundColor: muniOverlay,
-                opacity: muniOverlayOpacity,
-              }}
-            />
-          </>
-        )}
-        <div className="relative flex h-full items-center px-3">
-          <div className="flex items-center gap-2.5 overflow-hidden">
-            <div className={cn('flex h-7 w-7 shrink-0 items-center justify-center rounded overflow-hidden', isSuperAdmin ? 'bg-amber-600' : 'bg-white/15')}>
-              {isSuperAdmin ? (
-                <Globe className="h-4 w-4 text-white" />
-              ) : muniLogo ? (
-                <img src={muniLogo} alt="" className="h-7 w-7 object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
-              ) : (
-                <Building2 className="h-4 w-4 text-white" />
-              )}
-            </div>
-            {!collapsed && (
-              <div className="min-w-0">
-                <p className="truncate text-sm font-bold text-white leading-tight">
-                  {isSuperAdmin ? t('common.appName') : (muniName || t('common.appName'))}
-                </p>
-                {isSuperAdmin ? (
-                  <p className="text-[9px] font-semibold uppercase tracking-widest text-amber-400 leading-tight">
-                    Platform
-                  </p>
-                ) : (
-                  <p className="truncate text-[9px] font-medium uppercase tracking-widest text-white/70 leading-tight">
-                    {t('common.tagline')}
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
+          ) : (
+            <Building2 className="h-5 w-5 text-white/80" />
+          )}
         </div>
-      </div>
+      ) : (
+        <MunicipalityBrandHeader
+          className="shrink-0 border-b border-navy-700"
+          name={muniName || t('common.appName')}
+          subtitle={t('common.tagline')}
+          logoUrl={muniData?.logoUrl}
+          bannerImageUrl={(muniData as { bannerImageUrl?: string | null })?.bannerImageUrl}
+          bannerOverlayColor={
+            (muniData as { bannerOverlayColor?: string | null })?.bannerOverlayColor
+          }
+          bannerOverlayOpacity={
+            (muniData as { bannerOverlayOpacity?: number | null })?.bannerOverlayOpacity
+          }
+          primaryColor={(muniData as { primaryColor?: string | null })?.primaryColor}
+          variant="sidebar"
+        />
+      )}
 
       {/* ── Navigation ────────────────────────────────────────────── */}
       <nav className="flex-1 overflow-y-auto overflow-x-hidden py-2 px-2">
@@ -347,6 +360,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 label={t(item.labelKey)}
                 isActive={isItemActive(item)}
                 collapsed={collapsed}
+                onNavigate={closeMobile}
                 activeClass="bg-amber-600/20 text-amber-300"
                 inactiveClass="text-navy-300 hover:bg-navy-800 hover:text-white"
               />
@@ -370,6 +384,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                     label={t(item.labelKey)}
                     isActive={isItemActive(item)}
                     collapsed={collapsed}
+                    onNavigate={closeMobile}
                     activeClass="bg-brand-700/40 text-white"
                     inactiveClass="text-navy-300 hover:bg-navy-800 hover:text-white"
                   />
@@ -395,6 +410,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                       label={t(item.labelKey)}
                       isActive={isItemActive(item)}
                       collapsed={collapsed}
+                      onNavigate={closeMobile}
                       activeClass="bg-brand-700/40 text-white"
                       inactiveClass="text-navy-300 hover:bg-navy-800 hover:text-white"
                     />
@@ -407,10 +423,10 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       </nav>
 
       {/* ── Collapse Toggle ───────────────────────────────────────── */}
-      <div className="shrink-0 border-t border-navy-700 p-2">
+      <div className="hidden shrink-0 border-t border-navy-700 p-2 lg:block">
         <button
           onClick={onToggle}
-          className="flex w-full items-center justify-center rounded p-2 text-navy-400 hover:bg-navy-800 hover:text-white transition-colors"
+          className="flex w-full min-h-[44px] items-center justify-center rounded p-2 text-navy-400 hover:bg-navy-800 hover:text-white transition-colors"
           title={collapsed ? 'Expand' : 'Collapse'}
         >
           <CollapseIcon className="h-4 w-4" />

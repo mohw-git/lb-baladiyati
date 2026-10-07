@@ -7,9 +7,12 @@ import {
   Body,
   Param,
   Query,
+  Req,
   HttpCode,
   HttpStatus,
+  ForbiddenException,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import {
   ApiTags,
   ApiBearerAuth,
@@ -46,6 +49,10 @@ export class CategoriesController {
     private readonly permissionsResolver: PermissionsResolver,
   ) {}
 
+  private actor(user: CurrentUserData) {
+    return { id: user.id, email: user.email };
+  }
+
   /**
    * List all categories
    * Pass ?all=true to include inactive categories (for admin management)
@@ -59,6 +66,13 @@ By default, only active categories are returned.
 Pass \`?all=true\` to include inactive categories (for admin management).`,
   })
   @ApiQuery({ name: 'all', required: false, type: Boolean, description: 'Include inactive categories' })
+  @ApiQuery({
+    name: 'municipalityId',
+    required: false,
+    type: String,
+    description:
+      'Load categories for a specific municipality (incident location). Citizens may request any active municipality.',
+  })
   @ApiOkResponse({
     description: 'List of categories',
     type: CategoriesListResponseDto,
@@ -67,9 +81,9 @@ Pass \`?all=true\` to include inactive categories (for admin management).`,
   async findAll(
     @CurrentUser() user: CurrentUserData,
     @Query('all') all?: string,
+    @Query('municipalityId') municipalityIdParam?: string,
   ) {
     let includeInactive = all === 'true';
-    // Only users with category management permissions can see inactive categories
     if (includeInactive) {
       const permissions = await this.permissionsResolver.getUserPermissions(user.id);
       const canManage =
@@ -80,12 +94,36 @@ Pass \`?all=true\` to include inactive categories (for admin management).`,
         includeInactive = false;
       }
     }
-    return this.categoriesService.findAll(user.municipalityId, includeInactive);
+
+    let targetMunicipalityId = user.municipalityId;
+    if (municipalityIdParam) {
+      const permissions = await this.permissionsResolver.getUserPermissions(user.id);
+      const isStaff =
+        permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL) ||
+        permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
+        permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED);
+      const canSubmit = permissions.includes(PERMISSIONS.COMPLAINT_CREATE);
+
+      if (isStaff && !user.isSuperAdmin && municipalityIdParam !== user.municipalityId) {
+        throw new ForbiddenException(
+          'Staff can only load categories for their own municipality',
+        );
+      }
+      if (!canSubmit && !isStaff && !user.isSuperAdmin) {
+        throw new ForbiddenException('Not allowed to load categories for another municipality');
+      }
+
+      const muni = await this.categoriesService.assertActiveMunicipality(municipalityIdParam);
+      targetMunicipalityId = muni.id;
+    }
+
+    return this.categoriesService.findAll(
+      targetMunicipalityId,
+      includeInactive,
+      includeInactive ? user.id : undefined,
+    );
   }
 
-  /**
-   * Get category details
-   */
   @Get(':id')
   @ApiOperation({
     summary: 'Get category details',
@@ -104,9 +142,6 @@ Pass \`?all=true\` to include inactive categories (for admin management).`,
     return this.categoriesService.findOne(id, user.municipalityId);
   }
 
-  /**
-   * Create a new category
-   */
   @Post()
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
@@ -126,13 +161,16 @@ Pass \`?all=true\` to include inactive categories (for admin management).`,
   async create(
     @CurrentUser() user: CurrentUserData,
     @Body() dto: CreateCategoryDto,
+    @Req() req: Request,
   ) {
-    return this.categoriesService.create(user.municipalityId, dto);
+    return this.categoriesService.create(
+      user.municipalityId,
+      dto,
+      this.actor(user),
+      req,
+    );
   }
 
-  /**
-   * Update a category
-   */
   @Patch(':id')
   @ApiOperation({
     summary: 'Update a category',
@@ -153,13 +191,17 @@ Pass \`?all=true\` to include inactive categories (for admin management).`,
     @Param('id') id: string,
     @CurrentUser() user: CurrentUserData,
     @Body() dto: UpdateCategoryDto,
+    @Req() req: Request,
   ) {
-    return this.categoriesService.update(id, user.municipalityId, dto);
+    return this.categoriesService.update(
+      id,
+      user.municipalityId,
+      dto,
+      this.actor(user),
+      req,
+    );
   }
 
-  /**
-   * Activate a category
-   */
   @Post(':id/activate')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -174,13 +216,17 @@ Pass \`?all=true\` to include inactive categories (for admin management).`,
   async activate(
     @Param('id') id: string,
     @CurrentUser() user: CurrentUserData,
+    @Req() req: Request,
   ) {
-    return this.categoriesService.toggleActive(id, user.municipalityId, true);
+    return this.categoriesService.toggleActive(
+      id,
+      user.municipalityId,
+      true,
+      this.actor(user),
+      req,
+    );
   }
 
-  /**
-   * Deactivate a category
-   */
   @Post(':id/deactivate')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -195,17 +241,21 @@ Pass \`?all=true\` to include inactive categories (for admin management).`,
   async deactivate(
     @Param('id') id: string,
     @CurrentUser() user: CurrentUserData,
+    @Req() req: Request,
   ) {
-    return this.categoriesService.toggleActive(id, user.municipalityId, false);
+    return this.categoriesService.toggleActive(
+      id,
+      user.municipalityId,
+      false,
+      this.actor(user),
+      req,
+    );
   }
 
-  /**
-   * Delete a category (soft delete / deactivate)
-   */
   @Delete(':id')
   @ApiOperation({
     summary: 'Deactivate a category',
-    description: `Deactivates a category (sets isActive to false).
+    description: `Soft-deactivates a category (sets isActive to false). Historical complaints retain their category reference.
 
 **Required Permission:** \`category.delete\``,
   })
@@ -220,7 +270,13 @@ Pass \`?all=true\` to include inactive categories (for admin management).`,
   async remove(
     @Param('id') id: string,
     @CurrentUser() user: CurrentUserData,
+    @Req() req: Request,
   ) {
-    return this.categoriesService.remove(id, user.municipalityId);
+    return this.categoriesService.remove(
+      id,
+      user.municipalityId,
+      this.actor(user),
+      req,
+    );
   }
 }

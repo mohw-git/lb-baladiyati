@@ -26,10 +26,17 @@ export default function MaintenancePage() {
     queryFn: () => platformApi.getRequireEmailVerification(),
   });
 
+  const { data: allowUnverifiedData, isLoading: allowUnverifiedLoading } = useQuery({
+    queryKey: ['platform', 'allow-unverified-citizen-complaints'],
+    queryFn: () => platformApi.getAllowUnverifiedCitizenComplaints(),
+  });
+
   const [enabled, setEnabled] = useState(false);
   const [message, setMessage] = useState('');
   const [require2fa, setRequire2fa] = useState(false);
   const [requireEmailVerification, setRequireEmailVerification] = useState(false);
+  const [allowUnverifiedCitizenComplaints, setAllowUnverifiedCitizenComplaints] =
+    useState(false);
 
   useEffect(() => {
     if (data) {
@@ -45,6 +52,12 @@ export default function MaintenancePage() {
   useEffect(() => {
     if (emailVerData) setRequireEmailVerification(emailVerData.enabled);
   }, [emailVerData]);
+
+  useEffect(() => {
+    if (allowUnverifiedData) {
+      setAllowUnverifiedCitizenComplaints(allowUnverifiedData.enabled);
+    }
+  }, [allowUnverifiedData]);
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -80,6 +93,17 @@ export default function MaintenancePage() {
       toast.success(t('common.save'));
       queryClient.invalidateQueries({
         queryKey: ['platform', 'require-email-verification'],
+      });
+    },
+    onError: (err: ApiError) => toast.error(err.message),
+  });
+
+  const allowUnverifiedMutation = useMutation({
+    mutationFn: (next: boolean) => platformApi.setAllowUnverifiedCitizenComplaints(next),
+    onSuccess: () => {
+      toast.success(t('common.save'));
+      queryClient.invalidateQueries({
+        queryKey: ['platform', 'allow-unverified-citizen-complaints'],
       });
     },
     onError: (err: ApiError) => toast.error(err.message),
@@ -206,6 +230,39 @@ export default function MaintenancePage() {
               <span className="text-sm">
                 <span className="block font-medium text-gray-900">
                   {t('platform.maintenance.emailVerification.label')}
+                </span>
+              </span>
+            </label>
+          )}
+        </div>
+      </div>
+
+      <div className="gov-card p-4">
+        <div className="gov-section-header">
+          {t('platform.maintenance.section.unverifiedComplaints')}
+        </div>
+        <p className="mt-2 text-xs text-gray-500">
+          {t('platform.maintenance.unverifiedComplaints.description')}
+        </p>
+        <div className="mt-3">
+          {allowUnverifiedLoading ? (
+            <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+          ) : (
+            <label className="flex items-start gap-3">
+              <input
+                type="checkbox"
+                checked={allowUnverifiedCitizenComplaints}
+                onChange={(e) => {
+                  const next = e.target.checked;
+                  setAllowUnverifiedCitizenComplaints(next);
+                  allowUnverifiedMutation.mutate(next);
+                }}
+                disabled={allowUnverifiedMutation.isPending}
+                className="mt-0.5 h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500"
+              />
+              <span className="text-sm">
+                <span className="block font-medium text-gray-900">
+                  {t('platform.maintenance.unverifiedComplaints.label')}
                 </span>
               </span>
             </label>

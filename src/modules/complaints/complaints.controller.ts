@@ -13,6 +13,7 @@ import {
   UploadedFiles,
   HttpCode,
   HttpStatus,
+  BadRequestException,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { FilesInterceptor } from '@nestjs/platform-express';
@@ -38,6 +39,8 @@ import { AssignComplaintDto } from './dto/assign-complaint.dto';
 import { ChangeStatusDto } from './dto/change-status.dto';
 import { UploadAttachmentDto } from './dto/upload-attachment.dto';
 import { SetPriorityDto } from './dto/set-priority.dto';
+import { ClassifyComplaintDto } from './dto/classify-complaint.dto';
+import { ComplaintMapPointsQueryDto } from './dto/complaint-map-points-query.dto';
 import { RejectComplaintDto } from './dto/reject-complaint.dto';
 import { SubmitFeedbackDto } from './dto/submit-feedback.dto';
 import {
@@ -166,6 +169,21 @@ export class ComplaintsController {
     return this.complaintsService.getBuckets(user.id, user.municipalityId);
   }
 
+  @Get('stats/department-workload')
+  @ApiOperation({
+    summary: 'Active complaint workload per department (dashboard)',
+  })
+  @RequirePermissions(
+    PERMISSIONS.COMPLAINT_VIEW_ALL,
+    PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT,
+  )
+  async getDepartmentWorkload(@CurrentUser() user: CurrentUserData) {
+    return this.complaintsService.getDepartmentWorkload(
+      user.id,
+      user.municipalityId,
+    );
+  }
+
   /**
    * Dashboard charts data (complaints over time, by category, by priority)
    */
@@ -182,6 +200,31 @@ export class ComplaintsController {
   )
   async getCharts(@CurrentUser() user: CurrentUserData) {
     return this.complaintsService.getDashboardCharts(user.id, user.municipalityId);
+  }
+
+  /**
+   * Geolocated complaint pins for the staff dashboard map (clustering on client).
+   */
+  @Get('map-points')
+  @ApiOperation({
+    summary: 'Complaint map points',
+    description:
+      'Returns lightweight geolocated complaints for the municipality admin map. Scoped by role/department like GET /complaints.',
+  })
+  @RequirePermissions(
+    PERMISSIONS.COMPLAINT_VIEW_ALL,
+    PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT,
+    PERMISSIONS.COMPLAINT_VIEW_ASSIGNED,
+  )
+  async getMapPoints(
+    @CurrentUser() user: CurrentUserData,
+    @Query() query: ComplaintMapPointsQueryDto,
+  ) {
+    return this.complaintsService.findMapPoints(
+      user.id,
+      user.municipalityId,
+      query,
+    );
   }
 
   /**
@@ -228,6 +271,33 @@ export class ComplaintsController {
         'createdAt',
       ],
       rows,
+    );
+  }
+
+  /**
+   * Resolve operational municipality from incident coordinates (preview for submit UX).
+   */
+  @Get('resolve-location')
+  @ApiOperation({
+    summary: 'Resolve incident municipality from coordinates',
+    description:
+      'Returns municipality resolution status and candidates. Used before submit to load the correct categories.',
+  })
+  @RequirePermissions(PERMISSIONS.COMPLAINT_CREATE)
+  async resolveLocation(
+    @CurrentUser() user: CurrentUserData,
+    @Query('latitude') latitude: string,
+    @Query('longitude') longitude: string,
+  ) {
+    const lat = Number(latitude);
+    const lng = Number(longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      throw new BadRequestException('Valid latitude and longitude are required');
+    }
+    return this.complaintsService.resolveIncidentLocation(
+      lat,
+      lng,
+      user.municipalityId || null,
     );
   }
 
@@ -418,6 +488,48 @@ export class ComplaintsController {
       user.municipalityId,
       dto.stage,
       files,
+    );
+  }
+
+  /**
+   * Classify or reclassify a complaint (category + derived department)
+   */
+  @Patch(':id/classification')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Classify complaint',
+    description:
+      'Sets complaint category and derives department from the category. Admin/Assigner only.',
+  })
+  @ApiOkResponse({
+    description: 'Classification updated',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          id: 'uuid',
+          categoryId: 'uuid',
+          departmentId: 'uuid',
+          category: { id: 'uuid', name: 'Roads' },
+        },
+      },
+    },
+  })
+  @ApiBadRequestResponse({ description: 'Invalid category', type: ApiErrorResponseDto })
+  @ApiNotFoundResponse({ description: 'Complaint not found', type: ApiErrorResponseDto })
+  @ApiUnauthorizedResponse({ description: 'Unauthorized', type: ApiErrorResponseDto })
+  @ApiForbiddenResponse({ description: 'Forbidden', type: ApiErrorResponseDto })
+  @RequirePermissions(PERMISSIONS.COMPLAINT_CLASSIFY)
+  async classifyComplaint(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentUserData,
+    @Body() dto: ClassifyComplaintDto,
+  ) {
+    return this.complaintsService.classifyComplaint(
+      id,
+      user.id,
+      user.municipalityId,
+      dto.categoryId,
     );
   }
 

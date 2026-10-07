@@ -1,5 +1,9 @@
-import { IsEmail, IsOptional, IsString, MaxLength, MinLength, Matches } from 'class-validator';
+import { IsEmail, IsEnum, IsOptional, IsString, MaxLength, MinLength, Matches } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  DEFAULT_STARTER_TEMPLATE,
+  MunicipalityStarterTemplate,
+} from '../../../core/provisioning/municipality-starter-templates';
 
 export class CreateMunicipalityDto {
   @ApiProperty({ example: 'Tripoli Municipality', description: 'Canonical / English name' })
@@ -56,4 +60,14 @@ export class CreateMunicipalityDto {
   @MinLength(1)
   @MaxLength(100)
   adminLastName!: string;
+
+  @ApiPropertyOptional({
+    enum: MunicipalityStarterTemplate,
+    default: DEFAULT_STARTER_TEMPLATE,
+    description:
+      'Starter setup: full government (departments + categories), departments only, or blank.',
+  })
+  @IsOptional()
+  @IsEnum(MunicipalityStarterTemplate)
+  starterTemplate?: MunicipalityStarterTemplate;
 }

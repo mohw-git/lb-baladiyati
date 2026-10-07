@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
@@ -19,14 +20,16 @@ interface Props {
 }
 
 const STATUS_STYLE: Record<HelpRequestStatus, { labelKey: MessageKey; cls: string }> = {
-  PENDING:     { labelKey: 'helpRequests.status.PENDING',      cls: 'bg-yellow-100 text-yellow-800' },
-  ACCEPTED:    { labelKey: 'helpRequests.status.ACCEPTED',     cls: 'bg-blue-100 text-blue-800' },
-  IN_PROGRESS: { labelKey: 'helpRequests.status.IN_PROGRESS',  cls: 'bg-blue-100 text-blue-800' },
-  SUBMITTED:   { labelKey: 'helpRequests.status.SUBMITTED',    cls: 'bg-purple-100 text-purple-800' },
-  COMPLETED:   { labelKey: 'helpRequests.status.APPROVED',     cls: 'bg-green-100 text-green-800' },
-  DECLINED:    { labelKey: 'helpRequests.status.DECLINED',     cls: 'bg-rose-100 text-rose-800' },
-  REJECTED:    { labelKey: 'helpRequests.status.DECLINED',     cls: 'bg-rose-100 text-rose-800' },
-  CANCELLED:   { labelKey: 'helpRequests.status.CANCELED',     cls: 'bg-gray-100 text-gray-700' },
+  PENDING_SOURCE_APPROVAL: { labelKey: 'helpRequests.status.PENDING_SOURCE_APPROVAL', cls: 'bg-orange-100 text-orange-800' },
+  SOURCE_REJECTED:         { labelKey: 'helpRequests.status.SOURCE_REJECTED',         cls: 'bg-rose-100 text-rose-800' },
+  PENDING:                 { labelKey: 'helpRequests.status.PENDING_RECEIVER',        cls: 'bg-yellow-100 text-yellow-800' },
+  ACCEPTED:                { labelKey: 'helpRequests.status.ACCEPTED',                cls: 'bg-blue-100 text-blue-800' },
+  IN_PROGRESS:             { labelKey: 'helpRequests.status.IN_PROGRESS',             cls: 'bg-blue-100 text-blue-800' },
+  SUBMITTED:               { labelKey: 'helpRequests.status.SUBMITTED',               cls: 'bg-purple-100 text-purple-800' },
+  COMPLETED:               { labelKey: 'helpRequests.status.APPROVED',                cls: 'bg-green-100 text-green-800' },
+  DECLINED:                { labelKey: 'helpRequests.status.DECLINED',                cls: 'bg-rose-100 text-rose-800' },
+  REJECTED:                { labelKey: 'helpRequests.status.REJECTED_RESULT',         cls: 'bg-rose-100 text-rose-800' },
+  CANCELLED:               { labelKey: 'helpRequests.status.CANCELED',                cls: 'bg-gray-100 text-gray-700' },
 };
 
 /**
@@ -46,7 +49,17 @@ export function HelpPanel({ complaintId, complaintTitle }: Props) {
   });
 
   const active = useMemo(
-    () => history.find((h) => !['COMPLETED', 'DECLINED', 'REJECTED', 'CANCELLED'].includes(h.status)),
+    () =>
+      history.find(
+        (h) =>
+          ![
+            'COMPLETED',
+            'DECLINED',
+            'REJECTED',
+            'CANCELLED',
+            'SOURCE_REJECTED',
+          ].includes(h.status),
+      ),
     [history],
   );
   const archived = useMemo(
@@ -72,6 +85,8 @@ export function HelpPanel({ complaintId, complaintTitle }: Props) {
           complaintTitle={complaintTitle}
           me={me}
           onChanged={() => {
+            queryClient.invalidateQueries({ queryKey: ['help-requests'] });
+            queryClient.invalidateQueries({ queryKey: ['help-request'] });
             queryClient.invalidateQueries({ queryKey: ['help-requests', 'complaint', complaintId] });
             queryClient.invalidateQueries({ queryKey: ['complaint', complaintId] });
           }}
@@ -97,6 +112,10 @@ function ActiveHelpCard({
   const isAssignedHelper = me?.id && hr.helperAssigneeId === me.id;
   const isRequester = me?.id === hr.requestedById;
   const isAdmin = !!me?.isSuperAdmin || (me?.permissions ?? []).includes('complaint.view_all');
+  const hasSourceOversight =
+    isAdmin ||
+    isOriginalHod ||
+    (me?.permissions ?? []).includes('complaint.view_department');
 
   const style = STATUS_STYLE[hr.status];
 
@@ -104,7 +123,13 @@ function ActiveHelpCard({
   const [showSubmit, setShowSubmit] = useState(false);
   const [showDecline, setShowDecline] = useState(false);
   const [showReject, setShowReject] = useState(false);
+  const [showRejectSource, setShowRejectSource] = useState(false);
 
+  const approveSource = useMutation({
+    mutationFn: () => helpRequestsApi.approveSource(hr.id, {}),
+    onSuccess: () => { toast.success(t('helpRequests.toast.sourceApproved')); onChanged(); },
+    onError: (e: ApiError) => toast.error(e.message),
+  });
   const accept = useMutation({
     mutationFn: () => helpRequestsApi.accept(hr.id, {}),
     onSuccess: () => { toast.success(t('helpRequests.toast.accepted')); onChanged(); },
@@ -121,11 +146,16 @@ function ActiveHelpCard({
     onError: (e: ApiError) => toast.error(e.message),
   });
 
+  const canApproveSource =
+    hr.status === 'PENDING_SOURCE_APPROVAL' && hasSourceOversight;
+  const canRejectSource =
+    hr.status === 'PENDING_SOURCE_APPROVAL' && hasSourceOversight;
   const canAccept = hr.status === 'PENDING' && (isHelperHod || isAdmin);
   const canDecline = hr.status === 'PENDING' && (isHelperHod || isAdmin);
   const canCancel =
-    ['PENDING', 'ACCEPTED', 'IN_PROGRESS'].includes(hr.status) &&
-    (isRequester || isOriginalHod || isAdmin);
+    ['PENDING_SOURCE_APPROVAL', 'PENDING', 'ACCEPTED', 'IN_PROGRESS'].includes(
+      hr.status,
+    ) && (isRequester || isOriginalHod || isAdmin);
   const canAssign =
     ['ACCEPTED', 'IN_PROGRESS'].includes(hr.status) && (isHelperHod || isAdmin);
   const canSubmit =
@@ -150,6 +180,12 @@ function ActiveHelpCard({
           <p className="mt-1 text-xs text-gray-500">
             {t('helpRequests.panel.requester')}: {hr.requestedBy ? getFullName(hr.requestedBy) : '—'} · {formatDate(hr.createdAt, 'MMM d, yyyy HH:mm')}
           </p>
+          <Link
+            href={`/help-requests/${hr.id}`}
+            className="mt-2 inline-flex text-xs font-medium text-amber-800 underline hover:text-amber-950"
+          >
+            {t('helpRequests.action.openWorkspace')}
+          </Link>
         </div>
       </div>
 
@@ -195,6 +231,23 @@ function ActiveHelpCard({
       )}
 
       <div className="mt-4 flex flex-wrap gap-2 border-t border-amber-200 pt-3">
+        {canApproveSource && (
+          <button
+            onClick={() => approveSource.mutate()}
+            disabled={approveSource.isPending}
+            className="inline-flex items-center gap-1.5 rounded border border-green-700 bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+          >
+            <CheckCircle2 className="h-4 w-4" /> {t('helpRequests.action.approveSource')}
+          </button>
+        )}
+        {canRejectSource && (
+          <button
+            onClick={() => setShowRejectSource(true)}
+            className="inline-flex items-center gap-1.5 rounded border border-rose-200 bg-white px-3 py-1.5 text-sm font-medium text-rose-700 hover:bg-rose-50"
+          >
+            <XCircle className="h-4 w-4" /> {t('helpRequests.action.rejectSource')}
+          </button>
+        )}
         {canAccept && (
           <button onClick={() => accept.mutate()} disabled={accept.isPending}
             className="inline-flex items-center gap-1.5 rounded border border-amber-700 bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50">
@@ -266,6 +319,24 @@ function ActiveHelpCard({
           onSubmit={async (reason) => {
             try { await helpRequestsApi.reject(hr.id, { reason }); toast.success(t('helpRequests.toast.declined')); onChanged(); setShowReject(false); }
             catch (e: any) { toast.error(e.message ?? t('common.error')); }
+          }}
+        />
+      )}
+      {showRejectSource && (
+        <ReasonModal
+          title={t('helpRequests.action.rejectSource')}
+          confirmLabel={t('common.confirm')}
+          danger
+          onClose={() => setShowRejectSource(false)}
+          onSubmit={async (reason) => {
+            try {
+              await helpRequestsApi.rejectSource(hr.id, { note: reason });
+              toast.success(t('helpRequests.toast.sourceRejected'));
+              onChanged();
+              setShowRejectSource(false);
+            } catch (e: any) {
+              toast.error(e.message ?? t('common.error'));
+            }
           }}
         />
       )}

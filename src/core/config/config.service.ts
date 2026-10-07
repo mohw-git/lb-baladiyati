@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService as NestConfigService } from '@nestjs/config';
+import { resolveUploadRoot } from '../storage/upload-path.util';
 
 @Injectable()
 export class AppConfigService {
@@ -26,7 +27,7 @@ export class AppConfigService {
   }
 
   get uploadPath(): string {
-    return this.configService.get<string>('UPLOAD_PATH', './uploads');
+    return resolveUploadRoot(this.configService.get<string>('UPLOAD_PATH'));
   }
 
   get maxFileSize(): number {

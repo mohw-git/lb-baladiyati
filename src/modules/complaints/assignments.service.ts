@@ -1,10 +1,21 @@
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ForbiddenException,
+  ConflictException,
+} from '@nestjs/common';
 import { PrismaService } from '../../core/prisma/prisma.service';
-import { ComplaintStatus } from '@prisma/client';
+import { ComplaintStatus, NotificationType, Prisma } from '@prisma/client';
 import { PermissionsResolver } from '../../core/rbac/permissions.resolver';
 import { PERMISSIONS } from '../../core/rbac/permissions.constants';
 import { AuditService, AUDIT_ACTIONS } from '../audit/audit.service';
 import { RealtimeService } from '../../core/realtime/realtime.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import {
+  assertEligibleStaffAssignee,
+  staffAssignableWhere,
+} from '../../core/users/user-governance';
 
 @Injectable()
 export class AssignmentsService {
@@ -13,7 +24,20 @@ export class AssignmentsService {
     private permissionsResolver: PermissionsResolver,
     private audit: AuditService,
     private realtime: RealtimeService,
+    private notifications: NotificationsService,
   ) {}
+
+  /**
+   * Statuses at which a complaint can be (re)assigned. Once work has actually
+   * started (IN_PROGRESS / PENDING_APPROVAL) or the complaint has been closed,
+   * we refuse to re-route silently — supervisor must move it back via the
+   * normal status workflow first. This protects worker progress / audit trail.
+   */
+  private static readonly ASSIGNABLE_STATUSES: ComplaintStatus[] = [
+    ComplaintStatus.SUBMITTED,
+    ComplaintStatus.UNDER_REVIEW,
+    ComplaintStatus.ASSIGNED,
+  ];
 
   async assignComplaint(
     complaintId: string,
@@ -35,6 +59,17 @@ export class AssignmentsService {
       throw new NotFoundException('Complaint not found');
     }
 
+    // Status gate — the complaint must be in a state that accepts assignment.
+    // Without this check, callers could silently reassign IN_PROGRESS work
+    // and break the worker's flow, or "reassign" closed complaints.
+    if (!AssignmentsService.ASSIGNABLE_STATUSES.includes(complaint.status)) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'INVALID_STATUS_FOR_ASSIGNMENT',
+        message: `Cannot assign while complaint is ${complaint.status}. Move it back to UNDER_REVIEW first if you need to reassign.`,
+      });
+    }
+
     // Cannot assign a complaint to its creator (citizen who submitted it)
     if (assignedToId === complaint.createdById) {
       throw new BadRequestException(
@@ -52,7 +87,6 @@ export class AssignmentsService {
       where: {
         id: assignedToId,
         municipalityId,
-        isActive: true,
       },
       include: {
         userRoles: {
@@ -65,16 +99,11 @@ export class AssignmentsService {
       throw new NotFoundException('Assignee not found');
     }
 
-    // Citizens cannot be assigned to complaints — only staff (Worker/Supervisor/HOD/Admin/Verifier)
-    const assigneeRoles = assignee.userRoles.map((ur) => ur.role.name);
-    const isCitizen =
-      assigneeRoles.length === 0 ||
-      (assigneeRoles.length === 1 && assigneeRoles[0] === 'Citizen');
-    if (isCitizen) {
-      throw new BadRequestException(
-        'Citizens cannot be assigned complaints. Only staff members can be assigned.',
-      );
-    }
+    assertEligibleStaffAssignee({
+      createdVia: assignee.createdVia,
+      isActive: assignee.isActive,
+      userRoles: assignee.userRoles,
+    });
 
     // Cross-department assignment is NOT allowed via direct assign — it must
     // go through the transfer-request workflow so the receiving department's
@@ -102,51 +131,99 @@ export class AssignmentsService {
       }
     }
 
-    // Deactivate any existing active assignments
-    await this.prisma.complaintAssignment.updateMany({
-      where: {
-        complaintId,
-        isActive: true,
-      },
-      data: { isActive: false },
+    const priorActive = await this.prisma.complaintAssignment.findFirst({
+      where: { complaintId, isActive: true },
+      select: { assignedToId: true },
     });
+    const assigneeChanged = priorActive?.assignedToId !== assignedToId;
 
-    // Create new assignment
-    const assignment = await this.prisma.complaintAssignment.create({
-      data: {
-        complaintId,
-        assignedToId,
-        assignedById,
-        notes,
-        isActive: true,
-      },
+    // Wrap deactivate + status-bump + new assignment in one transaction so
+    // two concurrent assigns can't both succeed and leave the complaint
+    // with duplicate active rows or a half-transitioned status. The
+    // complaint update is gated on the expected prior status (atomic
+    // compare-and-set); race losers get a clean 409.
+    let assignment: Prisma.ComplaintAssignmentGetPayload<{
       include: {
-        assignedTo: {
-          select: { id: true, firstName: true, lastName: true },
-        },
-        assignedBy: {
-          select: { id: true, firstName: true, lastName: true },
-        },
-      },
-    });
+        assignedTo: { select: { id: true; firstName: true; lastName: true } };
+        assignedBy: { select: { id: true; firstName: true; lastName: true } };
+      };
+    }>;
+    try {
+      assignment = await this.prisma.$transaction(async (tx) => {
+        await tx.complaintAssignment.updateMany({
+          where: { complaintId, isActive: true },
+          data: { isActive: false },
+        });
 
-    // Update complaint status to ASSIGNED if currently SUBMITTED
-    if (complaint.status === ComplaintStatus.SUBMITTED) {
-      await this.prisma.complaint.update({
-        where: { id: complaintId },
-        data: { status: ComplaintStatus.ASSIGNED },
-      });
+        const created = await tx.complaintAssignment.create({
+          data: {
+            complaintId,
+            assignedToId,
+            assignedById,
+            notes,
+            isActive: true,
+          },
+          include: {
+            assignedTo: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+            assignedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+        });
 
-      // Log status change
-      await this.prisma.complaintStatusLog.create({
-        data: {
-          complaintId,
-          changedById: assignedById,
-          fromStatus: complaint.status,
-          toStatus: ComplaintStatus.ASSIGNED,
-          notes: `Assigned to ${assignee.firstName} ${assignee.lastName}`,
-        },
+        // Auto-transition pre-work statuses to ASSIGNED so the worker isn't
+        // stuck. Without this a UNDER_REVIEW complaint that gets assigned
+        // would keep its status and the worker couldn't legally move to
+        // IN_PROGRESS next (state machine only allows ASSIGNED → IN_PROGRESS).
+        if (
+          complaint.status === ComplaintStatus.SUBMITTED ||
+          complaint.status === ComplaintStatus.UNDER_REVIEW
+        ) {
+          await tx.complaint.update({
+            where: { id: complaintId, status: complaint.status, deletedAt: null },
+            data: { status: ComplaintStatus.ASSIGNED },
+          });
+          await tx.complaintStatusLog.create({
+            data: {
+              complaintId,
+              changedById: assignedById,
+              fromStatus: complaint.status,
+              toStatus: ComplaintStatus.ASSIGNED,
+              notes: `Assigned to ${assignee.firstName} ${assignee.lastName}`,
+            },
+          });
+        } else if (complaint.status === ComplaintStatus.ASSIGNED) {
+          // Reassignment — record it as an event, not a fake ASSIGNED → ASSIGNED
+          // status transition. Frontend renders eventKind rows as events.
+          await tx.complaintStatusLog.create({
+            data: {
+              complaintId,
+              changedById: assignedById,
+              fromStatus: complaint.status,
+              toStatus: ComplaintStatus.ASSIGNED,
+              notes: `Reassigned to ${assignee.firstName} ${assignee.lastName}`,
+              eventKind: 'REASSIGNED',
+            },
+          });
+        }
+
+        return created;
       });
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2025'
+      ) {
+        throw new ConflictException({
+          statusCode: 409,
+          code: 'COMPLAINT_STATE_CONFLICT',
+          message:
+            'This complaint was just updated by someone else. Refresh and try again.',
+        });
+      }
+      throw err;
     }
 
     // Audit
@@ -178,6 +255,24 @@ export class AssignmentsService {
       assignedUserIds: [assignedToId],
     });
 
+    if (assigneeChanged) {
+      const ref = complaint.referenceCode ?? complaintId;
+      await this.notifications
+        .createAndSend(
+          municipalityId,
+          [assignedToId],
+          NotificationType.COMPLAINT_ASSIGNED,
+          'Complaint assigned to you',
+          `You have been assigned complaint ${ref}.`,
+          {
+            complaintId,
+            referenceCode: ref,
+            deepLink: `/complaints/${complaintId}`,
+          },
+        )
+        .catch(() => undefined);
+    }
+
     return {
       complaintId,
       assignedTo: assignment.assignedTo,
@@ -189,22 +284,70 @@ export class AssignmentsService {
   }
 
   async getActiveAssignment(complaintId: string) {
-    return this.prisma.complaintAssignment.findFirst({
+    const complaint = await this.prisma.complaint.findUnique({
+      where: { id: complaintId },
+      select: { departmentId: true },
+    });
+
+    const assignment = await this.prisma.complaintAssignment.findFirst({
       where: {
         complaintId,
         isActive: true,
       },
+      orderBy: { createdAt: 'desc' },
       include: {
         assignedTo: {
-          select: { id: true, firstName: true, lastName: true, email: true },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            departmentId: true,
+          },
         },
         assignedBy: {
           select: { id: true, firstName: true, lastName: true },
         },
       },
     });
+
+    if (!assignment) return null;
+    if (
+      complaint?.departmentId &&
+      assignment.assignedTo.departmentId &&
+      complaint.departmentId !== assignment.assignedTo.departmentId
+    ) {
+      return null;
+    }
+    return assignment;
   }
 
+  /**
+   * End all active assignments for a complaint. Used before re-assign,
+   * cross-department transfer accept, and whenever a complaint reaches a
+   * terminal status (COMPLETED / REJECTED / CLOSED) so workload counts /
+   * "Assigned to me" never carry stale closed work.
+   *
+   * Accepts an in-progress transaction client; falls back to the singleton
+   * Prisma client when called outside a transaction.
+   */
+  async deactivateActiveAssignments(
+    complaintId: string,
+    tx?: { complaintAssignment: { updateMany: any } } | any,
+  ) {
+    const db = (tx?.complaintAssignment ?? this.prisma.complaintAssignment) as {
+      updateMany: (args: any) => Promise<any>;
+    };
+    await db.updateMany({
+      where: { complaintId, isActive: true },
+      data: { isActive: false },
+    });
+  }
+
+  /**
+   * True when the user has the active assignment AND the complaint still
+   * belongs to their department (post-transfer complaints in another dept do not count).
+   */
   async isAssignedTo(complaintId: string, userId: string): Promise<boolean> {
     const assignment = await this.prisma.complaintAssignment.findFirst({
       where: {
@@ -212,8 +355,62 @@ export class AssignmentsService {
         assignedToId: userId,
         isActive: true,
       },
+      select: {
+        complaint: { select: { departmentId: true } },
+      },
     });
-    return !!assignment;
+    if (!assignment) return false;
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { departmentId: true },
+    });
+    if (!user?.departmentId || !assignment.complaint.departmentId) {
+      return true;
+    }
+    return assignment.complaint.departmentId === user.departmentId;
+  }
+
+  /** Prisma filter: active assignment to user, complaint in user's department when set. */
+  buildActiveAssignmentVisibilityFilter(
+    userId: string,
+    departmentId: string | null | undefined,
+  ) {
+    const filters: object[] = [
+      { assignments: { some: { assignedToId: userId, isActive: true } } },
+    ];
+    if (departmentId) {
+      filters.push({ departmentId });
+    }
+    return filters.length === 1 ? filters[0] : { AND: filters };
+  }
+
+  /**
+   * Repair data: keep only the newest active assignment per complaint.
+   * Safe to run repeatedly; does not delete history.
+   */
+  async repairDuplicateActiveAssignments(): Promise<{ complaintsFixed: number }> {
+    const active = await this.prisma.complaintAssignment.findMany({
+      where: { isActive: true },
+      select: { id: true, complaintId: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    const deactivateIds: string[] = [];
+    const seen = new Set<string>();
+    for (const row of active) {
+      if (seen.has(row.complaintId)) {
+        deactivateIds.push(row.id);
+      } else {
+        seen.add(row.complaintId);
+      }
+    }
+    if (deactivateIds.length) {
+      await this.prisma.complaintAssignment.updateMany({
+        where: { id: { in: deactivateIds } },
+        data: { isActive: false },
+      });
+    }
+    return { complaintsFixed: seen.size };
   }
 
   /**
@@ -245,20 +442,15 @@ export class AssignmentsService {
     if (!complaint) throw new NotFoundException('Complaint not found');
 
     const candidates = await this.prisma.user.findMany({
-      where: {
+      where: staffAssignableWhere({
         municipalityId,
-        isActive: true,
         id: {
           notIn: [complaint.createdById, requesterId].filter(Boolean) as string[],
         },
-        // Same-department only when the complaint is bound to one. Cross-dept
-        // moves still go through the transfer flow.
         ...(complaint.departmentId
           ? { departmentId: complaint.departmentId }
           : {}),
-        // Exclude self-registered citizens — assignees must be staff.
-        createdVia: { not: 'SELF_REGISTRATION' as any },
-      },
+      }),
       select: {
         id: true,
         firstName: true,

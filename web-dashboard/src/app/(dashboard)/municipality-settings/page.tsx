@@ -8,6 +8,14 @@ import { useTranslate, useLocale } from '@/lib/i18n';
 import { useAuth } from '@/lib/auth';
 import { Loader2, Building2, Palette, Globe, Save, Image as ImageIcon, Phone, Mail, MapPin, Clock } from 'lucide-react';
 import { ImageUploadCropper } from '@/components/ui/image-upload-cropper';
+import { MunicipalityBrandHeader } from '@/components/municipality/municipality-brand-header';
+import {
+  DEFAULT_BANNER_OVERLAY_COLOR,
+  DEFAULT_BANNER_OVERLAY_OPACITY,
+  DEFAULT_PRIMARY_COLOR,
+  normalizeOverlayOpacity,
+  sanitizeHexColor,
+} from '@/lib/municipality-branding';
 
 export default function MunicipalitySettingsPage() {
   const t = useTranslate();
@@ -30,8 +38,8 @@ export default function MunicipalitySettingsPage() {
     descriptionFr: '',
     logoUrl: '',
     bannerImageUrl: '',
-    bannerOverlayColor: '#0f2555',
-    bannerOverlayOpacity: 0.6,
+    bannerOverlayColor: DEFAULT_BANNER_OVERLAY_COLOR,
+    bannerOverlayOpacity: DEFAULT_BANNER_OVERLAY_OPACITY,
     primaryColor: '',
     email: '',
     phone: '',
@@ -49,29 +57,31 @@ export default function MunicipalitySettingsPage() {
     if (municipality) {
       setForm({
         name: municipality.name || '',
-        nameAr: (municipality as any).nameAr || '',
-        nameFr: (municipality as any).nameFr || '',
-        description: (municipality as any).description || '',
-        descriptionAr: (municipality as any).descriptionAr || '',
-        descriptionFr: (municipality as any).descriptionFr || '',
+        nameAr: municipality.nameAr || '',
+        nameFr: municipality.nameFr || '',
+        description: municipality.description || '',
+        descriptionAr: municipality.descriptionAr || '',
+        descriptionFr: municipality.descriptionFr || '',
         logoUrl: municipality.logoUrl || '',
-        bannerImageUrl: (municipality as any).bannerImageUrl || '',
-        bannerOverlayColor: (municipality as any).bannerOverlayColor || '#0f2555',
-        bannerOverlayOpacity:
-          typeof (municipality as any).bannerOverlayOpacity === 'number'
-            ? (municipality as any).bannerOverlayOpacity
-            : 0.6,
-        primaryColor: (municipality as any).primaryColor || '',
-        email: (municipality as any).email || '',
-        phone: (municipality as any).phone || '',
-        whatsApp: (municipality as any).whatsApp || '',
-        address: (municipality as any).address || '',
-        addressAr: (municipality as any).addressAr || '',
-        addressFr: (municipality as any).addressFr || '',
-        openingHours: (municipality as any).openingHours || '',
-        openingHoursAr: (municipality as any).openingHoursAr || '',
-        openingHoursFr: (municipality as any).openingHoursFr || '',
-        website: (municipality as any).website || '',
+        bannerImageUrl: municipality.bannerImageUrl || '',
+        bannerOverlayColor: sanitizeHexColor(
+          municipality.bannerOverlayColor,
+          DEFAULT_BANNER_OVERLAY_COLOR,
+        ),
+        bannerOverlayOpacity: normalizeOverlayOpacity(
+          municipality.bannerOverlayOpacity,
+        ),
+        primaryColor: municipality.primaryColor || '',
+        email: municipality.email || '',
+        phone: municipality.phone || '',
+        whatsApp: municipality.whatsApp || '',
+        address: municipality.address || '',
+        addressAr: municipality.addressAr || '',
+        addressFr: municipality.addressFr || '',
+        openingHours: municipality.openingHours || '',
+        openingHoursAr: municipality.openingHoursAr || '',
+        openingHoursFr: municipality.openingHoursFr || '',
+        website: municipality.website || '',
       });
     }
   }, [municipality]);
@@ -87,10 +97,15 @@ export default function MunicipalitySettingsPage() {
         descriptionFr: form.descriptionFr || undefined,
         logoUrl: form.logoUrl || undefined,
         bannerImageUrl: form.bannerImageUrl || undefined,
-        bannerOverlayColor: form.bannerOverlayColor || undefined,
-        bannerOverlayOpacity:
-          form.bannerImageUrl ? form.bannerOverlayOpacity : undefined,
-        primaryColor: form.primaryColor || undefined,
+        bannerOverlayColor: form.bannerImageUrl
+          ? sanitizeHexColor(form.bannerOverlayColor, DEFAULT_BANNER_OVERLAY_COLOR)
+          : undefined,
+        bannerOverlayOpacity: form.bannerImageUrl
+          ? normalizeOverlayOpacity(form.bannerOverlayOpacity)
+          : undefined,
+        primaryColor: form.primaryColor
+          ? sanitizeHexColor(form.primaryColor, DEFAULT_PRIMARY_COLOR)
+          : undefined,
         email: form.email || undefined,
         phone: form.phone || undefined,
         whatsApp: form.whatsApp || undefined,
@@ -105,7 +120,7 @@ export default function MunicipalitySettingsPage() {
     onSuccess: () => {
       toast.success(t('municipality.settings.toast.saved'));
       queryClient.invalidateQueries({ queryKey: ['municipality', 'current'] });
-      queryClient.invalidateQueries({ queryKey: ['org-chart', 'municipality'] });
+      queryClient.invalidateQueries({ queryKey: ['complaints', 'department-workload'] });
     },
     onError: () => toast.error(t('municipality.settings.toast.failed')),
   });
@@ -317,7 +332,7 @@ export default function MunicipalitySettingsPage() {
 
               {/* Banner image upload + crop */}
               <ImageUploadCropper
-                label={t('municipality.settings.section.branding') + ' — Banner'}
+                label={t('municipality.settings.banner')}
                 hint={t('municipality.settings.banner.hint')}
                 value={form.bannerImageUrl}
                 onCropped={uploadBanner}
@@ -332,7 +347,7 @@ export default function MunicipalitySettingsPage() {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">
-                      Overlay color
+                      {t('municipality.settings.overlayColor')}
                     </label>
                     <div className="flex items-center gap-2">
                       <input
@@ -352,7 +367,9 @@ export default function MunicipalitySettingsPage() {
                   </div>
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">
-                      Overlay opacity ({Math.round(form.bannerOverlayOpacity * 100)}%)
+                      {t('municipality.settings.overlayOpacity', {
+                        percent: Math.round(form.bannerOverlayOpacity * 100),
+                      })}
                     </label>
                     <input
                       type="range"
@@ -377,7 +394,7 @@ export default function MunicipalitySettingsPage() {
                 <div className="flex items-center gap-2">
                   <input
                     type="color"
-                    value={form.primaryColor || '#0f2555'}
+                    value={sanitizeHexColor(form.primaryColor, DEFAULT_PRIMARY_COLOR)}
                     onChange={(e) => setForm({ ...form, primaryColor: e.target.value })}
                     className="h-9 w-14 cursor-pointer rounded border border-gray-300 p-0.5"
                   />
@@ -402,61 +419,21 @@ export default function MunicipalitySettingsPage() {
             {t('municipality.settings.preview')}
           </div>
 
-          {/* Sidebar preview */}
           <div className="mt-3">
             <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
-              Sidebar
+              {t('municipality.settings.previewSidebar')}
             </p>
-            <div
-              className="relative overflow-hidden rounded text-white"
-              style={{
-                backgroundColor: form.primaryColor || '#0f2555',
-              }}
-            >
-              {form.bannerImageUrl && (
-                <>
-                  <img
-                    src={form.bannerImageUrl}
-                    alt=""
-                    className="absolute inset-0 h-full w-full object-cover"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).style.display = 'none';
-                    }}
-                  />
-                  <div
-                    className="absolute inset-0"
-                    style={{
-                      backgroundColor: form.bannerOverlayColor,
-                      opacity: form.bannerOverlayOpacity,
-                    }}
-                  />
-                </>
-              )}
-              <div className="relative flex items-center gap-2 px-3 py-3">
-                {form.logoUrl ? (
-                  <img
-                    src={form.logoUrl}
-                    alt=""
-                    className="h-8 w-8 rounded object-contain bg-white/10"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).style.display = 'none';
-                    }}
-                  />
-                ) : (
-                  <div className="flex h-8 w-8 items-center justify-center rounded bg-white/20 text-sm font-bold">
-                    {(localizedName || municipality?.code || 'M').charAt(0)}
-                  </div>
-                )}
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-semibold leading-tight truncate">
-                    {localizedName || 'Municipality'}
-                  </div>
-                  <div className="text-[10px] uppercase tracking-widest text-white/70 truncate">
-                    {t('common.tagline')}
-                  </div>
-                </div>
-              </div>
-            </div>
+            <MunicipalityBrandHeader
+              className="rounded"
+              variant="sidebar"
+              name={localizedName || municipality?.name || 'Municipality'}
+              subtitle={t('common.tagline')}
+              logoUrl={form.logoUrl}
+              bannerImageUrl={form.bannerImageUrl}
+              bannerOverlayColor={form.bannerOverlayColor}
+              bannerOverlayOpacity={form.bannerOverlayOpacity}
+              primaryColor={form.primaryColor}
+            />
           </div>
 
           {/* Public Contact Information */}
@@ -524,63 +501,21 @@ export default function MunicipalitySettingsPage() {
             </div>
           </div>
 
-          {/* Login / dashboard banner preview */}
           <div className="mt-4">
             <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
-              Login / Dashboard header
+              {t('municipality.settings.previewHeader')}
             </p>
-            <div
-              className="relative h-28 overflow-hidden rounded text-white"
-              style={{
-                backgroundColor: form.primaryColor || '#0f2555',
-              }}
-            >
-              {form.bannerImageUrl && (
-                <>
-                  <img
-                    src={form.bannerImageUrl}
-                    alt=""
-                    className="absolute inset-0 h-full w-full object-cover"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).style.display = 'none';
-                    }}
-                  />
-                  <div
-                    className="absolute inset-0"
-                    style={{
-                      backgroundColor: form.bannerOverlayColor,
-                      opacity: form.bannerOverlayOpacity,
-                    }}
-                  />
-                </>
-              )}
-              <div className="relative flex h-full items-center gap-3 px-4">
-                {form.logoUrl ? (
-                  <img
-                    src={form.logoUrl}
-                    alt=""
-                    className="h-12 w-12 rounded object-contain bg-white/10 p-1"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).style.display = 'none';
-                    }}
-                  />
-                ) : (
-                  <div className="flex h-12 w-12 items-center justify-center rounded bg-white/20 text-lg font-bold">
-                    {(localizedName || municipality?.code || 'M').charAt(0)}
-                  </div>
-                )}
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-bold leading-tight truncate">
-                    {localizedName || 'Municipality'}
-                  </div>
-                  {localizedDescription && (
-                    <div className="mt-0.5 text-[11px] text-white/85 line-clamp-2">
-                      {localizedDescription}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
+            <MunicipalityBrandHeader
+              className="rounded"
+              variant="hero"
+              name={localizedName || municipality?.name || 'Municipality'}
+              subtitle={localizedDescription || undefined}
+              logoUrl={form.logoUrl}
+              bannerImageUrl={form.bannerImageUrl}
+              bannerOverlayColor={form.bannerOverlayColor}
+              bannerOverlayOpacity={form.bannerOverlayOpacity}
+              primaryColor={form.primaryColor}
+            />
           </div>
         </div>
       </div>

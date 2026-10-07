@@ -1,13 +1,18 @@
 import { ComplaintStatus, ComplaintPriority, RejectionReason } from '../types/complaint';
 
-/** Human-readable labels for complaint statuses */
+/**
+ * Human-readable labels for complaint statuses. DB enum stays COMPLETED, but
+ * the user-facing label is "Resolved" to match the operational meaning
+ * (HOD approved the worker's submission). CLOSED is reserved for the
+ * future manual-archive flow.
+ */
 export const STATUS_LABELS: Record<ComplaintStatus, string> = {
   [ComplaintStatus.SUBMITTED]: 'Submitted',
   [ComplaintStatus.UNDER_REVIEW]: 'Under Review',
   [ComplaintStatus.ASSIGNED]: 'Assigned',
   [ComplaintStatus.IN_PROGRESS]: 'In Progress',
   [ComplaintStatus.PENDING_APPROVAL]: 'Pending Approval',
-  [ComplaintStatus.COMPLETED]: 'Completed',
+  [ComplaintStatus.COMPLETED]: 'Resolved',
   [ComplaintStatus.REJECTED]: 'Rejected',
   [ComplaintStatus.CLOSED]: 'Closed',
 };

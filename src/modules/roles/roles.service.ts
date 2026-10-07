@@ -3,9 +3,16 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { HierarchyResolver } from '../../core/rbac/hierarchy.resolver';
+import {
+  assertCitizenRolePermissionKeys,
+  assertMunicipalityAdminCanModifyRole,
+  assertNotRenamingProtectedRole,
+  isDefaultMunicipalRoleName,
+} from '../../core/rbac/role-governance';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
 
@@ -36,7 +43,6 @@ export class RolesService {
           },
         },
       },
-      // Sort by priority desc (strongest first), then name
       orderBy: [{ priority: 'desc' as any }, { name: 'asc' }],
     });
 
@@ -103,7 +109,12 @@ export class RolesService {
   }
 
   async create(municipalityId: string, dto: CreateRoleDto, actorId?: string) {
-    // Check for duplicate name
+    if (isDefaultMunicipalRoleName(dto.name)) {
+      throw new ConflictException(
+        `"${dto.name}" is a reserved system role name. Choose a different name for custom roles.`,
+      );
+    }
+
     const existing = await this.prisma.role.findFirst({
       where: {
         municipalityId,
@@ -116,7 +127,6 @@ export class RolesService {
       throw new ConflictException('Role with this name already exists');
     }
 
-    // Hierarchy: actor can only create a role with priority strictly below their own.
     const priority = dto.priority ?? 0;
     if (actorId) {
       await this.hierarchy.assertCanSetPriority(actorId, priority);
@@ -132,11 +142,20 @@ export class RolesService {
         descriptionAr: dto.descriptionAr,
         descriptionFr: dto.descriptionFr,
         priority,
+        isSystem: false,
+        isSystemManaged: false,
       } as any,
     });
 
-    // Assign permissions if provided
     if (dto.permissionIds?.length) {
+      const perms = await this.prisma.permission.findMany({
+        where: { id: { in: dto.permissionIds } },
+        select: { key: true },
+      });
+      await assertCitizenRolePermissionKeys(
+        dto.name,
+        perms.map((p) => p.key),
+      );
       await this.prisma.rolePermission.createMany({
         data: dto.permissionIds.map((permissionId) => ({
           roleId: role.id,
@@ -162,11 +181,9 @@ export class RolesService {
       throw new NotFoundException('Role not found');
     }
 
-    if (role.isSystem && dto.name && dto.name !== role.name) {
-      throw new BadRequestException('Cannot rename system roles');
-    }
+    assertMunicipalityAdminCanModifyRole(role, 'update');
+    assertNotRenamingProtectedRole(role, dto.name);
 
-    // Hierarchy gates: must outrank the role being edited; new priority must be < my own rank.
     if (actorId) {
       await this.hierarchy.assertCanManageRole(actorId, id);
       if (dto.priority !== undefined && dto.priority !== (role as any).priority) {
@@ -174,7 +191,6 @@ export class RolesService {
       }
     }
 
-    // Check for duplicate name
     if (dto.name && dto.name !== role.name) {
       const existing = await this.prisma.role.findFirst({
         where: {
@@ -212,16 +228,27 @@ export class RolesService {
       throw new NotFoundException('Role not found');
     }
 
+    assertMunicipalityAdminCanModifyRole(role, 'set_permissions');
+
     if (actorId) {
       await this.hierarchy.assertCanManageRole(actorId, id);
     }
 
-    // Delete existing permissions
+    const perms = permissionIds.length
+      ? await this.prisma.permission.findMany({
+          where: { id: { in: permissionIds } },
+          select: { key: true },
+        })
+      : [];
+    await assertCitizenRolePermissionKeys(
+      role.name,
+      perms.map((p) => p.key),
+    );
+
     await this.prisma.rolePermission.deleteMany({
       where: { roleId: id },
     });
 
-    // Create new permissions
     if (permissionIds.length) {
       await this.prisma.rolePermission.createMany({
         data: permissionIds.map((permissionId) => ({
@@ -243,15 +270,12 @@ export class RolesService {
       throw new NotFoundException('Role not found');
     }
 
-    if (role.isSystem) {
-      throw new BadRequestException('Cannot delete system roles');
-    }
+    assertMunicipalityAdminCanModifyRole(role, 'delete');
 
     if (actorId) {
       await this.hierarchy.assertCanManageRole(actorId, id);
     }
 
-    // Soft delete
     await this.prisma.role.update({
       where: { id },
       data: { deletedAt: new Date() },

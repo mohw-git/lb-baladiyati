@@ -1,15 +1,20 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { FcmService } from '../../core/fcm/fcm.service';
+import { RealtimeService } from '../../core/realtime/realtime.service';
 import { paginate } from '../../core/common/dto/pagination.dto';
 import { NotificationQueryDto } from './dto/notification-query.dto';
 import { NotificationType, Platform } from '@prisma/client';
+import type { NotificationSendOptions } from './notification-send.options';
 
 @Injectable()
 export class NotificationsService {
+  private readonly logger = new Logger(NotificationsService.name);
+
   constructor(
     private prisma: PrismaService,
     private fcmService: FcmService,
+    private realtime: RealtimeService,
   ) {}
 
   async findAll(userId: string, query: NotificationQueryDto) {
@@ -54,7 +59,7 @@ export class NotificationsService {
         isRead: false,
       },
     });
-    return { count };
+    return { unreadCount: count };
   }
 
   async markAsRead(notificationId: string, userId: string) {
@@ -102,7 +107,9 @@ export class NotificationsService {
     title: string,
     body: string,
     data?: Record<string, any>,
+    options?: NotificationSendOptions,
   ) {
+    const sendPush = options?.push !== false;
     // Create notification record. We persist the title/body in the
     // canonical (English) language so the in-app feed reads naturally
     // even if the user later switches locales. The push payload uses
@@ -122,14 +129,34 @@ export class NotificationsService {
     // Create user notification rows. `skipDuplicates` guards against
     // accidental double-fan-out (the unique index on (userId, notifId)
     // would otherwise blow up the whole transaction).
-    if (userIds.length > 0) {
+    const recipientIds = Array.from(new Set(userIds.filter(Boolean)));
+
+    if (recipientIds.length > 0) {
       await this.prisma.userNotification.createMany({
-        data: userIds.map((userId) => ({
+        data: recipientIds.map((userId) => ({
           userId,
           notificationId: notification.id,
         })),
         skipDuplicates: true,
       });
+
+      // Realtime: per-recipient so clients invalidate inbox + unread badge.
+      try {
+        const rows = await this.prisma.userNotification.findMany({
+          where: {
+            notificationId: notification.id,
+            userId: { in: recipientIds },
+          },
+          select: { id: true, userId: true },
+        });
+        for (const row of rows) {
+          this.realtime.notificationNew({ id: row.id, userId: row.userId });
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Realtime notification:new emit failed: ${err instanceof Error ? err.message : err}`,
+        );
+      }
     }
 
     // Send FCM push. Failures are swallowed by the FcmService so they
@@ -141,7 +168,9 @@ export class NotificationsService {
         stringData[key] = String(value);
       });
     }
-    await this.fcmService.sendToUsers(userIds, title, body, stringData);
+    if (sendPush) {
+      await this.fcmService.sendToUsers(recipientIds, title, body, stringData);
+    }
 
     return notification;
   }

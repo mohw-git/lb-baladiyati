@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { getFileUrl } from '@/lib/api/client';
 import { getInitials } from '@/lib/utils';
 import { cn } from '@/lib/utils';
@@ -41,6 +41,11 @@ export function Avatar({
   square,
 }: AvatarProps) {
   const [errored, setErrored] = useState(false);
+
+  useEffect(() => {
+    setErrored(false);
+  }, [src, cacheKey]);
+
   const initials = getInitials(firstName ?? '', lastName ?? '');
   const resolvedSrc = src && !errored ? getFileUrl(src) : null;
   const finalSrc =

@@ -51,14 +51,14 @@ export class MailService implements OnModuleInit {
   private readonly logger = new Logger(MailService.name);
   private resend: Resend | null = null;
   private smtp: nodemailer.Transporter | null = null;
-  private fromAddress = 'Baladi <noreply@lb-baladiyati.com>';
+  private fromAddress = 'Baladiyati <noreply@lb-baladiyati.com>';
   private replyToAddress: string | undefined;
 
   constructor(private config: ConfigService) {}
 
   onModuleInit() {
     const resendKey = this.config.get<string>('RESEND_API_KEY');
-    const fromName = this.config.get<string>('MAIL_FROM_NAME') ?? 'Baladi';
+    const fromName = this.config.get<string>('MAIL_FROM_NAME') ?? 'Baladiyati';
     const fromEmail = this.config.get<string>('MAIL_FROM');
     if (fromEmail) {
       // If MAIL_FROM is already in "Name <email>" format we keep it; otherwise wrap.
@@ -221,17 +221,17 @@ export class MailService implements OnModuleInit {
     args: { resetUrl: string; expiresInMinutes: number; firstName?: string },
   ): { subject: string; text: string; html: string } {
     if (locale === 'AR') {
-      const subject = 'إعادة تعيين كلمة المرور - بلدي';
-      const text = `مرحبًا${args.firstName ? ` ${args.firstName}` : ''}،\n\nلقد تلقّينا طلبًا لإعادة تعيين كلمة المرور.\nرابط إعادة التعيين (صالح لمدة ${args.expiresInMinutes} دقيقة):\n\n${args.resetUrl}\n\nإذا لم تطلب ذلك، يمكنك تجاهل هذه الرسالة.\n\nفريق بلدي`;
+      const subject = 'إعادة تعيين كلمة المرور - بلديتي';
+      const text = `مرحبًا${args.firstName ? ` ${args.firstName}` : ''}،\n\nلقد تلقّينا طلبًا لإعادة تعيين كلمة المرور.\nرابط إعادة التعيين (صالح لمدة ${args.expiresInMinutes} دقيقة):\n\n${args.resetUrl}\n\nإذا لم تطلب ذلك، يمكنك تجاهل هذه الرسالة.\n\nفريق بلديتي`;
       return { subject, text, html: htmlWrap(subject, text, true) };
     }
     if (locale === 'FR') {
-      const subject = 'Réinitialisation du mot de passe — Baladi';
-      const text = `Bonjour${args.firstName ? ` ${args.firstName}` : ''},\n\nVous avez demandé la réinitialisation de votre mot de passe.\nLien (valable ${args.expiresInMinutes} minutes) :\n\n${args.resetUrl}\n\nSi vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer ce message.\n\nL'équipe Baladi`;
+      const subject = 'Réinitialisation du mot de passe — Baladiyati';
+      const text = `Bonjour${args.firstName ? ` ${args.firstName}` : ''},\n\nVous avez demandé la réinitialisation de votre mot de passe.\nLien (valable ${args.expiresInMinutes} minutes) :\n\n${args.resetUrl}\n\nSi vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer ce message.\n\nL'équipe Baladiyati`;
       return { subject, text, html: htmlWrap(subject, text) };
     }
-    const subject = 'Reset your Baladi password';
-    const text = `Hello${args.firstName ? ` ${args.firstName}` : ''},\n\nWe received a request to reset your Baladi password.\nThis link is valid for ${args.expiresInMinutes} minutes:\n\n${args.resetUrl}\n\nIf you did not request this, you can safely ignore this email.\n\n— Baladi Team`;
+    const subject = 'Reset your Baladiyati password';
+    const text = `Hello${args.firstName ? ` ${args.firstName}` : ''},\n\nWe received a request to reset your Baladiyati password.\nThis link is valid for ${args.expiresInMinutes} minutes:\n\n${args.resetUrl}\n\nIf you did not request this, you can safely ignore this email.\n\n— Baladiyati Team`;
     return { subject, text, html: htmlWrap(subject, text) };
   }
 
@@ -240,17 +240,17 @@ export class MailService implements OnModuleInit {
     args: { verifyUrl: string; expiresInMinutes: number; firstName?: string },
   ): { subject: string; text: string; html: string } {
     if (locale === 'AR') {
-      const subject = 'تأكيد البريد الإلكتروني - بلدي';
-      const text = `مرحبًا${args.firstName ? ` ${args.firstName}` : ''}،\n\nيرجى تأكيد بريدك الإلكتروني للمتابعة.\nالرابط صالح لمدة ${args.expiresInMinutes} دقيقة:\n\n${args.verifyUrl}\n\nإذا لم تنشئ هذا الحساب، يمكنك تجاهل هذه الرسالة.\n\nفريق بلدي`;
+      const subject = 'تأكيد البريد الإلكتروني - بلديتي';
+      const text = `مرحبًا${args.firstName ? ` ${args.firstName}` : ''}،\n\nيرجى تأكيد بريدك الإلكتروني للمتابعة.\nالرابط صالح لمدة ${args.expiresInMinutes} دقيقة:\n\n${args.verifyUrl}\n\nإذا لم تنشئ هذا الحساب، يمكنك تجاهل هذه الرسالة.\n\nفريق بلديتي`;
       return { subject, text, html: htmlWrap(subject, text, true) };
     }
     if (locale === 'FR') {
-      const subject = 'Confirmez votre adresse e-mail — Baladi';
-      const text = `Bonjour${args.firstName ? ` ${args.firstName}` : ''},\n\nVeuillez confirmer votre adresse e-mail pour continuer.\nCe lien est valable ${args.expiresInMinutes} minutes :\n\n${args.verifyUrl}\n\nSi vous n'avez pas créé de compte, ignorez ce message.\n\nL'équipe Baladi`;
+      const subject = 'Confirmez votre adresse e-mail — Baladiyati';
+      const text = `Bonjour${args.firstName ? ` ${args.firstName}` : ''},\n\nVeuillez confirmer votre adresse e-mail pour continuer.\nCe lien est valable ${args.expiresInMinutes} minutes :\n\n${args.verifyUrl}\n\nSi vous n'avez pas créé de compte, ignorez ce message.\n\nL'équipe Baladiyati`;
       return { subject, text, html: htmlWrap(subject, text) };
     }
-    const subject = 'Confirm your email — Baladi';
-    const text = `Hello${args.firstName ? ` ${args.firstName}` : ''},\n\nPlease confirm your email address to continue.\nThis link is valid for ${args.expiresInMinutes} minutes:\n\n${args.verifyUrl}\n\nIf you did not create this account, you can safely ignore this email.\n\n— Baladi Team`;
+    const subject = 'Confirm your email — Baladiyati';
+    const text = `Hello${args.firstName ? ` ${args.firstName}` : ''},\n\nPlease confirm your email address to continue.\nThis link is valid for ${args.expiresInMinutes} minutes:\n\n${args.verifyUrl}\n\nIf you did not create this account, you can safely ignore this email.\n\n— Baladiyati Team`;
     return { subject, text, html: htmlWrap(subject, text) };
   }
 
@@ -261,36 +261,36 @@ export class MailService implements OnModuleInit {
     const isLogin = args.purpose === 'LOGIN';
     if (locale === 'AR') {
       const subject = isLogin
-        ? 'رمز تسجيل الدخول - بلدي'
+        ? 'رمز تسجيل الدخول - بلديتي'
         : 'رمز التحقق الخاص بك';
-      const text = `${isLogin ? 'رمز تسجيل الدخول' : 'رمز التحقق'}: ${args.code}\n\nصالح لمدة ${args.expiresInMinutes} دقيقة. لا تشاركه مع أي شخص.\nإذا لم تطلب هذا الرمز، يرجى تأمين حسابك فورًا.\n\nفريق بلدي`;
+      const text = `${isLogin ? 'رمز تسجيل الدخول' : 'رمز التحقق'}: ${args.code}\n\nصالح لمدة ${args.expiresInMinutes} دقيقة. لا تشاركه مع أي شخص.\nإذا لم تطلب هذا الرمز، يرجى تأمين حسابك فورًا.\n\nفريق بلديتي`;
       return { subject, text, html: htmlWrap(subject, text, true) };
     }
     if (locale === 'FR') {
       const subject = isLogin
-        ? 'Code de connexion — Baladi'
+        ? 'Code de connexion — Baladiyati'
         : 'Votre code de vérification';
-      const text = `${isLogin ? 'Code de connexion' : 'Code de vérification'} : ${args.code}\n\nValable ${args.expiresInMinutes} minutes. Ne le partagez avec personne.\nSi vous n'avez pas demandé ce code, sécurisez immédiatement votre compte.\n\nL'équipe Baladi`;
+      const text = `${isLogin ? 'Code de connexion' : 'Code de vérification'} : ${args.code}\n\nValable ${args.expiresInMinutes} minutes. Ne le partagez avec personne.\nSi vous n'avez pas demandé ce code, sécurisez immédiatement votre compte.\n\nL'équipe Baladiyati`;
       return { subject, text, html: htmlWrap(subject, text) };
     }
-    const subject = isLogin ? 'Your Baladi sign-in code' : 'Your verification code';
-    const text = `${isLogin ? 'Sign-in code' : 'Verification code'}: ${args.code}\n\nThis code is valid for ${args.expiresInMinutes} minutes. Do not share it with anyone.\nIf you didn't request this, please secure your account.\n\n— Baladi Team`;
+    const subject = isLogin ? 'Your Baladiyati sign-in code' : 'Your verification code';
+    const text = `${isLogin ? 'Sign-in code' : 'Verification code'}: ${args.code}\n\nThis code is valid for ${args.expiresInMinutes} minutes. Do not share it with anyone.\nIf you didn't request this, please secure your account.\n\n— Baladiyati Team`;
     return { subject, text, html: htmlWrap(subject, text) };
   }
 
   kycApproved(locale: Locale, firstName?: string) {
     if (locale === 'AR') {
       const subject = 'تم التحقق من هويتك';
-      const text = `مرحبًا${firstName ? ` ${firstName}` : ''}،\nتم التحقق من هويتك بنجاح. يمكنك الآن تقديم الشكاوى ومتابعتها.\n\nفريق بلدي`;
+      const text = `مرحبًا${firstName ? ` ${firstName}` : ''}،\nتم التحقق من هويتك بنجاح. يمكنك الآن تقديم الشكاوى ومتابعتها.\n\nفريق بلديتي`;
       return { subject, text, html: htmlWrap(subject, text, true) };
     }
     if (locale === 'FR') {
       const subject = 'Votre identité a été vérifiée';
-      const text = `Bonjour${firstName ? ` ${firstName}` : ''},\nVotre identité a été vérifiée avec succès. Vous pouvez désormais déposer et suivre des réclamations.\n\nL'équipe Baladi`;
+      const text = `Bonjour${firstName ? ` ${firstName}` : ''},\nVotre identité a été vérifiée avec succès. Vous pouvez désormais déposer et suivre des réclamations.\n\nL'équipe Baladiyati`;
       return { subject, text, html: htmlWrap(subject, text) };
     }
     const subject = 'Your identity has been verified';
-    const text = `Hello${firstName ? ` ${firstName}` : ''},\nYour identity has been verified. You can now submit and track municipal complaints.\n\n— Baladi Team`;
+    const text = `Hello${firstName ? ` ${firstName}` : ''},\nYour identity has been verified. You can now submit and track municipal complaints.\n\n— Baladiyati Team`;
     return { subject, text, html: htmlWrap(subject, text) };
   }
 
@@ -300,16 +300,16 @@ export class MailService implements OnModuleInit {
   ) {
     if (locale === 'AR') {
       const subject = 'تعذّر التحقق من هويتك';
-      const text = `مرحبًا${args.firstName ? ` ${args.firstName}` : ''}،\nتعذّر التحقق من هويتك.${args.reason ? `\nالسبب: ${args.reason}` : ''}\nيمكنك إعادة التقديم بعد التحقق من المستندات.\n\nفريق بلدي`;
+      const text = `مرحبًا${args.firstName ? ` ${args.firstName}` : ''}،\nتعذّر التحقق من هويتك.${args.reason ? `\nالسبب: ${args.reason}` : ''}\nيمكنك إعادة التقديم بعد التحقق من المستندات.\n\nفريق بلديتي`;
       return { subject, text, html: htmlWrap(subject, text, true) };
     }
     if (locale === 'FR') {
       const subject = 'Vérification d\'identité refusée';
-      const text = `Bonjour${args.firstName ? ` ${args.firstName}` : ''},\nVotre vérification d'identité n'a pas pu être validée.${args.reason ? `\nMotif : ${args.reason}` : ''}\nVous pouvez soumettre à nouveau après vérification de vos documents.\n\nL'équipe Baladi`;
+      const text = `Bonjour${args.firstName ? ` ${args.firstName}` : ''},\nVotre vérification d'identité n'a pas pu être validée.${args.reason ? `\nMotif : ${args.reason}` : ''}\nVous pouvez soumettre à nouveau après vérification de vos documents.\n\nL'équipe Baladiyati`;
       return { subject, text, html: htmlWrap(subject, text) };
     }
     const subject = 'Identity verification rejected';
-    const text = `Hello${args.firstName ? ` ${args.firstName}` : ''},\nYour identity verification could not be validated.${args.reason ? `\nReason: ${args.reason}` : ''}\nYou can resubmit after reviewing your documents.\n\n— Baladi Team`;
+    const text = `Hello${args.firstName ? ` ${args.firstName}` : ''},\nYour identity verification could not be validated.${args.reason ? `\nReason: ${args.reason}` : ''}\nYou can resubmit after reviewing your documents.\n\n— Baladiyati Team`;
     return { subject, text, html: htmlWrap(subject, text) };
   }
 
@@ -329,16 +329,16 @@ export class MailService implements OnModuleInit {
   ): { subject: string; text: string; html: string } {
     if (locale === 'AR') {
       const subject = `تحديث حالة الشكوى ${args.referenceCode}`;
-      const text = `مرحبًا${args.firstName ? ` ${args.firstName}` : ''}،\n\nحالة الشكوى رقم ${args.referenceCode} أصبحت الآن: ${args.localizedStatus}.\n\nيمكنك مراجعة التفاصيل من خلال الرابط التالي:\n${args.complaintUrl}\n\nفريق بلدي`;
+      const text = `مرحبًا${args.firstName ? ` ${args.firstName}` : ''}،\n\nحالة الشكوى رقم ${args.referenceCode} أصبحت الآن: ${args.localizedStatus}.\n\nيمكنك مراجعة التفاصيل من خلال الرابط التالي:\n${args.complaintUrl}\n\nفريق بلديتي`;
       return { subject, text, html: htmlWrap(subject, text, true) };
     }
     if (locale === 'FR') {
       const subject = `Mise à jour de la réclamation ${args.referenceCode}`;
-      const text = `Bonjour${args.firstName ? ` ${args.firstName}` : ''},\n\nLe statut de la réclamation ${args.referenceCode} est désormais : ${args.localizedStatus}.\n\nConsulter les détails :\n${args.complaintUrl}\n\nL'équipe Baladi`;
+      const text = `Bonjour${args.firstName ? ` ${args.firstName}` : ''},\n\nLe statut de la réclamation ${args.referenceCode} est désormais : ${args.localizedStatus}.\n\nConsulter les détails :\n${args.complaintUrl}\n\nL'équipe Baladiyati`;
       return { subject, text, html: htmlWrap(subject, text) };
     }
     const subject = `Complaint ${args.referenceCode} update`;
-    const text = `Hello${args.firstName ? ` ${args.firstName}` : ''},\n\nYour complaint ${args.referenceCode} is now: ${args.localizedStatus}.\n\nView details:\n${args.complaintUrl}\n\n— Baladi Team`;
+    const text = `Hello${args.firstName ? ` ${args.firstName}` : ''},\n\nYour complaint ${args.referenceCode} is now: ${args.localizedStatus}.\n\nView details:\n${args.complaintUrl}\n\n— Baladiyati Team`;
     return { subject, text, html: htmlWrap(subject, text) };
   }
 
@@ -352,16 +352,16 @@ export class MailService implements OnModuleInit {
   ): { subject: string; text: string; html: string } {
     if (locale === 'AR') {
       const subject = `إعلان جديد من ${args.municipalityName}`;
-      const text = `${args.title}\n\nاطّلع على الإعلان كاملًا:\n${args.announcementUrl}\n\nفريق بلدي`;
+      const text = `${args.title}\n\nاطّلع على الإعلان كاملًا:\n${args.announcementUrl}\n\nفريق بلديتي`;
       return { subject, text, html: htmlWrap(subject, text, true) };
     }
     if (locale === 'FR') {
       const subject = `Nouvelle annonce de ${args.municipalityName}`;
-      const text = `${args.title}\n\nLire l'annonce :\n${args.announcementUrl}\n\nL'équipe Baladi`;
+      const text = `${args.title}\n\nLire l'annonce :\n${args.announcementUrl}\n\nL'équipe Baladiyati`;
       return { subject, text, html: htmlWrap(subject, text) };
     }
     const subject = `New announcement from ${args.municipalityName}`;
-    const text = `${args.title}\n\nRead the full announcement:\n${args.announcementUrl}\n\n— Baladi Team`;
+    const text = `${args.title}\n\nRead the full announcement:\n${args.announcementUrl}\n\n— Baladiyati Team`;
     return { subject, text, html: htmlWrap(subject, text) };
   }
 }
@@ -376,7 +376,7 @@ function htmlWrap(subject: string, body: string, rtl = false): string {
       <h1 style="margin:0 0 12px; font-size:18px; color:#0c1a2e;">${subject}</h1>
       <pre style="white-space:pre-wrap; font-family:inherit; font-size:14px; line-height:1.6; color:#374151;">${safeBody}</pre>
       <hr style="border:none; border-top:1px solid #e3e6ec; margin:18px 0;" />
-      <p style="margin:0; font-size:11px; color:#6b7280;">This is an automated message from the Baladi platform. Please do not reply.</p>
+      <p style="margin:0; font-size:11px; color:#6b7280;">This is an automated message from the Baladiyati platform. Please do not reply.</p>
     </div>
   </body>
 </html>`;

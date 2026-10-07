@@ -28,6 +28,8 @@ const KNOWN_PLACEHOLDERS = [
   'change-me-to-a-long-random-string-min-32-chars',
   'your-super-secret-jwt-key-min-32-chars-here',
   'CHANGE_ME',
+  'CHANGE_ME_STRONG_SECRET',
+  'CHANGE_ME_DB_PASSWORD',
 ];
 
 function isPlaceholder(value: string | undefined): boolean {

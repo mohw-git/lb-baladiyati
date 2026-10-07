@@ -4,6 +4,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { AuthUserWithRoles } from '@shared/types/auth';
 import { configureAuth } from '@/lib/api/client';
+import { mergeAuthProfile } from './user';
 
 interface AuthState {
   user: AuthUserWithRoles | null;
@@ -28,13 +29,13 @@ export const useAuthStore = create<AuthState>()(
       isHydrated: false,
 
       setAuth: (user, accessToken, refreshToken) =>
-        set({ user, accessToken, refreshToken }),
+        set({ user: mergeAuthProfile(null, user), accessToken, refreshToken }),
 
       setTokens: (accessToken, refreshToken) =>
         set({ accessToken, refreshToken }),
 
       setUser: (user) =>
-        set({ user }),
+        set((state) => ({ user: mergeAuthProfile(state.user, user) })),
 
       logout: () =>
         set({ user: null, accessToken: null, refreshToken: null }),

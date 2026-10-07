@@ -1,23 +1,27 @@
-import { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, RefreshControl, Platform } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useCallback, useEffect } from 'react';
+import { View, StyleSheet, FlatList, ActivityIndicator } from 'react-native';
+import { useRouter, useNavigation } from 'expo-router';
 import { useInfiniteQuery } from '@tanstack/react-query';
-import { Ionicons } from '@expo/vector-icons';
 import { complaintsApi } from '../../lib/api/endpoints';
-import { Colors, Spacing, FontSize, BorderRadius } from '../../constants/theme';
-
-const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
-  SUBMITTED: { label: 'Submitted', color: Colors.brand[700], bg: Colors.brand[100] },
-  ASSIGNED: { label: 'Assigned', color: Colors.purple[700], bg: Colors.purple[100] },
-  IN_PROGRESS: { label: 'In Progress', color: Colors.orange[700], bg: Colors.orange[100] },
-  COMPLETED: { label: 'Completed', color: Colors.green[700], bg: Colors.green[100] },
-  VERIFIED: { label: 'Verified', color: '#047857', bg: '#d1fae5' },
-  REJECTED: { label: 'Rejected', color: Colors.red[700], bg: Colors.red[100] },
-  CLOSED: { label: 'Closed', color: Colors.gray[600], bg: Colors.gray[100] },
-};
+import { getErrorPresentation } from '../../lib/api/errors';
+import { useComplaintsListConfig } from '../../lib/hooks/useComplaintsListConfig';
+import { ComplaintListCard } from '../../components/complaints/ComplaintListCard';
+import { EmptyState, BalancedListEmpty } from '../../components/ui';
+import { Colors } from '../../constants/theme';
+import { useTranslate } from '../../lib/i18n';
+import { useStableRefresh } from '../../lib/ui/use-stable-refresh';
+import { useTabScreenInsets } from '../../hooks/useTabScreenInsets';
 
 export default function MyComplaintsScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
+  const t = useTranslate();
+  const config = useComplaintsListConfig();
+  const { contentPaddingBottom, horizontalPadding } = useTabScreenInsets();
+
+  useEffect(() => {
+    navigation.setOptions({ title: t(config.titleKey) });
+  }, [navigation, t, config.titleKey]);
 
   const {
     data,
@@ -25,13 +29,13 @@ export default function MyComplaintsScreen() {
     isError,
     error,
     refetch,
-    isFetching,
     isFetchingNextPage,
     fetchNextPage,
     hasNextPage,
   } = useInfiniteQuery({
-    queryKey: ['my-complaints'],
-    queryFn: ({ pageParam = 1 }) => complaintsApi.list({ page: pageParam, limit: 20 }),
+    queryKey: [...config.queryKey, 'list'],
+    queryFn: ({ pageParam = 1 }) =>
+      complaintsApi.list({ page: pageParam, limit: 20, ...config.listParams }),
     initialPageParam: 1,
     refetchInterval: 30_000,
     getNextPageParam: (lastPage: any) => {
@@ -40,117 +44,94 @@ export default function MyComplaintsScreen() {
     },
   });
 
-  // Flatten all pages into a single array
   const complaints = data?.pages?.flatMap((page: any) => page?.items ?? []) ?? [];
+  const isEmpty = !isLoading && !isError && complaints.length === 0;
 
-  const handleRefresh = useCallback(() => {
-    refetch();
-  }, [refetch]);
-
+  const handleRefresh = useCallback(() => refetch(), [refetch]);
+  const stableRefresh = useStableRefresh({ onRefresh: handleRefresh });
   const handleLoadMore = useCallback(() => {
-    if (hasNextPage && !isFetchingNextPage) {
-      fetchNextPage();
-    }
+    if (hasNextPage && !isFetchingNextPage) fetchNextPage();
   }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
-  const renderItem = ({ item }: { item: any }) => {
-    const cfg = STATUS_CONFIG[item.status] || STATUS_CONFIG.SUBMITTED;
-    return (
-      <TouchableOpacity style={styles.card} onPress={() => router.push(`/complaint/${item.id}`)} activeOpacity={0.7}>
-        <View style={styles.cardTop}>
-          <Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text>
-          <View style={[styles.badge, { backgroundColor: cfg.bg }]}>
-            <Text style={[styles.badgeText, { color: cfg.color }]}>{cfg.label}</Text>
-          </View>
-        </View>
-        <View style={styles.cardBottom}>
-          <Text style={styles.meta}>{item.category?.name || 'General'}</Text>
-          <Text style={styles.meta}>{new Date(item.createdAt).toLocaleDateString()}</Text>
-        </View>
-        {item.referenceCode && <Text style={styles.refCode}>{item.referenceCode}</Text>}
-      </TouchableOpacity>
-    );
-  };
-
-  const renderFooter = () => {
-    if (!isFetchingNextPage) return null;
-    return (
+  const renderFooter = () =>
+    isFetchingNextPage ? (
       <View style={styles.footer}>
-        <ActivityIndicator size="small" color={Colors.brand[600]} />
+        <ActivityIndicator size="small" color={Colors.navy[700]} />
       </View>
-    );
-  };
+    ) : null;
 
   return (
     <View style={styles.container}>
       <FlatList
         data={complaints}
         keyExtractor={(item) => item.id}
-        renderItem={renderItem}
-        contentContainerStyle={styles.list}
-        refreshControl={
-          <RefreshControl
-            refreshing={isFetching && !isLoading && !isFetchingNextPage}
-            onRefresh={handleRefresh}
-            tintColor={Colors.brand[600]}
+        renderItem={({ item }) => (
+          <ComplaintListCard
+            item={item}
+            onPress={() => router.push(`/complaint/${item.id}`)}
+            actionLabel={
+              config.mode === 'worker' ? t('tasks.continue') : t('complaints.open')
+            }
           />
-        }
+        )}
+        contentContainerStyle={[
+          styles.list,
+          {
+            paddingHorizontal: horizontalPadding,
+            paddingBottom: contentPaddingBottom,
+          },
+          isEmpty && styles.listEmpty,
+        ]}
+        refreshControl={stableRefresh.refreshControl}
+        onScroll={stableRefresh.onScroll}
+        scrollEventThrottle={stableRefresh.scrollEventThrottle}
         ListFooterComponent={renderFooter}
         ListEmptyComponent={
           isLoading ? (
-            <View style={styles.empty}><ActivityIndicator size="large" color={Colors.brand[600]} /></View>
+            <BalancedListEmpty>
+              <ActivityIndicator size="large" color={Colors.navy[700]} />
+            </BalancedListEmpty>
           ) : isError ? (
-            <View style={styles.empty}>
-              <Ionicons name="cloud-offline-outline" size={48} color={Colors.red[400]} />
-              <Text style={styles.emptyText}>Could not load complaints</Text>
-              <Text style={styles.errorDetail}>{(error as any)?.message || 'Check your connection and try again.'}</Text>
-              <TouchableOpacity style={styles.retryBtn} onPress={() => refetch()}>
-                <Ionicons name="refresh" size={16} color={Colors.white} />
-                <Text style={styles.retryBtnText}>Retry</Text>
-              </TouchableOpacity>
-            </View>
+            <BalancedListEmpty>
+              <EmptyState
+                compact
+                icon={
+                  getErrorPresentation(error, t).isNetwork
+                    ? 'cloud-offline-outline'
+                    : 'alert-circle-outline'
+                }
+                title={t('complaints.loadError')}
+                message={getErrorPresentation(error, t).message}
+                actionLabel={t('common.retry')}
+                onAction={() => refetch()}
+              />
+            </BalancedListEmpty>
           ) : (
-            <View style={styles.empty}>
-              <Ionicons name="document-text-outline" size={48} color={Colors.gray[300]} />
-              <Text style={styles.emptyText}>No complaints yet</Text>
-              <TouchableOpacity style={styles.reportBtn} onPress={() => router.push('/(tabs)/submit')}>
-                <Text style={styles.reportBtnText}>Report an Issue</Text>
-              </TouchableOpacity>
-            </View>
+            <BalancedListEmpty>
+              <EmptyState
+                compact
+                icon="document-text-outline"
+                title={t(config.emptyKey)}
+                message={t(config.emptyHintKey)}
+                actionLabel={config.showReportCta ? t('complaints.reportIssue') : undefined}
+                onAction={
+                  config.showReportCta ? () => router.push('/(tabs)/submit') : undefined
+                }
+              />
+            </BalancedListEmpty>
           )
         }
         onEndReached={handleLoadMore}
         onEndReachedThreshold={0.5}
+        showsVerticalScrollIndicator={false}
       />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.gray[50] },
-  list: { padding: Spacing.lg, paddingBottom: 20 },
-  card: {
-    backgroundColor: Colors.white, borderRadius: BorderRadius.md, padding: Spacing.lg,
-    marginBottom: Spacing.sm, shadowColor: Colors.black, shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04, shadowRadius: 3, elevation: 1,
-  },
-  cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: Spacing.sm },
-  cardTitle: { flex: 1, fontSize: FontSize.md, fontWeight: '600', color: Colors.gray[900] },
-  badge: { borderRadius: BorderRadius.full, paddingHorizontal: Spacing.sm, paddingVertical: 3 },
-  badgeText: { fontSize: FontSize.xs, fontWeight: '600' },
-  cardBottom: { flexDirection: 'row', justifyContent: 'space-between', marginTop: Spacing.sm },
-  meta: { fontSize: FontSize.xs, color: Colors.gray[500] },
-  refCode: { fontSize: FontSize.xs, color: Colors.gray[400], marginTop: Spacing.xs, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-  empty: { alignItems: 'center', paddingTop: 80, gap: Spacing.md },
-  emptyText: { fontSize: FontSize.md, color: Colors.gray[400] },
-  errorDetail: { fontSize: FontSize.sm, color: Colors.gray[400], textAlign: 'center', paddingHorizontal: Spacing.xl },
-  reportBtn: { backgroundColor: Colors.brand[600], borderRadius: BorderRadius.md, paddingHorizontal: Spacing.xl, paddingVertical: Spacing.md, marginTop: Spacing.sm },
-  reportBtnText: { fontSize: FontSize.md, fontWeight: '600', color: Colors.white },
-  retryBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.xs,
-    backgroundColor: Colors.brand[600], borderRadius: BorderRadius.md,
-    paddingHorizontal: Spacing.xl, paddingVertical: Spacing.md, marginTop: Spacing.sm,
-  },
-  retryBtnText: { fontSize: FontSize.md, fontWeight: '600', color: Colors.white },
-  footer: { paddingVertical: Spacing.lg, alignItems: 'center' },
+  container: { flex: 1, backgroundColor: Colors.surface },
+  list: { paddingTop: 12, gap: 12 },
+  listEmpty: { flexGrow: 1 },
+  footer: { paddingVertical: 16, alignItems: 'center' },
 });

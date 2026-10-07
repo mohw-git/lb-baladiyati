@@ -1,5 +1,5 @@
 ==============================================================
- BALADI — HOW TO RUN THE PROJECT (development)
+ BALADIYATI — HOW TO RUN THE PROJECT (development)
 ==============================================================
 
 You need 3 things running at the same time, each in its OWN terminal:
@@ -32,8 +32,8 @@ PREREQUISITES (one-time setup)
 - Apply the database schema + seed data (only the first time, or after schema changes):
 
     cd C:\Users\A\Documents\bau\FYP
-    npx prisma db push
-    npm run db:seed
+    npm run prisma:migrate
+    npm run prisma:seed
 
 
 ==============================================================
@@ -113,9 +113,9 @@ Backend:
     npm run start:dev          # dev server with hot reload
     npm run build              # compile to dist/
     npm run start:prod         # run compiled build
-    npm run db:seed            # re-seed the database
-    npx prisma db push         # apply schema.prisma to DB (no migration files)
-    npx prisma migrate dev     # create + apply a migration file
+    npm run prisma:seed        # re-seed the database (dev only)
+    npm run prisma:migrate     # create + apply a migration file
+    npm run prisma:migrate:deploy  # production only — see DEPLOYMENT.md
     npx prisma generate        # regenerate the Prisma client
     npx prisma studio          # GUI database browser
 
@@ -170,11 +170,11 @@ WHAT CHANGES IN PRODUCTION (real users, real money on the line):
        for development).
 
   3. NETWORKING
-     - HTTPS only, behind a real domain (e.g. api.baladi.gov.lb)
+     - HTTPS only, behind a real domain (e.g. api.lb-baladiyati.com)
        with TLS certificates from Let's Encrypt or the cloud provider.
      - A reverse proxy (Nginx / Caddy / cloud load balancer) sits in
        front of the backend and handles TLS, gzip, rate limiting.
-     - Mobile app points to https://api.baladi.gov.lb, NOT a LAN IP.
+     - Mobile app points to https://api.lb-baladiyati.com, NOT a LAN IP.
 
   4. DATABASE WORKFLOW
      - You DON'T use `prisma db push` in production. You commit

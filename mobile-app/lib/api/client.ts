@@ -31,13 +31,21 @@ export class ApiError extends Error {
   code: string;
   status: number;
   details?: { field: string; message: string }[];
+  meta?: Record<string, unknown>;
 
-  constructor(status: number, code: string, message: string, details?: { field: string; message: string }[]) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    details?: { field: string; message: string }[],
+    meta?: Record<string, unknown>,
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
     this.details = details;
+    this.meta = meta;
   }
 }
 
@@ -135,6 +143,7 @@ async function handleResponse<T>(res: Response): Promise<T> {
       errBody.error?.code || 'UNKNOWN_ERROR',
       errBody.error?.message || `Request failed (${res.status})`,
       errBody.error?.details,
+      errBody.error?.meta,
     );
   }
   const apiRes = json as any;

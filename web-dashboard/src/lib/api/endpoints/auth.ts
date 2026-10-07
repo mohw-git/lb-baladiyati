@@ -21,6 +21,11 @@ export interface MessageResponse {
   message: string;
 }
 
+export interface VerifyEmailResponse {
+  message: string;
+  alreadyVerified?: boolean;
+}
+
 export const authApi = {
   login: (data: LoginRequest) =>
     post<LoginResponse | TwoFactorChallengeResponse>('/auth/login', data, { skipAuth: true }),
@@ -63,12 +68,16 @@ export const authApi = {
     post<LoginResponse>('/auth/2fa/email/login', data, { skipAuth: true }),
   resendEmailTwoFactorCode: (challengeToken: string) =>
     post<MessageResponse>('/auth/2fa/email/resend', { challengeToken }, { skipAuth: true }),
+  requestDisableEmailTwoFactor: (password: string) =>
+    post<MessageResponse>('/auth/2fa/email/disable/request', { password }),
+  confirmDisableEmailTwoFactor: (data: { password: string; code: string }) =>
+    post<{ disabled: true }>('/auth/2fa/email/disable/confirm', data),
 
   // ───────── Email verification ─────────
   resendVerification: (email: string) =>
     post<MessageResponse>('/auth/resend-verification', { email }, { skipAuth: true }),
   verifyEmail: (token: string) =>
-    post<MessageResponse>('/auth/verify-email', { token }, { skipAuth: true }),
+    post<VerifyEmailResponse>('/auth/verify-email', { token }, { skipAuth: true }),
 
   // ───────── Password reset by email ─────────
   forgotPassword: (email: string) =>

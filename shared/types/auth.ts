@@ -40,14 +40,23 @@ export interface AuthUser {
   emailVerifiedAt?: string | null;
   /** Convenience boolean derived from `emailVerifiedAt`. */
   emailVerified?: boolean;
+  /**
+   * Platform policy (citizens only): when true, unverified email/KYC citizens
+   * may submit complaints (backend forces LOW priority and internal risk flags).
+   */
+  allowUnverifiedCitizenComplaints?: boolean;
   /** Backend-stored language preference: EN | AR | FR (uppercase Prisma enum). */
   locale?: 'EN' | 'AR' | 'FR';
 }
 
+export type AccountType = 'CITIZEN' | 'STAFF';
+
 export interface AuthUserWithRoles extends AuthUser {
+  /** Set by the API so clients can render citizen vs staff UI without inferring roles. */
+  accountType?: AccountType;
   mustChangePassword?: boolean;
   mustEnrollTwoFactor?: boolean;
-  roles: string[];
+  roles?: string[];
   /** Same as `roles` but with the Arabic/French translations when provided. */
   rolesDetailed?: {
     id: string;
@@ -55,7 +64,7 @@ export interface AuthUserWithRoles extends AuthUser {
     nameAr: string | null;
     nameFr: string | null;
   }[];
-  permissions: string[];
+  permissions?: string[];
   municipality?: {
     id: string;
     name: string;
@@ -70,6 +79,8 @@ export interface AuthUserWithRoles extends AuthUser {
     nameFr?: string | null;
   } | null;
   twoFactorEnabled?: boolean;
+  /** Active second factor: TOTP (authenticator) or EMAIL (OTP by email). */
+  twoFactorMethod?: 'TOTP' | 'EMAIL' | null;
   /** Discord-style hierarchy rank: max priority across the user's roles. */
   effectiveRank?: number;
 }

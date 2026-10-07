@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo, useEffect } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { departmentsApi, usersApi, ApiError } from '@/lib/api';
@@ -18,13 +19,45 @@ import {
   Mail,
   X,
 } from 'lucide-react';
-import type { Department } from '@shared/types/department';
 import type { DepartmentWithHead, DepartmentMember } from '@/lib/api';
 import { useLocale, useTranslate } from '@/lib/i18n';
 import { pickName, pickDescription } from '@shared/types/locale';
+import { useAnyPermission } from '@/lib/auth';
+import { PERMISSIONS } from '@shared/constants/permissions';
+import { DepartmentsOverviewSection } from '@/components/features/departments/departments-overview-section';
+
+type DeptTab = 'overview' | 'manage';
 
 export default function DepartmentsPage() {
   const queryClient = useQueryClient();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const canManageDepartments = useAnyPermission(
+    PERMISSIONS.DEPARTMENT_CREATE,
+    PERMISSIONS.DEPARTMENT_UPDATE,
+  );
+  const canViewOverview = useAnyPermission(
+    PERMISSIONS.COMPLAINT_VIEW_ALL,
+    PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT,
+  );
+
+  const tabParam = searchParams.get('tab');
+  const activeTab: DeptTab =
+    tabParam === 'manage' && canManageDepartments
+      ? 'manage'
+      : canViewOverview
+        ? 'overview'
+        : 'manage';
+
+  useEffect(() => {
+    if (!canViewOverview && !canManageDepartments) {
+      router.replace('/dashboard');
+    }
+  }, [canViewOverview, canManageDepartments, router]);
+
+  const setTab = (tab: DeptTab) => {
+    router.replace(tab === 'overview' ? '/departments?tab=overview' : '/departments?tab=manage');
+  };
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<DepartmentWithHead | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DepartmentWithHead | null>(null);
@@ -46,6 +79,7 @@ export default function DepartmentsPage() {
   const { data: departmentsRaw, isLoading } = useQuery({
     queryKey: ['departments'],
     queryFn: () => departmentsApi.list(),
+    enabled: canManageDepartments && activeTab === 'manage',
   });
 
   const departments: DepartmentWithHead[] = Array.isArray(departmentsRaw)
@@ -54,23 +88,53 @@ export default function DepartmentsPage() {
 
   const vacantCount = departments.filter((d) => !d.headUserId).length;
 
-  // Eligible-head candidates for the open department: members of THIS dept,
-  // not citizens, not the current head.
-  const { data: candidatesData } = useQuery({
-    queryKey: ['users', 'hod-candidates', headTarget?.id],
-    queryFn: () =>
-      usersApi.list({
-        excludeCitizens: true,
-        limit: 200,
-      }),
+  // HOD candidates: staff already in this department + unassigned municipal staff (can be moved in).
+  const { data: hodDeptMembers, isLoading: hodCandidatesLoading } = useQuery({
+    queryKey: ['departments', headTarget?.id, 'members'],
+    queryFn: () => departmentsApi.listMembers(headTarget!.id),
     enabled: !!headTarget,
   });
-  const candidates = ((candidatesData?.items ?? []) as any[]).filter((u: any) => {
-    if (!headTarget) return false;
-    // Either already in this department, or unassigned (so we can move them in)
-    const fits = !u.department?.id || u.department.id === headTarget.id;
-    return fits && u.id !== headTarget.headUserId && u.isActive !== false;
+
+  const { data: hodUnassignedStaff } = useQuery({
+    queryKey: ['users', 'hod-unassigned', headTarget?.id],
+    queryFn: () => usersApi.list({ excludeCitizens: true, limit: 200 }),
+    enabled: !!headTarget,
   });
+
+  const hodCandidates = useMemo(() => {
+    if (!headTarget) return [];
+    const inDept = (hodDeptMembers?.members ?? []).filter(
+      (m) => m.id !== headTarget.headUserId && m.isActive,
+    );
+    const unassigned = (hodUnassignedStaff?.items ?? []).filter(
+      (u) =>
+        !u.department?.id &&
+        u.id !== headTarget.headUserId &&
+        u.isActive !== false,
+    );
+    const byId = new Map<string, { id: string; firstName: string; lastName: string; email: string }>();
+    for (const m of inDept) {
+      byId.set(m.id, {
+        id: m.id,
+        firstName: m.firstName,
+        lastName: m.lastName,
+        email: m.email,
+      });
+    }
+    for (const u of unassigned) {
+      if (!byId.has(u.id)) {
+        byId.set(u.id, {
+          id: u.id,
+          firstName: u.firstName,
+          lastName: u.lastName,
+          email: u.email,
+        });
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) =>
+      `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`),
+    );
+  }, [headTarget, hodDeptMembers, hodUnassignedStaff]);
 
   const buildPayload = () => ({
     name: form.name,
@@ -88,6 +152,7 @@ export default function DepartmentsPage() {
       setShowModal(false);
       setForm({ name: '', nameAr: '', nameFr: '', description: '', descriptionAr: '', descriptionFr: '' });
       queryClient.invalidateQueries({ queryKey: ['departments'] });
+      queryClient.invalidateQueries({ queryKey: ['complaints', 'department-workload'] });
     },
     onError: (err: ApiError) => toast.error(err.message),
   });
@@ -103,6 +168,7 @@ export default function DepartmentsPage() {
       setEditing(null);
       setForm({ name: '', nameAr: '', nameFr: '', description: '', descriptionAr: '', descriptionFr: '' });
       queryClient.invalidateQueries({ queryKey: ['departments'] });
+      queryClient.invalidateQueries({ queryKey: ['complaints', 'department-workload'] });
     },
     onError: (err: ApiError) => toast.error(err.message),
   });
@@ -113,6 +179,7 @@ export default function DepartmentsPage() {
       toast.success(t('departments.toast.deleted'));
       setDeleteTarget(null);
       queryClient.invalidateQueries({ queryKey: ['departments'] });
+      queryClient.invalidateQueries({ queryKey: ['complaints', 'department-workload'] });
     },
     onError: (err: ApiError) => toast.error(err.message),
   });
@@ -125,6 +192,7 @@ export default function DepartmentsPage() {
       setPickedHead('');
       queryClient.invalidateQueries({ queryKey: ['departments'] });
       queryClient.invalidateQueries({ queryKey: ['users'] });
+      queryClient.invalidateQueries({ queryKey: ['complaints', 'department-workload'] });
     },
     onError: (err: ApiError) => toast.error(err.message),
   });
@@ -134,6 +202,7 @@ export default function DepartmentsPage() {
     onSuccess: () => {
       toast.success(t('departments.toast.hodVacated'));
       queryClient.invalidateQueries({ queryKey: ['departments'] });
+      queryClient.invalidateQueries({ queryKey: ['complaints', 'department-workload'] });
     },
     onError: (err: ApiError) => toast.error(err.message),
   });
@@ -159,8 +228,8 @@ export default function DepartmentsPage() {
         queryKey: ['departments', membersTarget?.id, 'members'],
       });
       queryClient.invalidateQueries({ queryKey: ['departments'] });
+      queryClient.invalidateQueries({ queryKey: ['complaints', 'department-workload'] });
       queryClient.invalidateQueries({ queryKey: ['users'] });
-      queryClient.invalidateQueries({ queryKey: ['org-chart'] });
     },
     onError: (err: ApiError) => toast.error(err.message),
   });
@@ -174,8 +243,8 @@ export default function DepartmentsPage() {
         queryKey: ['departments', membersTarget?.id, 'members'],
       });
       queryClient.invalidateQueries({ queryKey: ['departments'] });
+      queryClient.invalidateQueries({ queryKey: ['complaints', 'department-workload'] });
       queryClient.invalidateQueries({ queryKey: ['users'] });
-      queryClient.invalidateQueries({ queryKey: ['org-chart'] });
     },
     onError: (err: ApiError) => toast.error(err.message),
   });
@@ -210,17 +279,51 @@ export default function DepartmentsPage() {
 
   const isPending = createMutation.isPending || updateMutation.isPending;
 
+  if (!canViewOverview && !canManageDepartments) {
+    return null;
+  }
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between border-b border-gray-200 pb-4">
+      <div className="flex flex-col gap-3 border-b border-gray-200 pb-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-xl font-bold text-gray-900">{t('departments.title')}</h1>
-          <p className="mt-0.5 text-sm text-gray-500">{t('departments.subtitle')}</p>
+          <h1 className="text-xl font-bold text-gray-900">
+            {activeTab === 'overview'
+              ? t('departments.overview.title')
+              : t('departments.title')}
+          </h1>
+          <p className="mt-0.5 text-sm text-gray-500">
+            {activeTab === 'overview'
+              ? t('departments.overview.subtitle')
+              : t('departments.subtitle')}
+          </p>
         </div>
-        <button onClick={openAddModal} className="btn-gov-primary">
-          <Plus className="h-4 w-4" /> {t('departments.modal.add')}
-        </button>
+        {activeTab === 'manage' && canManageDepartments && (
+          <button onClick={openAddModal} className="btn-gov-primary shrink-0">
+            <Plus className="h-4 w-4" /> {t('departments.modal.add')}
+          </button>
+        )}
       </div>
+
+      {(canViewOverview && canManageDepartments) && (
+        <div className="flex gap-0 border-b border-gray-200">
+          <TabButton
+            active={activeTab === 'overview'}
+            onClick={() => setTab('overview')}
+            label={t('departments.tab.overview')}
+          />
+          <TabButton
+            active={activeTab === 'manage'}
+            onClick={() => setTab('manage')}
+            label={t('departments.tab.manage')}
+          />
+        </div>
+      )}
+
+      {activeTab === 'overview' && canViewOverview ? (
+        <DepartmentsOverviewSection canManageDepartments={canManageDepartments} />
+      ) : canManageDepartments ? (
+        <>
 
       {vacantCount > 0 && (
         <div className="flex items-start gap-3 rounded border border-amber-200 bg-amber-50 p-3">
@@ -512,17 +615,20 @@ export default function DepartmentsPage() {
                 className="select-gov"
               >
                 <option value="">—</option>
-                {candidates.map((u: any) => (
+                {hodCandidates.map((u) => (
                   <option key={u.id} value={u.id}>
                     {u.firstName} {u.lastName} ({u.email})
                   </option>
                 ))}
               </select>
-              {candidates.length === 0 && (
-                <p className="mt-2 text-xs text-amber-700">
-                  {t('departments.member.empty')}
-                </p>
-              )}
+              {hodCandidatesLoading ? (
+                <p className="mt-2 text-xs text-gray-500">{t('common.loading')}</p>
+              ) : hodCandidates.length === 0 ? (
+                <div className="mt-2 space-y-1 text-xs text-amber-700">
+                  <p>{t('departments.hod.emptyEligible')}</p>
+                  <p className="text-amber-600">{t('departments.hod.emptyHint')}</p>
+                </div>
+              ) : null}
             </div>
 
             <div className="mt-4 flex justify-end gap-2">
@@ -678,6 +784,32 @@ export default function DepartmentsPage() {
           </div>
         </div>
       )}
+        </>
+      ) : null}
     </div>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`border-b-2 px-4 py-2 text-sm font-semibold transition-colors ${
+        active
+          ? 'border-brand-600 text-brand-700'
+          : 'border-transparent text-gray-500 hover:text-gray-700'
+      }`}
+    >
+      {label}
+    </button>
   );
 }

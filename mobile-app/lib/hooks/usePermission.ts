@@ -1,7 +1,16 @@
 import { useAuthStore } from '../auth/store';
+import {
+  resolveAccountKind,
+  resolveMobileExperience,
+  userHasCitizenRole,
+  userHasFieldWorkerRole,
+  type AccountKind,
+  type MobileExperience,
+} from '../auth/mobile-role';
 
 // Stable empty array to avoid infinite re-renders
 const EMPTY_PERMISSIONS: string[] = [];
+const EMPTY_ROLES: string[] = [];
 
 export const PERMISSIONS = {
   // Complaints
@@ -20,11 +29,11 @@ export const PERMISSIONS = {
   // Cross-department help requests (no transfer of ownership)
   HELP_REQUEST: 'help.request',
   HELP_RESPOND: 'help.respond',
-  HELP_VIEW:    'help.view',
+  HELP_VIEW: 'help.view',
   // Cross-department transfers (full handoff)
   TRANSFER_REQUEST: 'transfer.request',
   TRANSFER_RESPOND: 'transfer.respond',
-  TRANSFER_VIEW:    'transfer.view',
+  TRANSFER_VIEW: 'transfer.view',
 } as const;
 
 /**
@@ -33,6 +42,11 @@ export const PERMISSIONS = {
 function usePermissions(): string[] {
   const perms = useAuthStore((s) => s.user?.permissions);
   return perms ?? EMPTY_PERMISSIONS;
+}
+
+function useRoleNames(): string[] {
+  const roles = useAuthStore((s) => s.user?.roles);
+  return roles ?? EMPTY_ROLES;
 }
 
 /**
@@ -60,44 +74,53 @@ export function useHasPermission(permission: string): boolean {
 }
 
 /**
- * Determine user's role type for UI decisions
+ * Mobile shell: citizen-style tabs for everyone except Field Worker role holders.
+ */
+export function useMobileExperience(): MobileExperience {
+  const roles = useRoleNames();
+  return resolveMobileExperience(roles);
+}
+
+/** True only when the user has the Field Worker role (not admin/supervisor by permission). */
+export function useIsFieldWorker(): boolean {
+  return userHasFieldWorkerRole(useRoleNames());
+}
+
+/**
+ * @deprecated Prefer useIsFieldWorker — same meaning after mobile role split.
+ */
+export function useIsWorker(): boolean {
+  return useIsFieldWorker();
+}
+
+/** True for citizen mobile shell (citizens + municipal staff except field workers). */
+export function useCitizenMobileExperience(): boolean {
+  return useMobileExperience() === 'citizen';
+}
+
+export function useHasCitizenRole(): boolean {
+  return userHasCitizenRole(useRoleNames());
+}
+
+/** Profile badge / copy — derived from assigned role names. */
+export function useAccountKind(): AccountKind {
+  return resolveAccountKind(useRoleNames());
+}
+
+/**
+ * Legacy UI role helper — maps account kind to previous union for gradual migration.
+ * Do not use for tab routing; use useMobileExperience / useIsFieldWorker instead.
  */
 export function useUserRole(): 'citizen' | 'worker' | 'supervisor' | 'admin' {
-  const permissions = usePermissions();
-  
-  // Admin has all permissions
-  if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL) && permissions.length > 20) {
-    return 'admin';
-  }
-  
-  // Supervisor/HOD can verify or approve
-  if (
-    permissions.includes(PERMISSIONS.COMPLAINT_VERIFY) ||
-    permissions.includes(PERMISSIONS.COMPLAINT_APPROVE) ||
-    permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT)
-  ) {
-    return 'supervisor';
-  }
-  
-  // Field worker can view assigned
-  if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED)) {
-    return 'worker';
-  }
-  
-  // Default to citizen
+  const kind = useAccountKind();
+  if (kind === 'field_worker') return 'worker';
+  if (kind === 'supervisor') return 'supervisor';
+  if (kind === 'admin') return 'admin';
   return 'citizen';
 }
 
 /**
- * Check if user is a field worker (assigned tasks view)
- */
-export function useIsWorker(): boolean {
-  const role = useUserRole();
-  return role === 'worker' || role === 'supervisor' || role === 'admin';
-}
-
-/**
- * Check if user can perform status change
+ * Check if user can perform status change (permission-based — unchanged for worker actions).
  */
 export function useCanChangeStatus(): boolean {
   return useHasPermission(PERMISSIONS.COMPLAINT_CHANGE_STATUS);

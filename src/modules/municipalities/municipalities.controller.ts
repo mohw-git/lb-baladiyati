@@ -20,6 +20,8 @@ import { Public } from '../../core/auth/decorators/public.decorator';
 import { CurrentUser } from '../../core/auth/decorators/current-user.decorator';
 import { CurrentUserData } from '../../core/auth/types/jwt-payload';
 import { UpdateMunicipalityBrandingDto } from './dto/update-municipality-branding.dto';
+import { RequirePermissions } from '../../core/rbac/require-permissions.decorator';
+import { PERMISSIONS } from '../../core/rbac/permissions.constants';
 
 @ApiTags('Municipalities')
 @Controller('municipalities')
@@ -48,7 +50,7 @@ export class MunicipalitiesController {
   }
 
   /**
-   * Current user's municipality (with admin slot info) — used by /org-chart.
+   * Current user's municipality (with admin slot info) — used by Departments Overview.
    */
   @Get('me')
   @ApiBearerAuth('JWT-auth')
@@ -62,6 +64,7 @@ export class MunicipalitiesController {
    * Municipality admin (Admin role) can update their own; Super Admin can update any.
    */
   @Patch('me/branding')
+  @RequirePermissions(PERMISSIONS.MUNICIPALITY_UPDATE)
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Update municipality branding (admin only)' })
   async updateMyBranding(
@@ -80,6 +83,7 @@ export class MunicipalitiesController {
    * Super admin: update any municipality's branding.
    */
   @Patch(':id/branding')
+  @RequirePermissions(PERMISSIONS.PLATFORM_MANAGE_MUNICIPALITIES)
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Update any municipality branding (super admin)' })
   async updateBranding(
@@ -99,6 +103,7 @@ export class MunicipalitiesController {
    * Upload logo for the caller's municipality.
    */
   @Post('me/logo')
+  @RequirePermissions(PERMISSIONS.MUNICIPALITY_UPDATE)
   @ApiBearerAuth('JWT-auth')
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Upload municipality logo' })
@@ -120,6 +125,7 @@ export class MunicipalitiesController {
    * Upload banner for the caller's municipality.
    */
   @Post('me/banner')
+  @RequirePermissions(PERMISSIONS.MUNICIPALITY_UPDATE)
   @ApiBearerAuth('JWT-auth')
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Upload municipality banner' })
@@ -141,6 +147,7 @@ export class MunicipalitiesController {
    * Super admin: upload any municipality's logo.
    */
   @Post(':id/logo')
+  @RequirePermissions(PERMISSIONS.PLATFORM_MANAGE_MUNICIPALITIES)
   @ApiBearerAuth('JWT-auth')
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Upload any municipality logo (super admin)' })
@@ -163,6 +170,7 @@ export class MunicipalitiesController {
    * Super admin: upload any municipality's banner.
    */
   @Post(':id/banner')
+  @RequirePermissions(PERMISSIONS.PLATFORM_MANAGE_MUNICIPALITIES)
   @ApiBearerAuth('JWT-auth')
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Upload any municipality banner (super admin)' })

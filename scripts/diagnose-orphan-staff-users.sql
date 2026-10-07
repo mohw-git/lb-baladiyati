@@ -1,0 +1,8 @@
+-- Orphan staff users: ADMIN_PROVISIONED with no roles (failed Add User before fix).
+-- Review manually before delete — do not run DELETE without approval.
+--
+-- SELECT id, email, first_name, last_name, created_at, municipality_id
+-- FROM users
+-- WHERE created_via = 'ADMIN_PROVISIONED'
+--   AND created_at > NOW() - INTERVAL '7 days'
+--   AND id NOT IN (SELECT user_id FROM user_roles);

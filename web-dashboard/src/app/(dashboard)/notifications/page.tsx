@@ -1,22 +1,63 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { notificationsApi, ApiError } from '@/lib/api';
+import { resolveNotificationRoute } from '@/lib/notifications/resolve-notification-route';
 import { formatRelative, cn } from '@/lib/utils';
 import { Bell, CheckCheck, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
-import { useTranslate } from '@/lib/i18n';
+import { useTranslate, notificationTypeKey } from '@/lib/i18n';
 
-const TYPE_LABELS: Record<string, { label: string; color: string }> = {
-  COMPLAINT_ASSIGNED: { label: 'Assignment', color: 'bg-purple-100 text-purple-700' },
-  COMPLAINT_STATUS_CHANGED: { label: 'Status Change', color: 'bg-blue-100 text-blue-700' },
-  COMPLAINT_COMPLETED: { label: 'Completed', color: 'bg-green-100 text-green-700' },
-  NEWS_PUBLISHED: { label: 'News', color: 'bg-orange-100 text-orange-700' },
+/**
+ * Background tint per notification type. The label itself is localized
+ * via the `notifications.type.<ENUM>` i18n keys (helpers.notificationTypeKey).
+ * Anything not listed here gets a neutral grey badge.
+ */
+const TYPE_TINT: Record<string, string> = {
+  COMPLAINT_SUBMITTED: 'bg-blue-100 text-blue-700',
+  COMPLAINT_ASSIGNED: 'bg-purple-100 text-purple-700',
+  COMPLAINT_STATUS_CHANGED: 'bg-blue-100 text-blue-700',
+  COMPLAINT_COMPLETED: 'bg-green-100 text-green-700',
+  COMPLAINT_REJECTED: 'bg-rose-100 text-rose-700',
+  COMPLAINT_ESCALATED: 'bg-amber-100 text-amber-700',
+  COMPLAINT_FEEDBACK_REQUESTED: 'bg-indigo-100 text-indigo-700',
+  NEWS_PUBLISHED: 'bg-orange-100 text-orange-700',
+  KYC_SUBMITTED: 'bg-cyan-100 text-cyan-700',
+  KYC_APPROVED: 'bg-green-100 text-green-700',
+  KYC_REJECTED: 'bg-rose-100 text-rose-700',
+  TASK_ASSIGNED: 'bg-purple-100 text-purple-700',
+  TASK_STATUS_CHANGED: 'bg-blue-100 text-blue-700',
+  TRANSFER_REQUESTED: 'bg-purple-100 text-purple-700',
+  TRANSFER_ACCEPTED: 'bg-green-100 text-green-700',
+  TRANSFER_REJECTED: 'bg-rose-100 text-rose-700',
+  HELP_REQUESTED: 'bg-amber-100 text-amber-700',
+  HELP_ACCEPTED: 'bg-blue-100 text-blue-700',
+  HELP_DECLINED: 'bg-rose-100 text-rose-700',
+  HELP_ASSIGNED: 'bg-amber-100 text-amber-700',
+  HELP_SUBMITTED: 'bg-purple-100 text-purple-700',
+  HELP_COMPLETED: 'bg-green-100 text-green-700',
+  HELP_REJECTED: 'bg-rose-100 text-rose-700',
+  HELP_CANCELLED: 'bg-gray-100 text-gray-700',
+  SYSTEM: 'bg-gray-100 text-gray-700',
+};
+
+const FALLBACK_TINT = 'bg-gray-100 text-gray-700';
+
+type NotificationRow = {
+  id: string;
+  type: string;
+  title: string;
+  body: string;
+  data?: Record<string, unknown> | null;
+  isRead: boolean;
+  createdAt: string;
 };
 
 export default function NotificationsPage() {
   const t = useTranslate();
+  const router = useRouter();
   const [page, setPage] = useState(1);
   const limit = 20;
   const queryClient = useQueryClient();
@@ -28,7 +69,10 @@ export default function NotificationsPage() {
 
   const markReadMutation = useMutation({
     mutationFn: (id: string) => notificationsApi.markRead(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notifications'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
+      queryClient.invalidateQueries({ queryKey: ['notifications', 'unread-count'] });
+    },
     onError: (err: ApiError) => toast.error(err.message),
   });
 
@@ -37,9 +81,31 @@ export default function NotificationsPage() {
     onSuccess: () => {
       toast.success(t('notifications.markAllRead'));
       queryClient.invalidateQueries({ queryKey: ['notifications'] });
+      queryClient.invalidateQueries({ queryKey: ['notifications', 'unread-count'] });
     },
     onError: (err: ApiError) => toast.error(err.message),
   });
+
+  const handleNotificationClick = (n: NotificationRow) => {
+    const href = resolveNotificationRoute(
+      n.type,
+      (n.data as Record<string, unknown> | null) ?? null,
+    );
+
+    const navigate = () => {
+      if (href) router.push(href);
+    };
+
+    if (!n.isRead) {
+      markReadMutation.mutate(n.id, {
+        onSuccess: navigate,
+        onError: () => navigate(),
+      });
+      return;
+    }
+
+    navigate();
+  };
 
   return (
     <div className="space-y-4">
@@ -65,16 +131,30 @@ export default function NotificationsPage() {
         ) : data?.items.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-gray-400">
             <Bell className="mb-3 h-10 w-10" />
-            <p className="text-sm">No notifications yet.</p>
+            <p className="text-sm">{t('notifications.empty.title')}</p>
           </div>
         ) : (
           <div className="divide-y divide-gray-100">
             {data?.items.map((n) => {
-              const typeInfo = TYPE_LABELS[n.type] || { label: n.type, color: 'bg-gray-100 text-gray-700' };
+              const localized = t(notificationTypeKey(n.type));
+              const label = localized.startsWith('notifications.type.') ? n.type : localized;
+              const tint = TYPE_TINT[n.type] ?? FALLBACK_TINT;
+              const href = resolveNotificationRoute(
+                n.type,
+                (n.data as Record<string, unknown> | null) ?? null,
+              );
               return (
                 <div
                   key={n.id}
-                  onClick={() => !n.isRead && markReadMutation.mutate(n.id)}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => handleNotificationClick(n)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleNotificationClick(n);
+                    }
+                  }}
                   className={cn(
                     'flex cursor-pointer items-start gap-4 px-6 py-4 transition-colors hover:bg-gray-50',
                     !n.isRead && 'bg-brand-50/50',
@@ -84,10 +164,13 @@ export default function NotificationsPage() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <p className={cn('text-sm', n.isRead ? 'text-gray-700' : 'font-semibold text-gray-900')}>{n.title}</p>
-                      <span className={cn('shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium', typeInfo.color)}>{typeInfo.label}</span>
+                      <span className={cn('shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium', tint)}>{label}</span>
                     </div>
                     <p className="mt-0.5 text-sm text-gray-500">{n.body}</p>
                     <p className="mt-1 text-xs text-gray-400">{formatRelative(n.createdAt)}</p>
+                    {href ? (
+                      <p className="mt-1 text-xs font-medium text-brand-600">{t('notifications.targetHint')}</p>
+                    ) : null}
                   </div>
                 </div>
               );

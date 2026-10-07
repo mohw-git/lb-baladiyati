@@ -23,7 +23,7 @@ export default function ContactPage() {
     staleTime: 10 * 60 * 1000,
   });
 
-  const platformName = localizedField(branding, 'platformName', locale) || 'Baladi';
+  const platformName = localizedField(branding, 'platformName', locale) || 'Baladiyati';
   const operatorName = localizedField(branding, 'operatorName', locale);
   const address = localizedField(branding, 'officeAddress', locale);
   const hours = localizedField(branding, 'openingHours', locale);

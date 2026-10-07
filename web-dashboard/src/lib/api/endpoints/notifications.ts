@@ -6,8 +6,12 @@ export const notificationsApi = {
   list: (params: NotificationQueryParams = {}) =>
     getPaginated<Notification>(`/notifications${buildQueryString(params as Record<string, unknown>)}`),
 
-  unreadCount: () =>
-    get<UnreadCount>('/notifications/unread-count'),
+  unreadCount: async () => {
+    const data = await get<UnreadCount & { count?: number }>('/notifications/unread-count');
+    return {
+      unreadCount: data.unreadCount ?? data.count ?? 0,
+    };
+  },
 
   markRead: (id: string) =>
     patch<Notification>(`/notifications/${id}/read`),

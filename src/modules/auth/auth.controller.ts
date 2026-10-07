@@ -43,6 +43,8 @@ import {
   EnableEmailTwoFactorDto,
   EmailTwoFactorLoginDto,
   ResendEmailTwoFactorDto,
+  RequestDisableEmailTwoFactorDto,
+  ConfirmDisableEmailTwoFactorDto,
 } from './dto/email-2fa.dto';
 import { multerConfig } from '../../core/storage/multer.config';
 import {
@@ -422,5 +424,46 @@ export class AuthController {
     @Req() req: Request,
   ) {
     return this.authService.resendEmailTwoFactorCode(dto.challengeToken, req);
+  }
+
+  @Post('2fa/email/disable/request')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Request email OTP to disable email-based 2FA',
+    description: 'Step 1 of 2. Requires the current password. Rate-limited.',
+  })
+  async requestDisableEmailTwoFactor(
+    @CurrentUser() user: CurrentUserData,
+    @Body() dto: RequestDisableEmailTwoFactorDto,
+    @Req() req: Request,
+  ) {
+    return this.authService.requestDisableEmailTwoFactor(
+      user.id,
+      dto.password,
+      req,
+    );
+  }
+
+  @Post('2fa/email/disable/confirm')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Confirm disable of email-based 2FA',
+    description: 'Step 2 of 2. Requires password and the emailed OTP.',
+  })
+  async confirmDisableEmailTwoFactor(
+    @CurrentUser() user: CurrentUserData,
+    @Body() dto: ConfirmDisableEmailTwoFactorDto,
+    @Req() req: Request,
+  ) {
+    return this.authService.confirmDisableEmailTwoFactor(
+      user.id,
+      dto.password,
+      dto.code,
+      req,
+    );
   }
 }

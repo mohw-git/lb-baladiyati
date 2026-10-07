@@ -7,12 +7,15 @@ import { NestFactory, Reflector } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import helmet from 'helmet';
+import * as express from 'express';
 import type { Request, Response, NextFunction } from 'express';
+import { configureJsonBodyParsers } from './core/http/boundary-source-import-body.middleware';
 import { Logger as PinoLogger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './core/common/filters/http-exception.filter';
 import { TransformResponseInterceptor } from './core/common/interceptors/transform-response.interceptor';
 import { assertProductionEnvOrExit } from './core/config/production-validator';
+import { isCorsOriginAllowed, resolveCorsOrigins } from './core/config/cors-origins.util';
 
 async function bootstrap() {
   // Fail-fast safety net: in production, refuse to start the app if any
@@ -20,11 +23,22 @@ async function bootstrap() {
   // In dev/test, this only logs warnings.
   assertProductionEnvOrExit();
 
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create(AppModule, {
+    bufferLogs: true,
+    bodyParser: false,
+  });
+  const expressApp = app.getHttpAdapter().getInstance();
+  expressApp.use(configureJsonBodyParsers);
+  expressApp.use(express.urlencoded({ extended: true, limit: '100kb' }));
   // Swap default Nest logger for pino so internal Nest logs are also JSON.
   app.useLogger(app.get(PinoLogger));
   const logger = new Logger('Bootstrap');
   const isProduction = process.env.NODE_ENV === 'production';
+
+  // Behind Caddy (or another reverse proxy) in production — honor X-Forwarded-* for req.ip / audits.
+  if (isProduction) {
+    app.getHttpAdapter().getInstance().set('trust proxy', 1);
+  }
 
   // Security headers
   app.use(
@@ -72,81 +86,17 @@ async function bootstrap() {
   const reflector = app.get(Reflector);
   app.useGlobalInterceptors(new TransformResponseInterceptor(reflector));
 
-  // CORS — allowlist origins from env.
-  //
-  // Resolution order:
-  //   1. CORS_ORIGINS (comma-separated) — explicit override
-  //   2. FRONTEND_URL (single origin) — common case in production
-  //   3. Common dev origins (localhost / Expo / Metro) — ONLY in non-prod
-  //
-  // Production hardening:
-  //   - Localhost / 127.0.0.1 / LAN-IP origins are NEVER allowed.
-  //   - Non-https origins are dropped with a warning.
-  //   - Mobile-app requests have no Origin header and are always allowed.
-  const defaultDevOrigins = [
-    'http://localhost:3000',
-    'http://localhost:3001',
-    'http://localhost:8081',
-    'http://localhost:19006',
-    'http://localhost:19000',
-  ];
-  const frontendUrl = process.env.FRONTEND_URL?.trim();
-  const explicitOrigins = process.env.CORS_ORIGINS?.trim();
-  let corsOrigins = (
-    explicitOrigins
-      ? explicitOrigins.split(',')
-      : frontendUrl
-        ? [frontendUrl, ...(isProduction ? [] : defaultDevOrigins)]
-        : isProduction
-          ? []
-          : defaultDevOrigins
-  )
-    .map((o) => o.trim().replace(/\/$/, ''))
-    .filter(Boolean);
-
-  if (isProduction) {
-    const before = corsOrigins.length;
-    corsOrigins = corsOrigins.filter((origin) => {
-      if (
-        /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|::1)(:\d+)?$/i.test(
-          origin,
-        )
-      ) {
-        logger.warn(`CORS: dropping localhost origin in production: ${origin}`);
-        return false;
-      }
-      if (!/^https:\/\//i.test(origin) && origin !== '*') {
-        logger.warn(`CORS: dropping non-https origin in production: ${origin}`);
-        return false;
-      }
-      return true;
-    });
-    if (before > 0 && corsOrigins.length === 0) {
-      logger.error(
-        'CORS: no valid production origins after filtering. ' +
-          'Set CORS_ORIGINS or FRONTEND_URL to a real https URL.',
-      );
-    }
-  }
-
-  // Also allow any LAN IP origin in dev (Expo Go on physical devices, dashboard tested from phone, etc.)
-  const isLanOrigin = (origin: string): boolean => {
-    if (isProduction) return false;
-    return /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+)(:\d+)?$/.test(
-      origin,
+  // CORS — shared with Socket.IO via cors-origins.util (mobile: no Origin header → allowed).
+  const corsOrigins = resolveCorsOrigins();
+  if (isProduction && corsOrigins.length === 0) {
+    logger.error(
+      'CORS: no valid production origins. Set CORS_ORIGINS or FRONTEND_URL to a real https URL.',
     );
-  };
+  }
 
   app.enableCors({
     origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-      // Allow requests with no origin (mobile apps, curl, server-to-server, same-origin)
-      if (!origin) return callback(null, true);
-      const normalized = origin.replace(/\/$/, '');
-      if (
-        corsOrigins.includes('*') ||
-        corsOrigins.includes(normalized) ||
-        isLanOrigin(normalized)
-      ) {
+      if (isCorsOriginAllowed(origin)) {
         return callback(null, true);
       }
       logger.warn(`CORS blocked origin: ${origin}`);
@@ -159,7 +109,7 @@ async function bootstrap() {
 
   // Swagger API Documentation
   const config = new DocumentBuilder()
-    .setTitle('Baladi API')
+    .setTitle('Baladiyati API')
     .setDescription(
       `## Municipal Issue Reporting System API
 
@@ -203,7 +153,7 @@ All responses follow a standardized format:
 `,
     )
     .setVersion('1.0.0')
-    .setContact('Baladi Team', 'https://baladi.gov.lb', 'support@baladi.gov.lb')
+    .setContact('Baladiyati Team', 'https://lb-baladiyati.com', 'support@lb-baladiyati.com')
     .addBearerAuth(
       {
         type: 'http',
@@ -239,7 +189,7 @@ All responses follow a standardized format:
         filter: true,
         showRequestDuration: true,
       },
-      customSiteTitle: 'Baladi API Documentation',
+      customSiteTitle: 'Baladiyati API Documentation',
       customCss: `
         .swagger-ui .topbar { display: none }
         .swagger-ui .info { margin: 20px 0 }

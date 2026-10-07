@@ -13,6 +13,7 @@ import { paginate } from '../../core/common/dto/pagination.dto';
 import { AuditService, AUDIT_ACTIONS } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RealtimeService } from '../../core/realtime/realtime.service';
+import { assertEligibleStaffAssignee } from '../../core/users/user-governance';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { UpdateTaskDto } from './dto/update-task.dto';
 import { TaskQueryDto } from './dto/task-query.dto';
@@ -48,8 +49,16 @@ export class TasksService {
     if (dto.assignedToId) {
       const assignee = await this.prisma.user.findFirst({
         where: { id: dto.assignedToId, municipalityId, isActive: true },
+        include: {
+          userRoles: { include: { role: { select: { name: true } } } },
+        },
       });
       if (!assignee) throw new NotFoundException('Assignee not found');
+      assertEligibleStaffAssignee({
+        createdVia: assignee.createdVia,
+        isActive: assignee.isActive,
+        userRoles: assignee.userRoles,
+      });
       if (assignee.departmentId !== dto.departmentId) {
         throw new BadRequestException(
           'You can only pre-assign someone in the same department. ' +
@@ -327,8 +336,16 @@ export class TasksService {
 
     const assignee = await this.prisma.user.findFirst({
       where: { id: assigneeId, municipalityId, isActive: true },
+      include: {
+        userRoles: { include: { role: { select: { name: true } } } },
+      },
     });
     if (!assignee) throw new NotFoundException('Assignee not found');
+    assertEligibleStaffAssignee({
+      createdVia: assignee.createdVia,
+      isActive: assignee.isActive,
+      userRoles: assignee.userRoles,
+    });
 
     if (assignee.departmentId !== task.departmentId) {
       throw new BadRequestException(

@@ -17,14 +17,16 @@ interface Props {
 }
 
 const STATUS_LABEL: Record<string, { label: string; color: string; bg: string }> = {
-  PENDING:     { label: 'Awaiting helper',  color: Colors.yellow[700], bg: Colors.yellow[100] },
-  ACCEPTED:    { label: 'Accepted',         color: Colors.blue[700],   bg: Colors.blue[100] },
-  IN_PROGRESS: { label: 'Helper working',   color: Colors.blue[700],   bg: Colors.blue[100] },
-  SUBMITTED:   { label: 'Awaiting review',  color: Colors.purple[700], bg: Colors.purple[100] },
-  COMPLETED:   { label: 'Completed',        color: Colors.green[700],  bg: Colors.green[100] },
-  DECLINED:    { label: 'Declined',         color: Colors.red[700],    bg: Colors.red[100] },
-  REJECTED:    { label: 'Rejected',         color: Colors.red[700],    bg: Colors.red[100] },
-  CANCELLED:   { label: 'Cancelled',        color: Colors.gray[600],   bg: Colors.gray[100] },
+  PENDING_SOURCE_APPROVAL: { label: 'Awaiting supervisor', color: Colors.orange[700], bg: Colors.orange[100] },
+  SOURCE_REJECTED:         { label: 'Not approved',        color: Colors.red[700],    bg: Colors.red[100] },
+  PENDING:                 { label: 'Awaiting helper',     color: Colors.yellow[700], bg: Colors.yellow[100] },
+  ACCEPTED:                { label: 'Accepted',            color: Colors.blue[700],   bg: Colors.blue[100] },
+  IN_PROGRESS:             { label: 'Helper working',      color: Colors.blue[700],   bg: Colors.blue[100] },
+  SUBMITTED:               { label: 'Awaiting review',     color: Colors.purple[700], bg: Colors.purple[100] },
+  COMPLETED:               { label: 'Completed',           color: Colors.green[700],  bg: Colors.green[100] },
+  DECLINED:                { label: 'Declined',            color: Colors.red[700],    bg: Colors.red[100] },
+  REJECTED:                { label: 'Rejected',            color: Colors.red[700],    bg: Colors.red[100] },
+  CANCELLED:               { label: 'Cancelled',           color: Colors.gray[600],   bg: Colors.gray[100] },
 };
 
 /**
@@ -52,9 +54,13 @@ export function HelpRequestSection({
   });
 
   const active = useMemo(
-    () => (requests as any[]).find(
-      (h) => !['COMPLETED', 'DECLINED', 'REJECTED', 'CANCELLED'].includes(h.status),
-    ),
+    () =>
+      (requests as any[]).find(
+        (h) =>
+          !['COMPLETED', 'DECLINED', 'REJECTED', 'CANCELLED', 'SOURCE_REJECTED'].includes(
+            h.status,
+          ),
+      ),
     [requests],
   );
 
@@ -83,7 +89,8 @@ export function HelpRequestSection({
         </View>
         <Text style={styles.body}>
           If solving this needs another department's expertise, ask them for
-          help. The complaint stays with your team — they just contribute work.
+          help. Your supervisor or HOD must approve before it is sent. The
+          complaint stays with your team.
         </Text>
         <TouchableOpacity
           style={styles.askBtn}
@@ -115,7 +122,9 @@ export function HelpRequestSection({
   const isAssignedHelper = active.helperAssigneeId === me?.id;
   const isRequester = active.requestedById === me?.id;
   const canCancel =
-    ['PENDING', 'ACCEPTED', 'IN_PROGRESS'].includes(active.status) && isRequester;
+    ['PENDING_SOURCE_APPROVAL', 'PENDING', 'ACCEPTED', 'IN_PROGRESS'].includes(
+      active.status,
+    ) && isRequester;
   const canSubmit =
     ['ACCEPTED', 'IN_PROGRESS'].includes(active.status) && isAssignedHelper;
 
@@ -213,7 +222,10 @@ function AskHelpModal({
     mutationFn: () =>
       helpRequestsApi.create(complaintId, { toDepartmentId: toDeptId, reason: reason.trim() }),
     onSuccess: () => {
-      Alert.alert('Sent', 'Help request sent. The other department\'s Head will see it.');
+      Alert.alert(
+        'Submitted',
+        'Help request submitted. Your supervisor or HOD must approve it before the other department is notified.',
+      );
       onSuccess();
     },
     onError: (e: any) => Alert.alert('Error', e?.message ?? 'Failed to send request'),
@@ -232,8 +244,8 @@ function AskHelpModal({
         </View>
         <Text style={modalStyles.intro}>
           The complaint stays with <Text style={{ fontWeight: '700' }}>{fromDepartmentName}</Text>.
-          A helper department will accept, assign someone, and submit work back
-          for review.
+          Your supervisor or HOD must approve before the helper department is
+          notified. After approval they can assign staff and submit work back.
         </Text>
         <View style={modalStyles.complaintBox}>
           <Text style={modalStyles.complaintLabel}>Complaint</Text>

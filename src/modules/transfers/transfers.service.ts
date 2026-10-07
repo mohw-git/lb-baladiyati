@@ -1,29 +1,69 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { assertEligibleStaffAssignee } from '../../core/users/user-governance';
 import type { Request } from 'express';
 import {
   ComplaintStatus,
   NotificationType,
+  Prisma,
   TaskStatus,
   TransferStatus,
   TransferTargetType,
 } from '@prisma/client';
+
+const TRANSFER_EVENT_KIND = {
+  REQUESTED: 'TRANSFER_REQUESTED',
+  ACCEPTED: 'TRANSFER_ACCEPTED',
+  REJECTED: 'TRANSFER_REJECTED',
+  CANCELLED: 'TRANSFER_CANCELLED',
+} as const;
+
+function isPrismaRecordNotFound(err: unknown): boolean {
+  return (
+    err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025'
+  );
+}
+
+function transferStaleStateConflict(): never {
+  throw new ConflictException({
+    statusCode: 409,
+    code: 'TRANSFER_STATE_CONFLICT',
+    message:
+      'This transfer request has already been updated. Refresh and try again.',
+  });
+}
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { PermissionsResolver } from '../../core/rbac/permissions.resolver';
+import { PERMISSIONS } from '../../core/rbac/permissions.constants';
 import { paginate } from '../../core/common/dto/pagination.dto';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RealtimeService } from '../../core/realtime/realtime.service';
+import { AssignmentsService } from '../complaints/assignments.service';
 import {
   AcceptTransferRequestDto,
   CreateTransferRequestDto,
   RejectTransferRequestDto,
   TransferQueryDto,
 } from './dto/transfer.dto';
+
+/**
+ * Complaint statuses where a transfer is operationally meaningful. Refuse
+ * transfers on closed/rejected complaints or complaints not yet routed to
+ * a dept (those go through Assigner routing, not transfer).
+ */
+const TRANSFERABLE_COMPLAINT_STATUSES: ComplaintStatus[] = [
+  ComplaintStatus.SUBMITTED,
+  ComplaintStatus.UNDER_REVIEW,
+  ComplaintStatus.ASSIGNED,
+  ComplaintStatus.IN_PROGRESS,
+  ComplaintStatus.PENDING_APPROVAL,
+];
 
 interface ResolvedTarget {
   id: string;
@@ -52,6 +92,7 @@ export class TransfersService {
     private audit: AuditService,
     private notifications: NotificationsService,
     private realtime: RealtimeService,
+    private assignments: AssignmentsService,
   ) {}
 
   // ============================================================
@@ -97,11 +138,30 @@ export class TransfersService {
     });
     const perms = await this.permissions.getUserPermissions(user.id);
     const isPrivileged =
-      perms.includes('complaint.view_all') || perms.includes('task.view_all');
+      perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL) ||
+      perms.includes(PERMISSIONS.TASK_VIEW_ALL);
     if (!isPrivileged && me?.departmentId !== target.departmentId) {
       throw new ForbiddenException(
         'You can only request transfers for items in your own department.',
       );
+    }
+
+    // Status gate (complaints only — tasks have their own lifecycle).
+    // Refuse transfers on terminal complaints. The controller already
+    // requires `transfer.request` permission, which workers don't have,
+    // so source-approval is implicit: only Supervisor/HOD/Admin can open.
+    if (dto.targetType === TransferTargetType.COMPLAINT) {
+      const c = await this.prisma.complaint.findUnique({
+        where: { id: dto.targetId },
+        select: { status: true },
+      });
+      if (c && !TRANSFERABLE_COMPLAINT_STATUSES.includes(c.status)) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'COMPLAINT_NOT_TRANSFERABLE',
+          message: `Cannot transfer while complaint is ${c.status}.`,
+        });
+      }
     }
 
     // No duplicate pending requests for the same target
@@ -130,6 +190,27 @@ export class TransfersService {
       },
       include: this.includeRelations(),
     });
+
+    // Timeline event on the complaint so staff see the open transfer
+    // request without having to hunt through a separate inbox.
+    if (dto.targetType === TransferTargetType.COMPLAINT) {
+      const current = await this.prisma.complaint.findUnique({
+        where: { id: dto.targetId },
+        select: { status: true },
+      });
+      if (current) {
+        await this.prisma.complaintStatusLog.create({
+          data: {
+            complaintId: dto.targetId,
+            changedById: user.id,
+            fromStatus: current.status,
+            toStatus: current.status,
+            notes: `Transfer requested → ${transfer.toDepartment.name}: ${dto.reason}`,
+            eventKind: TRANSFER_EVENT_KIND.REQUESTED,
+          },
+        });
+      }
+    }
 
     // Notify the receiving department's HOD (if any) + Admins of the muni
     const recipientIds = await this.recipientsForToDept(
@@ -219,62 +300,110 @@ export class TransfersService {
         departmentId: transfer.toDepartmentId,
         isActive: true,
       },
+      include: {
+        userRoles: { include: { role: { select: { name: true } } } },
+      },
     });
     if (!assignee) {
       throw new BadRequestException(
-        'The chosen assignee is not a member of the receiving department.',
+        'The chosen assignee is not an active staff member of the receiving department.',
       );
     }
-
-    // Atomic: update target's department + assignee, then mark transfer accepted
-    await this.prisma.$transaction(async (tx) => {
-      if (transfer.targetType === TransferTargetType.COMPLAINT) {
-        await tx.complaint.update({
-          where: { id: transfer.targetId },
-          data: {
-            departmentId: transfer.toDepartmentId,
-            status: ComplaintStatus.ASSIGNED,
-          },
-        });
-        await tx.complaintStatusLog.create({
-          data: {
-            complaintId: transfer.targetId,
-            changedById: user.id,
-            fromStatus: ComplaintStatus.ASSIGNED,
-            toStatus: ComplaintStatus.ASSIGNED,
-            notes: `Transfer accepted from ${transfer.fromDepartment.name} → ${transfer.toDepartment.name}. Assigned to ${assignee.firstName} ${assignee.lastName}.`,
-          },
-        });
-        await tx.complaintAssignment.create({
-          data: {
-            complaintId: transfer.targetId,
-            assignedToId: dto.newAssigneeId,
-            assignedById: user.id,
-            notes: `Cross-department transfer (request ${transfer.id})`,
-          },
-        });
-      } else {
-        await tx.task.update({
-          where: { id: transfer.targetId },
-          data: {
-            departmentId: transfer.toDepartmentId,
-            assignedToId: dto.newAssigneeId,
-            status: TaskStatus.IN_PROGRESS,
-          },
-        });
-      }
-
-      await tx.transferRequest.update({
-        where: { id },
-        data: {
-          status: TransferStatus.ACCEPTED,
-          respondedById: user.id,
-          respondedAt: new Date(),
-          newAssigneeId: dto.newAssigneeId,
-          responseReason: dto.note,
-        },
-      });
+    assertEligibleStaffAssignee({
+      createdVia: assignee.createdVia,
+      isActive: assignee.isActive,
+      userRoles: assignee.userRoles,
     });
+
+    const previousAssigneeIds =
+      transfer.targetType === TransferTargetType.COMPLAINT
+        ? (
+            await this.prisma.complaintAssignment.findMany({
+              where: { complaintId: transfer.targetId, isActive: true },
+              select: { assignedToId: true },
+            })
+          ).map((a) => a.assignedToId)
+        : [];
+
+    // Capture the real previous complaint status so we can write a meaningful
+    // transition row in the timeline instead of a fake ASSIGNED → ASSIGNED.
+    let previousComplaintStatus: ComplaintStatus | null = null;
+    if (transfer.targetType === TransferTargetType.COMPLAINT) {
+      const current = await this.prisma.complaint.findUnique({
+        where: { id: transfer.targetId },
+        select: { status: true },
+      });
+      previousComplaintStatus = current?.status ?? null;
+    }
+
+    // Atomic: update target's department + assignee + transfer status, all
+    // gated on the transfer still being PENDING. Race losers get 409.
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        // Lock the transfer to PENDING first — this is the compare-and-set
+        // that makes the whole thing idempotent.
+        await tx.transferRequest.update({
+          where: { id, status: TransferStatus.PENDING },
+          data: {
+            status: TransferStatus.ACCEPTED,
+            respondedById: user.id,
+            respondedAt: new Date(),
+            newAssigneeId: dto.newAssigneeId,
+            responseReason: dto.note,
+          },
+        });
+
+        if (transfer.targetType === TransferTargetType.COMPLAINT) {
+          await tx.complaint.update({
+            where: { id: transfer.targetId, deletedAt: null },
+            data: {
+              departmentId: transfer.toDepartmentId,
+              status: ComplaintStatus.ASSIGNED,
+            },
+          });
+          // Real previous status → ASSIGNED with explicit reason. No more
+          // misleading ASSIGNED → ASSIGNED rows. eventKind=TRANSFER_ACCEPTED
+          // so the timeline UI can highlight this as a transfer event in
+          // addition to the status change.
+          await tx.complaintStatusLog.create({
+            data: {
+              complaintId: transfer.targetId,
+              changedById: user.id,
+              fromStatus:
+                previousComplaintStatus ?? ComplaintStatus.ASSIGNED,
+              toStatus: ComplaintStatus.ASSIGNED,
+              notes: `Transfer accepted: ${transfer.fromDepartment.name} → ${transfer.toDepartment.name}. Assigned to ${assignee.firstName} ${assignee.lastName}.`,
+              eventKind: TRANSFER_EVENT_KIND.ACCEPTED,
+            },
+          });
+          await this.assignments.deactivateActiveAssignments(
+            transfer.targetId,
+            tx,
+          );
+          await tx.complaintAssignment.create({
+            data: {
+              complaintId: transfer.targetId,
+              assignedToId: dto.newAssigneeId,
+              assignedById: user.id,
+              notes: `Cross-department transfer (request ${transfer.id})`,
+              isActive: true,
+            },
+          });
+        } else {
+          await tx.task.update({
+            where: { id: transfer.targetId },
+            data: {
+              departmentId: transfer.toDepartmentId,
+              assignedToId: dto.newAssigneeId,
+              status: TaskStatus.IN_PROGRESS,
+            },
+          });
+        }
+      });
+    } catch (err) {
+      if (isPrismaRecordNotFound(err)) transferStaleStateConflict();
+      throw err;
+    }
 
     // Notify original requester + new assignee
     const notifyIds = Array.from(
@@ -312,6 +441,15 @@ export class TransfersService {
       toDepartmentId: transfer.toDepartmentId,
     });
 
+    if (transfer.targetType === TransferTargetType.COMPLAINT) {
+      this.realtime.complaintUpdated({
+        id: transfer.targetId,
+        municipalityId: user.municipalityId,
+        departmentId: transfer.toDepartmentId,
+        assignedUserIds: [dto.newAssigneeId, ...previousAssigneeIds],
+      });
+    }
+
     return this.findOne(id, user.id, user.municipalityId);
   }
 
@@ -338,15 +476,41 @@ export class TransfersService {
 
     await this.assertCanRespond(user.id, transfer.toDepartmentId, user.municipalityId);
 
-    await this.prisma.transferRequest.update({
-      where: { id },
-      data: {
-        status: TransferStatus.REJECTED,
-        respondedById: user.id,
-        respondedAt: new Date(),
-        responseReason: dto.reason,
-      },
-    });
+    try {
+      await this.prisma.transferRequest.update({
+        where: { id, status: TransferStatus.PENDING },
+        data: {
+          status: TransferStatus.REJECTED,
+          respondedById: user.id,
+          respondedAt: new Date(),
+          responseReason: dto.reason,
+        },
+      });
+    } catch (err) {
+      if (isPrismaRecordNotFound(err)) transferStaleStateConflict();
+      throw err;
+    }
+
+    // Timeline event so source dept can see the rejection in the complaint's
+    // history (only for COMPLAINT targets — tasks have their own audit).
+    if (transfer.targetType === TransferTargetType.COMPLAINT) {
+      const current = await this.prisma.complaint.findUnique({
+        where: { id: transfer.targetId },
+        select: { status: true },
+      });
+      if (current) {
+        await this.prisma.complaintStatusLog.create({
+          data: {
+            complaintId: transfer.targetId,
+            changedById: user.id,
+            fromStatus: current.status,
+            toStatus: current.status,
+            notes: `Transfer to ${transfer.toDepartment.name} rejected: ${dto.reason}`,
+            eventKind: TRANSFER_EVENT_KIND.REJECTED,
+          },
+        });
+      }
+    }
 
     await this.notifications
       .createAndSend(
@@ -397,14 +561,39 @@ export class TransfersService {
       );
     }
 
-    await this.prisma.transferRequest.update({
-      where: { id },
-      data: {
-        status: TransferStatus.CANCELLED,
-        respondedById: userId,
-        respondedAt: new Date(),
-      },
-    });
+    try {
+      await this.prisma.transferRequest.update({
+        where: { id, status: TransferStatus.PENDING },
+        data: {
+          status: TransferStatus.CANCELLED,
+          respondedById: userId,
+          respondedAt: new Date(),
+        },
+      });
+    } catch (err) {
+      if (isPrismaRecordNotFound(err)) transferStaleStateConflict();
+      throw err;
+    }
+
+    // Lightweight timeline event so source dept sees the cancel reason.
+    if (transfer.targetType === TransferTargetType.COMPLAINT) {
+      const current = await this.prisma.complaint.findUnique({
+        where: { id: transfer.targetId },
+        select: { status: true },
+      });
+      if (current) {
+        await this.prisma.complaintStatusLog.create({
+          data: {
+            complaintId: transfer.targetId,
+            changedById: userId,
+            fromStatus: current.status,
+            toStatus: current.status,
+            notes: 'Transfer request cancelled by requester.',
+            eventKind: TRANSFER_EVENT_KIND.CANCELLED,
+          },
+        });
+      }
+    }
 
     const actor = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -418,6 +607,13 @@ export class TransfersService {
       resourceType: transfer.targetType,
       resourceId: transfer.targetId,
       metadata: { transferId: id },
+    });
+
+    this.realtime.transferUpdated({
+      id,
+      municipalityId,
+      fromDepartmentId: transfer.fromDepartmentId,
+      toDepartmentId: transfer.toDepartmentId,
     });
 
     return { ok: true };
@@ -435,16 +631,23 @@ export class TransfersService {
     if (query.targetType) filters.push({ targetType: query.targetType });
 
     if (query.inbox) {
-      // Only requests for departments where I'm a member (HOD or Admin)
+      // Inbox = transfer requests landing in MY dept that need HOD/Admin
+      // attention. Pure workers (no dept-level oversight, no transfer.respond)
+      // never see the receiver inbox — transfers are management decisions.
       const me = await this.prisma.user.findUnique({
         where: { id: userId },
         select: { departmentId: true },
       });
       const perms = await this.permissions.getUserPermissions(userId);
-      const isAdmin = perms.includes('complaint.view_all');
-      if (!isAdmin && me?.departmentId) {
+      const isAdmin = perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
+      const hasDeptOversight =
+        perms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
+        perms.includes(PERMISSIONS.TRANSFER_RESPOND);
+      if (isAdmin) {
+        // admin sees the muni-wide inbox
+      } else if (hasDeptOversight && me?.departmentId) {
         filters.push({ toDepartmentId: me.departmentId });
-      } else if (!isAdmin) {
+      } else {
         return paginate([], 0, query);
       }
     }
@@ -474,12 +677,36 @@ export class TransfersService {
     return paginate(items, total, query);
   }
 
-  async findOne(id: string, _userId: string, municipalityId: string) {
+  async findOne(id: string, userId: string, municipalityId: string) {
     const transfer = await this.prisma.transferRequest.findFirst({
       where: { id, municipalityId },
       include: this.includeRelations(),
     });
     if (!transfer) throw new NotFoundException('Transfer request not found');
+
+    // Authorize read access. Workers should not be able to pull any
+    // transfer by ID just because they have transfer.view.
+    const perms = await this.permissions.getUserPermissions(userId);
+    if (perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) return transfer;
+
+    const me = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { departmentId: true },
+    });
+    const hasDeptOversight =
+      perms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
+      perms.includes(PERMISSIONS.TRANSFER_RESPOND);
+
+    const isRequester = transfer.requestedById === userId;
+    const isNewAssignee = transfer.newAssigneeId === userId;
+    const inSourceDept =
+      me?.departmentId && me.departmentId === transfer.fromDepartmentId && hasDeptOversight;
+    const inReceiverDept =
+      me?.departmentId && me.departmentId === transfer.toDepartmentId && hasDeptOversight;
+
+    if (!isRequester && !isNewAssignee && !inSourceDept && !inReceiverDept) {
+      throw new ForbiddenException('You do not have access to this transfer request');
+    }
     return transfer;
   }
 
@@ -490,14 +717,18 @@ export class TransfersService {
       select: { departmentId: true },
     });
     const perms = await this.permissions.getUserPermissions(userId);
-    const isAdmin = perms.includes('complaint.view_all');
+    const isAdmin = perms.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
+    const hasDeptOversight =
+      perms.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
+      perms.includes(PERMISSIONS.TRANSFER_RESPOND);
 
     if (isAdmin) {
       return this.prisma.transferRequest.count({
         where: { municipalityId, status: TransferStatus.PENDING },
       });
     }
-    if (!me?.departmentId) return 0;
+    // Workers don't see the receiver inbox count — keeps the badge meaningful.
+    if (!hasDeptOversight || !me?.departmentId) return 0;
     return this.prisma.transferRequest.count({
       where: {
         municipalityId,
@@ -574,7 +805,13 @@ export class TransfersService {
     }
   }
 
-  /** HOD of the target dept + all Admins of the municipality. */
+  /**
+   * Notification recipients for a NEW transfer request landing in
+   * `toDepartmentId`. Default: the receiver HOD. Admins are NOT notified
+   * for every transfer — they have dashboard visibility and shouldn't be
+   * paged for routine cross-dept routing. Admin fallback fires when the
+   * HOD slot is empty so the request never goes unnoticed.
+   */
   private async recipientsForToDept(
     municipalityId: string,
     toDepartmentId: string,
@@ -583,6 +820,12 @@ export class TransfersService {
       where: { id: toDepartmentId },
       select: { headUserId: true },
     });
+
+    if (dept?.headUserId) {
+      return [dept.headUserId];
+    }
+
+    // Fallback when the receiver dept has no HOD: alert admins.
     const admins = await this.prisma.user.findMany({
       where: {
         municipalityId,
@@ -591,9 +834,7 @@ export class TransfersService {
       },
       select: { id: true },
     });
-    const ids = admins.map((a) => a.id);
-    if (dept?.headUserId) ids.push(dept.headUserId);
-    return Array.from(new Set(ids));
+    return admins.map((a) => a.id);
   }
 
   private includeRelations() {

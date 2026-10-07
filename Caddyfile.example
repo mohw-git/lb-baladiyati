@@ -1,0 +1,39 @@
+# ============================================================
+# Caddy reverse proxy — Windows Server example
+# ------------------------------------------------------------
+# 1. Copy to your Caddy config folder (e.g. C:\Caddy\Caddyfile)
+# 2. Ensure DNS A records point @, www, api → this server
+# 3. Backend listens on 127.0.0.1:3000, web on 127.0.0.1:3001
+# 4. Reload: caddy reload --config C:\Caddy\Caddyfile
+# ============================================================
+
+lb-baladiyati.com {
+	encode gzip zstd
+	reverse_proxy 127.0.0.1:3001
+}
+
+www.lb-baladiyati.com {
+	redir https://lb-baladiyati.com{uri} permanent
+}
+
+api.lb-baladiyati.com {
+	encode gzip zstd
+
+	request_body {
+		max_size 15MB
+	}
+
+	reverse_proxy 127.0.0.1:3000 {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	# Socket.IO / WebSocket (dashboard realtime)
+	@websockets {
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+	reverse_proxy @websockets 127.0.0.1:3000
+}

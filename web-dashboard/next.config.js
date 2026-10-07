@@ -9,6 +9,11 @@ const nextConfig = {
         port: '3000',
         pathname: '/uploads/**',
       },
+      {
+        protocol: 'https',
+        hostname: 'api.lb-baladiyati.com',
+        pathname: '/uploads/**',
+      },
     ],
   },
 };

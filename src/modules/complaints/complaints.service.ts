@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { StorageService } from '../../core/storage/storage.service';
@@ -12,15 +13,66 @@ import { paginate } from '../../core/common/dto/pagination.dto';
 import { PERMISSIONS } from '../../core/rbac/permissions.constants';
 import { CreateComplaintDto } from './dto/create-complaint.dto';
 import { ComplaintQueryDto } from './dto/complaint-query.dto';
+import { ComplaintMapPointsQueryDto } from './dto/complaint-map-points-query.dto';
 import { ChangeStatusDto } from './dto/change-status.dto';
 import { StatusService } from './status.service';
 import { AssignmentsService } from './assignments.service';
 import { AuditService, AUDIT_ACTIONS } from '../audit/audit.service';
 import { RealtimeService } from '../../core/realtime/realtime.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationRecipientsService } from '../notifications/notification-recipients.service';
+import { excludeRecipientIds } from '../notifications/notification-recipient.util';
+import { shouldNotifyCitizenOfStatusChange } from '../notifications/complaint-notification-policy';
+import { MunicipalityResolutionService } from '../municipalities/municipality-resolution.service';
+import { MunicipalityResolutionError } from '../municipalities/municipality-resolution.error';
+import type { MunicipalityResolutionResult } from '../municipalities/municipality-resolution.types';
 import { MailService } from '../../core/mail/mail.service';
 import { ConfigService } from '@nestjs/config';
-import { ComplaintStatus, AttachmentStage, AttachmentType, ComplaintPriority, RejectionReason, VerificationStatus, NotificationType } from '@prisma/client';
+import {
+  ComplaintStatus,
+  AttachmentStage,
+  AttachmentType,
+  ComplaintPriority,
+  RejectionReason,
+  VerificationStatus,
+  NotificationType,
+  TransferStatus,
+  Prisma,
+} from '@prisma/client';
+import { deriveDepartmentHealth } from '@shared/utils/department-health';
+import {
+  TERMINAL_COMPLAINT_STATUSES,
+  activeStatusWhere,
+  resolveQueryFromBucket,
+  buildMyDepartmentActiveWhere,
+  buildAllActiveWhere,
+  buildOverdueWhere,
+  buildNeedsAttentionWhere,
+} from './complaint-filters';
+import { isCitizenOnlyViewer as checkCitizenOnlyViewer } from './complaints-access.util';
+import { classificationConflictsWithAssignment } from './complaints-classification.util';
+import { boundaryBounds } from '../../core/geo/geojson-boundary.util';
+import type { GeoJsonGeometry } from '../../core/geo/geojson-location.util';
+
+export { TERMINAL_COMPLAINT_STATUSES } from './complaint-filters';
+
+/** Canonical "active complaint" filter — opposite of terminal + not soft-deleted. */
+export function activeComplaintFilter() {
+  return {
+    deletedAt: null,
+    status: { notIn: TERMINAL_COMPLAINT_STATUSES },
+  } as const;
+}
+
+function isTerminal(status: ComplaintStatus) {
+  return TERMINAL_COMPLAINT_STATUSES.includes(status);
+}
+
+function isPrismaRecordNotFound(err: unknown): boolean {
+  return (
+    err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025'
+  );
+}
 
 function friendlyStatus(status: ComplaintStatus, locale: 'EN' | 'AR' | 'FR'): string {
   const map: Record<'EN' | 'AR' | 'FR', Record<ComplaintStatus, string>> = {
@@ -66,6 +118,14 @@ const PRIORITY_SLA_HOURS: Record<ComplaintPriority, number> = {
   URGENT: 4,     // 4 hours
 };
 
+const PLATFORM_KEY_ALLOW_UNVERIFIED_CITIZEN_COMPLAINTS =
+  'complaints.allow_unverified_citizen_complaints';
+
+export const COMPLAINT_RISK_REASONS = {
+  UNVERIFIED_EMAIL: 'UNVERIFIED_EMAIL',
+  UNVERIFIED_KYC: 'UNVERIFIED_KYC',
+} as const;
+
 @Injectable()
 export class ComplaintsService {
   constructor(
@@ -77,9 +137,102 @@ export class ComplaintsService {
     private audit: AuditService,
     private realtime: RealtimeService,
     private notifications: NotificationsService,
+    private notificationRecipients: NotificationRecipientsService,
+    private municipalityResolution: MunicipalityResolutionService,
     private mail: MailService,
     private config: ConfigService,
   ) {}
+
+  private isCitizenOnlyViewer(permissions: string[]): boolean {
+    return checkCitizenOnlyViewer(permissions);
+  }
+
+  private buildStaffRoutingInfo(complaint: {
+    municipalityId: string;
+    reporterRegisteredMunicipalityId: string | null;
+    municipalityResolutionMethod: string | null;
+    municipalityResolutionCandidates: unknown;
+    municipality?: { id: string; name: string; code: string } | null;
+    reporterRegisteredMunicipality?: { id: string; name: string; code: string } | null;
+    createdBy?: { verificationStatus: VerificationStatus } | null;
+  }) {
+    const isExternalCitizenReport = !!(
+      complaint.reporterRegisteredMunicipalityId &&
+      complaint.reporterRegisteredMunicipalityId !== complaint.municipalityId
+    );
+    return {
+      isExternalCitizenReport,
+      operationalMunicipality: complaint.municipality
+        ? {
+            id: complaint.municipality.id,
+            name: complaint.municipality.name,
+            code: complaint.municipality.code,
+          }
+        : null,
+      reporterRegisteredMunicipality: complaint.reporterRegisteredMunicipality
+        ? {
+            id: complaint.reporterRegisteredMunicipality.id,
+            name: complaint.reporterRegisteredMunicipality.name,
+            code: complaint.reporterRegisteredMunicipality.code,
+          }
+        : null,
+      municipalityResolutionMethod: complaint.municipalityResolutionMethod,
+      municipalityResolutionCandidates: complaint.municipalityResolutionCandidates,
+      reporterVerificationStatus: complaint.createdBy?.verificationStatus ?? null,
+    };
+  }
+
+  async resolveIncidentLocation(
+    latitude: number,
+    longitude: number,
+    userMunicipalityId: string | null,
+  ): Promise<MunicipalityResolutionResult> {
+    return this.municipalityResolution.resolveFromCoordinates(
+      latitude,
+      longitude,
+      userMunicipalityId || null,
+    );
+  }
+
+  private async isAllowUnverifiedCitizenComplaints(): Promise<boolean> {
+    const row = await this.prisma.platformSetting.findUnique({
+      where: { key: PLATFORM_KEY_ALLOW_UNVERIFIED_CITIZEN_COMPLAINTS },
+    });
+    return row?.value === 'true';
+  }
+
+  private canSeeRiskMetadata(permissions: string[]): boolean {
+    return (
+      permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL) ||
+      permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
+      permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED)
+    );
+  }
+
+  private mapRiskForStaff(complaint: {
+    isRiskySubmission: boolean;
+    riskReasons: unknown;
+    submittedByEmailVerified: boolean | null;
+    submittedByKycVerified: boolean | null;
+  }) {
+    if (!complaint.isRiskySubmission) {
+      return {
+        isRiskySubmission: false as const,
+        riskReasons: [] as string[],
+        submittedByEmailVerified: complaint.submittedByEmailVerified,
+        submittedByKycVerified: complaint.submittedByKycVerified,
+      };
+    }
+    const reasons = Array.isArray(complaint.riskReasons)
+      ? (complaint.riskReasons as string[])
+      : [];
+    return {
+      isRiskySubmission: true as const,
+      riskReasons: reasons,
+      submittedByEmailVerified: complaint.submittedByEmailVerified,
+      submittedByKycVerified: complaint.submittedByKycVerified,
+    };
+  }
 
   /**
    * Citizen-facing notification for a complaint status change.
@@ -90,6 +243,9 @@ export class ComplaintsService {
     complaint: { id: string; createdById: string; municipalityId: string; referenceCode?: string | null },
     newStatus: ComplaintStatus,
   ) {
+    if (!shouldNotifyCitizenOfStatusChange(newStatus)) {
+      return;
+    }
     try {
       const creator = await this.prisma.user.findUnique({
         where: { id: complaint.createdById },
@@ -144,33 +300,125 @@ export class ComplaintsService {
     }
   }
 
+  /** Staff triage + optional department oversight when a complaint is filed. */
+  private async notifyComplaintCreated(
+    complaint: {
+      id: string;
+      municipalityId: string;
+      referenceCode: string;
+      departmentId: string | null;
+    },
+    departmentName: string | null,
+  ) {
+    try {
+      const triageIds =
+        await this.notificationRecipients.findComplaintTriageRecipientIds(
+          complaint.municipalityId,
+        );
+
+      if (triageIds.length) {
+        await this.notifications.createAndSend(
+          complaint.municipalityId,
+          triageIds,
+          NotificationType.COMPLAINT_SUBMITTED,
+          'New complaint submitted',
+          `Complaint ${complaint.referenceCode} needs review.`,
+          {
+            complaintId: complaint.id,
+            referenceCode: complaint.referenceCode,
+            deepLink: `/complaints/${complaint.id}`,
+          },
+        );
+      }
+
+      if (complaint.departmentId) {
+        const deptIds =
+          await this.notificationRecipients.findDepartmentComplaintRecipientIds(
+            complaint.municipalityId,
+            complaint.departmentId,
+          );
+        const deptOnly = excludeRecipientIds(deptIds, triageIds);
+        if (deptOnly.length) {
+          const deptLabel = departmentName ?? 'your department';
+          await this.notifications.createAndSend(
+            complaint.municipalityId,
+            deptOnly,
+            NotificationType.COMPLAINT_SUBMITTED,
+            'New complaint for your department',
+            `Complaint ${complaint.referenceCode} was routed to ${deptLabel}.`,
+            {
+              complaintId: complaint.id,
+              referenceCode: complaint.referenceCode,
+              departmentId: complaint.departmentId,
+              departmentName: departmentName ?? undefined,
+              deepLink: `/complaints/${complaint.id}`,
+            },
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `Failed to send complaint-created notifications for ${complaint.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
   async create(
     userId: string,
     municipalityId: string,
     dto: CreateComplaintDto,
     files?: Express.Multer.File[],
   ) {
-    // Check KYC verification - citizens must be verified to submit complaints
+    const permissions = await this.permissionsResolver.getUserPermissions(userId);
+    const isStaff =
+      permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL) ||
+      permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
+      permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED);
+
     const creator = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { verificationStatus: true },
+      select: {
+        verificationStatus: true,
+        emailVerifiedAt: true,
+        createdVia: true,
+      },
     });
 
-    if (creator?.verificationStatus !== VerificationStatus.VERIFIED) {
-      // Check if user has admin/staff permissions (staff bypass KYC)
-      const permissions = await this.permissionsResolver.getUserPermissions(userId);
-      const isStaff = permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL) ||
-                      permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
-                      permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED);
+    const emailVerified = !!creator?.emailVerifiedAt;
+    const kycVerified =
+      creator?.verificationStatus === VerificationStatus.VERIFIED;
+    const allowUnverifiedPolicy = await this.isAllowUnverifiedCitizenComplaints();
 
-      if (!isStaff) {
-        throw new ForbiddenException({
-          statusCode: 403,
-          error: 'USER_NOT_VERIFIED',
-          message: 'Identity verification required to submit complaints. Please complete KYC verification first.',
-        });
+    const riskReasons: string[] = [];
+    if (!emailVerified) riskReasons.push(COMPLAINT_RISK_REASONS.UNVERIFIED_EMAIL);
+    if (!kycVerified) riskReasons.push(COMPLAINT_RISK_REASONS.UNVERIFIED_KYC);
+    const isRiskySubmission = !isStaff && riskReasons.length > 0;
+
+    if (!isStaff) {
+      if (isRiskySubmission && !allowUnverifiedPolicy) {
+        if (!kycVerified) {
+          throw new ForbiddenException({
+            statusCode: 403,
+            code: 'USER_NOT_VERIFIED',
+            message:
+              'Identity verification required to submit complaints. Please complete KYC verification first.',
+          });
+        }
+        if (!emailVerified) {
+          throw new ForbiddenException({
+            statusCode: 403,
+            code: 'EMAIL_NOT_VERIFIED',
+            message:
+              'Email verification is required before you can submit complaints.',
+          });
+        }
       }
     }
+
+    const riskyDueDate = isRiskySubmission
+      ? new Date(Date.now() + PRIORITY_SLA_HOURS.LOW * 60 * 60 * 1000)
+      : undefined;
 
     // Hard limit photo count even if multer was bypassed (defence in depth).
     if (files && files.length > 5) {
@@ -192,46 +440,107 @@ export class ComplaintsService {
       }
     }
 
-    // Verify category exists
+    const reporterRegisteredMunicipalityId = municipalityId || null;
+
+    let routing: Awaited<
+      ReturnType<MunicipalityResolutionService['resolveForComplaintCreate']>
+    >;
+    try {
+      routing = await this.municipalityResolution.resolveForComplaintCreate(
+        dto.latitude,
+        dto.longitude,
+        reporterRegisteredMunicipalityId,
+        dto.selectedMunicipalityId,
+      );
+    } catch (err: unknown) {
+      if (err instanceof MunicipalityResolutionError) {
+        throw new BadRequestException({
+          statusCode: 400,
+          code: err.code,
+          message: err.message,
+          ...(err.candidates.length ? { candidates: err.candidates } : {}),
+        });
+      }
+      throw new BadRequestException({
+        statusCode: 400,
+        code: 'LOCATION_RESOLUTION_FAILED',
+        message: 'Unable to resolve municipality for this location.',
+      });
+    }
+
+    const operationalMunicipalityId = routing.operationalMunicipalityId;
+
+    // Verify category exists in the operational municipality
     const category = await this.prisma.complaintCategory.findFirst({
       where: {
         id: dto.categoryId,
-        municipalityId,
+        municipalityId: operationalMunicipalityId,
         isActive: true,
+      },
+      include: {
+        department: { select: { id: true, name: true } },
       },
     });
 
     if (!category) {
-      throw new NotFoundException('Category not found');
+      throw new BadRequestException({
+        statusCode: 400,
+        code: 'CATEGORY_MUNICIPALITY_MISMATCH',
+        message:
+          'The selected category does not belong to the municipality for this incident location.',
+      });
     }
 
     // Get municipality code for reference
     const municipality = await this.prisma.municipality.findUnique({
-      where: { id: municipalityId },
+      where: { id: operationalMunicipalityId },
       select: { code: true },
     });
+
+    if (!municipality) {
+      throw new NotFoundException('Municipality not found');
+    }
 
     // Generate sequential reference code (BEI-CMP-2026-000001)
     const referenceCode = await generateReferenceCode(
       this.prisma,
-      municipalityId,
-      municipality!.code,
+      operationalMunicipalityId,
+      municipality.code,
     );
+
+    const resolutionCandidatesJson =
+      routing.candidates.length > 0
+        ? (routing.candidates as Prisma.InputJsonValue)
+        : undefined;
 
     // Create complaint
     const complaint = await this.prisma.complaint.create({
       data: {
-        municipalityId,
+        municipalityId: operationalMunicipalityId,
+        reporterRegisteredMunicipalityId,
+        municipalityResolutionMethod: routing.method,
+        municipalityResolutionCandidates: resolutionCandidatesJson,
+        locationResolvedAt: routing.locationResolvedAt,
         categoryId: dto.categoryId,
         departmentId: category.departmentId,
         createdById: userId,
         referenceCode,
-        title: dto.title,
-        description: dto.description,
+        title: dto.title.trim(),
+        description: dto.description.trim(),
         latitude: dto.latitude,
         longitude: dto.longitude,
         address: dto.address,
         status: ComplaintStatus.SUBMITTED,
+        ...(isRiskySubmission
+          ? {
+              priority: ComplaintPriority.LOW,
+              dueDate: riskyDueDate,
+              isRiskySubmission: true,
+              riskReasons,
+              submittedByEmailVerified: emailVerified,
+              submittedByKycVerified: kycVerified,
+            }
+          : {}),
       },
     });
 
@@ -242,6 +551,9 @@ export class ComplaintsService {
         changedById: userId,
         fromStatus: null,
         toStatus: ComplaintStatus.SUBMITTED,
+        notes: isRiskySubmission
+          ? 'Submitted by unverified citizen'
+          : undefined,
       },
     });
 
@@ -277,7 +589,7 @@ export class ComplaintsService {
     await this.audit.log({
       actorId: userId,
       actorEmail: creatorEmail,
-      municipalityId,
+      municipalityId: operationalMunicipalityId,
       action: AUDIT_ACTIONS.COMPLAINT_CREATE,
       resourceType: 'Complaint',
       resourceId: complaint.id,
@@ -285,16 +597,48 @@ export class ComplaintsService {
         referenceCode: complaint.referenceCode,
         title: complaint.title,
         attachmentCount: attachments.length,
+        isRiskySubmission,
+        riskReasons: isRiskySubmission ? riskReasons : undefined,
+        reporterRegisteredMunicipalityId,
+        municipalityResolutionMethod: routing.method,
+        municipalityResolutionStatus: routing.status,
       },
     });
 
-    // Realtime: tell HODs/Assigners/Admins in this muni a new complaint landed
+    if (isRiskySubmission) {
+      await this.audit.log({
+        actorId: userId,
+        actorEmail: creatorEmail,
+        municipalityId: operationalMunicipalityId,
+        action: AUDIT_ACTIONS.COMPLAINT_RISKY_ACCEPTED,
+        resourceType: 'Complaint',
+        resourceId: complaint.id,
+        metadata: {
+          referenceCode: complaint.referenceCode,
+          riskReasons,
+          policy: PLATFORM_KEY_ALLOW_UNVERIFIED_CITIZEN_COMPLAINTS,
+          forcedPriority: ComplaintPriority.LOW,
+        },
+      });
+    }
+
+    // Realtime: tell HODs/Assigners/Admins in the operational muni a new complaint landed
     this.realtime.complaintCreated({
       id: complaint.id,
-      municipalityId,
+      municipalityId: operationalMunicipalityId,
       departmentId: complaint.departmentId,
       createdById: userId,
     });
+
+    void this.notifyComplaintCreated(
+      {
+        id: complaint.id,
+        municipalityId: operationalMunicipalityId,
+        referenceCode: complaint.referenceCode ?? complaint.id,
+        departmentId: complaint.departmentId,
+      },
+      category.department?.name ?? null,
+    );
 
     return {
       id: complaint.id,
@@ -307,71 +651,113 @@ export class ComplaintsService {
   }
 
   async findAll(userId: string, municipalityId: string, query: ComplaintQueryDto) {
+    const effectiveQuery = resolveQueryFromBucket(query);
     const permissions = await this.permissionsResolver.getUserPermissions(userId);
+    const citizenOnly = this.isCitizenOnlyViewer(permissions);
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { departmentId: true },
     });
-    
+
     const where: any = {
-      municipalityId,
       deletedAt: null,
     };
+
+    if (!citizenOnly) {
+      where.municipalityId = municipalityId;
+    }
 
     // Initialize AND array for combining filters
     where.AND = where.AND || [];
 
     // Filter based on permissions (hierarchical)
     if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
-      // Admin can see all - no additional filter
+      // Admin / Assigner can see all complaints in the municipality, including
+      // unrouted ones (departmentId === null). The Assigner queue is exactly
+      // this set; admins use it for oversight.
     } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT)) {
-      // HOD/Supervisor sees their department + unassigned complaints
+      // HOD/Supervisor sees ONLY their department's complaints. Unrouted
+      // complaints (departmentId=null) belong to the Assigner queue, not
+      // to an arbitrary HOD — showing them would leak cross-dept work the
+      // HOD has no authority over and would also break the bucket count
+      // (which is scoped to own dept) vs list (which previously included
+      // null-dept) match.
       if (user?.departmentId) {
-        where.AND.push({
-          OR: [
-            { departmentId: user.departmentId },
-            { departmentId: null },
-          ],
-        });
+        where.AND.push({ departmentId: user.departmentId });
+      } else {
+        return paginate([], 0, query);
       }
     } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED)) {
-      // Field workers always see their assigned complaints
-      where.assignments = {
-        some: { assignedToId: userId, isActive: true },
-      };
+      // Field workers: active assignment by default. History views can opt
+      // into including past assignments so completed/rejected work the worker
+      // touched is still visible in their History tab.
+      if (effectiveQuery.includeAssignmentHistory) {
+        const histFilters: any[] = [
+          { assignments: { some: { assignedToId: userId } } },
+        ];
+        if (user?.departmentId) {
+          histFilters.push({
+            OR: [
+              { departmentId: user.departmentId },
+              { departmentId: null },
+            ],
+          });
+        }
+        where.AND.push(histFilters.length === 1 ? histFilters[0] : { AND: histFilters });
+      } else {
+        where.AND.push(
+          this.assignmentsService.buildActiveAssignmentVisibilityFilter(
+            userId,
+            user?.departmentId,
+          ),
+        );
+      }
     } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_OWN)) {
-      // Citizens see their own complaints
+      // Citizens see all complaints they created, including cross-municipality reports.
       where.createdById = userId;
     } else {
       // No view permission - return empty
-      return paginate([], 0, query);
+      return paginate([], 0, effectiveQuery);
     }
 
     // Additional filters
-    if (query.status?.length) {
-      where.status = { in: query.status };
+    if (effectiveQuery.status?.length) {
+      where.status = { in: effectiveQuery.status };
     }
 
-    if (query.categoryId) {
-      where.categoryId = query.categoryId;
+    if (effectiveQuery.categoryId) {
+      where.categoryId = effectiveQuery.categoryId;
     }
 
     // Only apply department filter if user has permission to view all
-    if (query.departmentId && permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
-      where.departmentId = query.departmentId;
+    if (effectiveQuery.departmentId && permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
+      where.departmentId = effectiveQuery.departmentId;
+    }
+
+    if (effectiveQuery.unrouted) {
+      if (!permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
+        throw new ForbiddenException(
+          'You do not have permission to filter unrouted complaints',
+        );
+      }
+      if (effectiveQuery.departmentId) {
+        throw new BadRequestException(
+          'Cannot combine departmentId filter with unrouted=true',
+        );
+      }
+      where.departmentId = null;
     }
 
     // Priority filter
-    if (query.priority?.length) {
-      where.priority = { in: query.priority };
+    if (effectiveQuery.priority?.length) {
+      where.priority = { in: effectiveQuery.priority };
     }
 
     // Overdue filter
-    if (query.overdue !== undefined) {
+    if (effectiveQuery.overdue !== undefined) {
       const now = new Date();
-      if (query.overdue) {
-        where.dueDate = { lt: now };
-        where.status = { notIn: [ComplaintStatus.COMPLETED, ComplaintStatus.CLOSED, ComplaintStatus.REJECTED] };
+      if (effectiveQuery.overdue) {
+        Object.assign(where, buildOverdueWhere(now));
       } else {
         where.AND.push({
           OR: [
@@ -382,11 +768,11 @@ export class ComplaintsService {
       }
     }
 
-    if (query.search) {
+    if (effectiveQuery.search) {
       where.AND.push({
         OR: [
-          { title: { contains: query.search, mode: 'insensitive' } },
-          { referenceCode: { contains: query.search, mode: 'insensitive' } },
+          { title: { contains: effectiveQuery.search, mode: 'insensitive' } },
+          { referenceCode: { contains: effectiveQuery.search, mode: 'insensitive' } },
         ],
       });
     }
@@ -394,35 +780,43 @@ export class ComplaintsService {
     // "Assigned to me" — narrows results to complaints where the caller has an
     // active assignment. Honoured for any user with at least view_assigned;
     // for view_all/view_department this layers on top of the permission scope.
-    if (query.myAssignments) {
-      where.AND.push({
-        assignments: { some: { assignedToId: userId, isActive: true } },
-      });
+    if (effectiveQuery.myAssignments) {
+      where.AND.push(
+        this.assignmentsService.buildActiveAssignmentVisibilityFilter(
+          userId,
+          user?.departmentId,
+        ),
+      );
     }
 
     // "Unassigned inbox" — complaints with no active assignment yet. The
     // typical action queue for HOD/Supervisor: "what landed in my dept that
     // nobody owns yet?".
-    if (query.unassigned) {
+    if (effectiveQuery.unassigned) {
       where.AND.push({
         assignments: { none: { isActive: true } },
       });
     }
 
-    // "Action queue" buckets (Needs attention, Overdue) only count open
-    // complaints. The table needs the same filter so the count badge and the
-    // visible rows agree — otherwise a completed/closed complaint with no
-    // active assignment shows up in the table but isn't counted.
-    if (query.openOnly) {
-      where.AND.push({
-        status: {
-          notIn: [
-            ComplaintStatus.COMPLETED,
-            ComplaintStatus.CLOSED,
-            ComplaintStatus.REJECTED,
-          ],
-        },
-      });
+    // Active operational queues — never mix terminal statuses into the table.
+    if (effectiveQuery.openOnly) {
+      where.AND.push({ status: activeStatusWhere() });
+    }
+
+    // "History" buckets — terminal complaints only. If a specific status was
+    // also supplied (e.g. COMPLETED), it intersects via the query.status path
+    // above so a Completed/Resolved tab still filters down to one status.
+    if (effectiveQuery.terminalOnly) {
+      where.AND.push({ status: { in: TERMINAL_COMPLAINT_STATUSES } });
+    }
+
+    if (effectiveQuery.riskyOnly) {
+      if (!this.canSeeRiskMetadata(permissions)) {
+        throw new ForbiddenException(
+          'You do not have permission to filter risky submissions',
+        );
+      }
+      where.AND.push({ isRiskySubmission: true });
     }
 
     // Clean up empty AND array
@@ -440,16 +834,29 @@ export class ComplaintsService {
           status: true,
           priority: true,
           dueDate: true,
+          isRiskySubmission: true,
+          riskReasons: true,
+          submittedByEmailVerified: true,
+          submittedByKycVerified: true,
+          municipalityId: true,
+          reporterRegisteredMunicipalityId: true,
+          municipalityResolutionMethod: true,
+          municipalityResolutionCandidates: true,
           category: {
             select: { id: true, name: true },
           },
           department: {
             select: { id: true, name: true },
           },
+          municipality: { select: { id: true, name: true, code: true } },
+          reporterRegisteredMunicipality: {
+            select: { id: true, name: true, code: true },
+          },
+          createdBy: { select: { verificationStatus: true } },
           createdAt: true,
         },
-        skip: query.skip,
-        take: query.limit,
+        skip: effectiveQuery.skip,
+        take: effectiveQuery.limit,
         orderBy: [
           // Prioritize by urgency, then due date
           { priority: 'desc' },
@@ -462,12 +869,244 @@ export class ComplaintsService {
 
     // Add isOverdue flag
     const now = new Date();
-    const complaintsWithOverdue = complaints.map((c) => ({
-      ...c,
-      isOverdue: c.dueDate ? c.dueDate < now && !['COMPLETED', 'CLOSED', 'REJECTED'].includes(c.status) : false,
+    const showRisk = this.canSeeRiskMetadata(permissions);
+    const complaintsWithOverdue = complaints.map((c) => {
+      const base = {
+        id: c.id,
+        referenceCode: c.referenceCode,
+        title: c.title,
+        status: c.status,
+        priority: c.priority,
+        dueDate: c.dueDate,
+        category: c.category,
+        department: c.department,
+        createdAt: c.createdAt,
+        isOverdue: c.dueDate
+          ? c.dueDate < now &&
+            !['COMPLETED', 'CLOSED', 'REJECTED'].includes(c.status)
+          : false,
+      };
+      if (!showRisk) return base;
+      return {
+        ...base,
+        ...this.mapRiskForStaff(c),
+        ...this.buildStaffRoutingInfo(c),
+      };
+    });
+
+    return paginate(complaintsWithOverdue, total, effectiveQuery);
+  }
+
+  /**
+   * Lightweight geolocated complaints for the staff dashboard map.
+   * Uses the same visibility rules as findAll; citizens cannot access.
+   */
+  async findMapPoints(
+    userId: string,
+    municipalityId: string,
+    query: ComplaintMapPointsQueryDto,
+  ) {
+    const permissions = await this.permissionsResolver.getUserPermissions(userId);
+    if (this.isCitizenOnlyViewer(permissions)) {
+      throw new ForbiddenException('Complaint map is not available for citizen accounts');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { departmentId: true },
+    });
+
+    const where: Prisma.ComplaintWhereInput = {
+      deletedAt: null,
+      municipalityId,
+      latitude: { not: null },
+      longitude: { not: null },
+      AND: [],
+    };
+
+    if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
+      // full municipality scope
+    } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT)) {
+      if (!user?.departmentId) {
+        return this.buildMapPointsResponse(municipalityId, []);
+      }
+      (where.AND as Prisma.ComplaintWhereInput[]).push({
+        departmentId: user.departmentId,
+      });
+    } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED)) {
+      (where.AND as Prisma.ComplaintWhereInput[]).push(
+        this.assignmentsService.buildActiveAssignmentVisibilityFilter(
+          userId,
+          user?.departmentId,
+        ),
+      );
+    } else {
+      throw new ForbiddenException('You do not have permission to view complaint map data');
+    }
+
+    if (query.status?.length) {
+      where.status = { in: query.status };
+    }
+    if (query.priority?.length) {
+      where.priority = { in: query.priority };
+    }
+    if (query.categoryId) {
+      where.categoryId = query.categoryId;
+    }
+    if (query.departmentId) {
+      if (!permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
+        throw new ForbiddenException(
+          'You do not have permission to filter by department',
+        );
+      }
+      where.departmentId = query.departmentId;
+    }
+    if (query.dateFrom || query.dateTo) {
+      where.createdAt = {
+        ...(query.dateFrom ? { gte: new Date(query.dateFrom) } : {}),
+        ...(query.dateTo ? { lte: new Date(query.dateTo) } : {}),
+      };
+    }
+    if (query.search?.trim()) {
+      (where.AND as Prisma.ComplaintWhereInput[]).push({
+        OR: [
+          { title: { contains: query.search.trim(), mode: 'insensitive' } },
+          {
+            referenceCode: {
+              contains: query.search.trim(),
+              mode: 'insensitive',
+            },
+          },
+        ],
+      });
+    }
+
+    if ((where.AND as Prisma.ComplaintWhereInput[]).length === 0) {
+      delete where.AND;
+    }
+
+    const rows = await this.prisma.complaint.findMany({
+      where,
+      select: {
+        id: true,
+        referenceCode: true,
+        title: true,
+        latitude: true,
+        longitude: true,
+        status: true,
+        priority: true,
+        address: true,
+        createdAt: true,
+        category: { select: { id: true, name: true, nameAr: true, nameFr: true } },
+        department: {
+          select: { id: true, name: true, nameAr: true, nameFr: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 10_000,
+    });
+
+    const points = rows.map((c) => ({
+      id: c.id,
+      referenceCode: c.referenceCode,
+      title: c.title,
+      latitude: Number(c.latitude),
+      longitude: Number(c.longitude),
+      status: c.status,
+      priority: c.priority,
+      category: c.category,
+      department: c.department,
+      address: c.address,
+      createdAt: c.createdAt,
     }));
 
-    return paginate(complaintsWithOverdue, total, query);
+    return this.buildMapPointsResponse(municipalityId, points);
+  }
+
+  private async buildMapPointsResponse(
+    municipalityId: string,
+    points: {
+      id: string;
+      referenceCode: string | null;
+      title: string;
+      latitude: number;
+      longitude: number;
+      status: ComplaintStatus;
+      priority: ComplaintPriority;
+      category: { id: string; name: string; nameAr: string | null; nameFr: string | null };
+      department: {
+        id: string;
+        name: string;
+        nameAr: string | null;
+        nameFr: string | null;
+      } | null;
+      address: string | null;
+      createdAt: Date;
+    }[],
+  ) {
+    const DEFAULT_CENTER = { latitude: 33.8938, longitude: 35.5018 };
+
+    const [municipality, boundaryRow] = await Promise.all([
+      this.prisma.municipality.findUnique({
+        where: { id: municipalityId },
+        select: { latitude: true, longitude: true },
+      }),
+      this.prisma.municipalityBoundary.findFirst({
+        where: { municipalityId, isActive: true },
+        select: { geojson: true },
+      }),
+    ]);
+
+    let boundary: {
+      geojson: GeoJsonGeometry;
+      bounds: [number, number, number, number];
+    } | null = null;
+
+    if (boundaryRow?.geojson) {
+      try {
+        const geojson = boundaryRow.geojson as GeoJsonGeometry;
+        const bounds = boundaryBounds(geojson);
+        boundary = { geojson, bounds };
+      } catch {
+        // Invalid stored boundary must not break map-points for staff dashboards.
+        boundary = null;
+      }
+    }
+
+    const muniLat =
+      municipality?.latitude != null ? Number(municipality.latitude) : null;
+    const muniLng =
+      municipality?.longitude != null ? Number(municipality.longitude) : null;
+
+    let center = DEFAULT_CENTER;
+    if (boundary) {
+      const [minLat, minLng, maxLat, maxLng] = boundary.bounds;
+      center = {
+        latitude: (minLat + maxLat) / 2,
+        longitude: (minLng + maxLng) / 2,
+      };
+    } else if (muniLat != null && muniLng != null) {
+      center = { latitude: muniLat, longitude: muniLng };
+    } else if (points.length > 0) {
+      const sum = points.reduce(
+        (acc, p) => ({
+          lat: acc.lat + p.latitude,
+          lng: acc.lng + p.longitude,
+        }),
+        { lat: 0, lng: 0 },
+      );
+      center = {
+        latitude: sum.lat / points.length,
+        longitude: sum.lng / points.length,
+      };
+    }
+
+    return {
+      points,
+      center,
+      boundary,
+      total: points.length,
+    };
   }
 
   /**
@@ -510,13 +1149,24 @@ export class ComplaintsService {
     const complaint = await this.prisma.complaint.findFirst({
       where: {
         id: complaintId,
-        municipalityId,
         deletedAt: null,
       },
       include: {
         category: { select: { id: true, name: true } },
         department: { select: { id: true, name: true } },
-        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+        municipality: { select: { id: true, name: true, code: true } },
+        reporterRegisteredMunicipality: {
+          select: { id: true, name: true, code: true },
+        },
+        createdBy: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            verificationStatus: true,
+          },
+        },
         attachments: {
           where: { deletedAt: null },
           select: {
@@ -533,6 +1183,7 @@ export class ComplaintsService {
             fromStatus: true,
             toStatus: true,
             notes: true,
+            eventKind: true,
             changedBy: { select: { id: true, firstName: true, lastName: true } },
             createdAt: true,
           },
@@ -567,13 +1218,45 @@ export class ComplaintsService {
     const canViewAll = permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
     const canViewDepartment = permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT);
     const isOwner = complaint.createdById === userId;
+    const citizenOnly = this.isCitizenOnlyViewer(permissions);
     const isAssigned = await this.assignmentsService.isAssignedTo(complaintId, userId);
-    // HOD/Supervisor can view complaints in their department OR unassigned complaints
-    const isSameDepartment = user?.departmentId && complaint.departmentId === user.departmentId;
-    const isUnassignedComplaint = complaint.departmentId === null;
-    const canViewAsDepartmentHead = canViewDepartment && (isSameDepartment || isUnassignedComplaint);
 
-    if (!canViewAll && !isOwner && !isAssigned && !canViewAsDepartmentHead) {
+    if (
+      !isOwner &&
+      !citizenOnly &&
+      municipalityId &&
+      complaint.municipalityId !== municipalityId
+    ) {
+      throw new NotFoundException('Complaint not found');
+    }
+    // HOD/Supervisor can ONLY view complaints in their own department.
+    // Unrouted complaints (departmentId=null) are the Assigner's queue —
+    // HOD has no operational authority there and shouldn't read them.
+    const isSameDepartment =
+      !!user?.departmentId && complaint.departmentId === user.departmentId;
+    const canViewAsDepartmentHead = canViewDepartment && isSameDepartment;
+
+    // PREVIEW ACCESS: a HOD/Supervisor of a department that has an OPEN
+    // transfer/help request targeting their department can read a sanitized
+    // version of the complaint so they can make an informed decision. They
+    // do NOT see internal staff notes, assignee identity, or status logs.
+    const canPreviewAsReceiver =
+      !canViewAll &&
+      !isOwner &&
+      !isAssigned &&
+      !canViewAsDepartmentHead &&
+      canViewDepartment &&
+      user?.departmentId
+        ? await this.hasPendingInboundRequest(complaintId, user.departmentId)
+        : false;
+
+    if (
+      !canViewAll &&
+      !isOwner &&
+      !isAssigned &&
+      !canViewAsDepartmentHead &&
+      !canPreviewAsReceiver
+    ) {
       throw new ForbiddenException('You do not have access to this complaint');
     }
 
@@ -592,23 +1275,36 @@ export class ComplaintsService {
     // identity of staff who changed the status. Strip those fields here so
     // the response cannot leak via DTO/serializer drift.
     const isCitizenOnly = isOwner && !canViewAll && !canViewAsDepartmentHead && !isAssigned;
+    // Receiver-preview viewers (HOD/Supervisor of a dept with a pending
+    // inbound transfer/help) need enough to decide but NOT internal notes,
+    // status history, current assignee, or the citizen reporter's identity.
+    const isPreviewOnly = canPreviewAsReceiver;
 
-    const safeStatusHistory = complaint.statusLogs.map((log: any) => ({
-      id: log.id,
-      fromStatus: log.fromStatus,
-      toStatus: log.toStatus,
-      // Hide staff notes from citizens — these are internal triage notes.
-      notes: isCitizenOnly ? null : log.notes,
-      changedBy: isCitizenOnly ? null : log.changedBy,
-      createdAt: log.createdAt,
-    }));
+    const safeStatusHistory = isPreviewOnly
+      ? []
+      : complaint.statusLogs
+          .filter((log: any) => {
+            // Citizens never see internal help/transfer event noise on
+            // their own complaint. Real status transitions remain visible
+            // so they still see the workflow progress in plain terms.
+            if (!isCitizenOnly) return true;
+            return !log.eventKind;
+          })
+          .map((log: any) => ({
+            id: log.id,
+            fromStatus: log.fromStatus,
+            toStatus: log.toStatus,
+            notes: isCitizenOnly ? null : log.notes,
+            eventKind: isCitizenOnly ? null : log.eventKind,
+            changedBy: isCitizenOnly ? null : log.changedBy,
+            createdAt: log.createdAt,
+          }));
 
     const safeAssignment = currentAssignment
-      ? isCitizenOnly
+      ? isCitizenOnly || isPreviewOnly
         ? {
-            // Citizens see only that the complaint *is* assigned, not who.
+            // Citizens / preview-mode see only that the complaint IS assigned.
             assignedAt: currentAssignment.createdAt,
-            // Department is allowed (it's already on the complaint root).
             isAssigned: true,
           }
         : {
@@ -619,6 +1315,12 @@ export class ComplaintsService {
           }
       : null;
 
+    // Strip citizen reporter PII from preview mode — the receiver doesn't
+    // need the citizen's name/email to decide on a transfer or help request.
+    const safeCreatedBy = isPreviewOnly
+      ? null
+      : complaint.createdBy;
+
     return {
       id: complaint.id,
       referenceCode: complaint.referenceCode,
@@ -628,8 +1330,8 @@ export class ComplaintsService {
       priority: complaint.priority,
       dueDate: complaint.dueDate,
       isOverdue,
-      rejectionReason: complaint.rejectionReason,
-      rejectionNotes: complaint.rejectionNotes,
+      rejectionReason: isPreviewOnly ? null : complaint.rejectionReason,
+      rejectionNotes: isPreviewOnly ? null : complaint.rejectionNotes,
       resolvedAt: complaint.resolvedAt,
       escalatedAt: complaint.escalatedAt,
       latitude: complaint.latitude?.toString(),
@@ -637,13 +1339,128 @@ export class ComplaintsService {
       address: complaint.address,
       category: complaint.category,
       department: complaint.department,
-      createdBy: complaint.createdBy,
-      attachments: complaint.attachments,
+      createdBy: safeCreatedBy,
+      // Submission photos are operationally needed to evaluate a transfer/
+      // help request. Proof photos belong to the source dept's worker and
+      // are stripped in preview mode.
+      attachments: isPreviewOnly
+        ? complaint.attachments.filter((a) => a.stage === AttachmentStage.SUBMISSION)
+        : complaint.attachments,
       currentAssignment: safeAssignment,
       statusHistory: safeStatusHistory,
-      feedback: complaint.feedback,
+      feedback: isPreviewOnly ? null : complaint.feedback,
       createdAt: complaint.createdAt,
+      // Surface preview mode to the frontend so the UI can show a banner
+      // ("Read-only preview for transfer/help decision") and hide actions
+      // that would fail backend authz anyway.
+      previewOnly: isPreviewOnly,
+      ...(!isCitizenOnly && !isPreviewOnly
+        ? {
+            ...this.mapRiskForStaff(complaint),
+            ...this.buildStaffRoutingInfo(complaint),
+          }
+        : {}),
     };
+  }
+
+  /**
+   * Returns true if the given department currently has a pending transfer or
+   * help request targeting it for this complaint. Used to grant preview
+   * access on the complaint detail page so the receiver HOD can make an
+   * informed decision before accepting/rejecting.
+   */
+  /**
+   * Enforce who may approve completion or return work for more fixes while a
+   * complaint sits in PENDING_APPROVAL.
+   */
+  private async assertCanReviewPendingApproval(
+    complaintId: string,
+    userId: string,
+    complaintDepartmentId: string | null,
+    permissions: string[],
+    dto: ChangeStatusDto,
+  ): Promise<void> {
+    const canViewAll = permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL);
+    const canApprove = permissions.includes(PERMISSIONS.COMPLAINT_APPROVE);
+
+    if (!canViewAll && !canApprove) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'APPROVAL_NOT_PERMITTED',
+        message:
+          'You do not have permission to approve or return work on this complaint.',
+      });
+    }
+
+    if (!canViewAll) {
+      const reviewer = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { departmentId: true },
+      });
+
+      if (
+        !complaintDepartmentId ||
+        reviewer?.departmentId !== complaintDepartmentId
+      ) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'APPROVAL_WRONG_DEPARTMENT',
+          message:
+            'Only the Head of Department or supervisors for this complaint\'s department can approve or return work.',
+        });
+      }
+
+      const isAssignee = await this.assignmentsService.isAssignedTo(
+        complaintId,
+        userId,
+      );
+      if (isAssignee) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'CANNOT_APPROVE_OWN_WORK',
+          message:
+            'You cannot approve or return work on a complaint you submitted for approval.',
+        });
+      }
+    }
+
+    if (dto.status === ComplaintStatus.IN_PROGRESS) {
+      const notes = dto.notes?.trim() ?? '';
+      if (notes.length < 5) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'RETURN_REASON_REQUIRED',
+          message:
+            'A note of at least 5 characters is required when returning work to the field worker.',
+        });
+      }
+    }
+  }
+
+  private async hasPendingInboundRequest(
+    complaintId: string,
+    receiverDepartmentId: string,
+  ): Promise<boolean> {
+    const [openHelp, openTransfer] = await Promise.all([
+      this.prisma.complaintHelpRequest.findFirst({
+        where: {
+          complaintId,
+          toDepartmentId: receiverDepartmentId,
+          status: { in: ['PENDING'] as any },
+        },
+        select: { id: true },
+      }),
+      this.prisma.transferRequest.findFirst({
+        where: {
+          targetType: 'COMPLAINT' as any,
+          targetId: complaintId,
+          toDepartmentId: receiverDepartmentId,
+          status: 'PENDING' as any,
+        },
+        select: { id: true },
+      }),
+    ]);
+    return !!openHelp || !!openTransfer;
   }
 
   async changeStatus(
@@ -695,6 +1512,22 @@ export class ComplaintsService {
       }
     }
 
+    // PENDING_APPROVAL → COMPLETED / IN_PROGRESS: department-scoped review
+    if (
+      this.statusService.isPendingApprovalReviewTransition(
+        complaint.status,
+        dto.status,
+      )
+    ) {
+      await this.assertCanReviewPendingApproval(
+        complaintId,
+        userId,
+        complaint.departmentId,
+        permissions,
+        dto,
+      );
+    }
+
     // Check if proof attachment is required (for PENDING_APPROVAL)
     if (this.statusService.requiresProofAttachment(dto.status)) {
       if (!files?.length) {
@@ -726,22 +1559,52 @@ export class ComplaintsService {
       updateData.resolvedAt = new Date();
     }
 
-    // Update status
-    await this.prisma.complaint.update({
-      where: { id: complaintId },
-      data: updateData,
-    });
+    // Atomic, idempotent transition. We bind the update on the expected
+    // previous status so two concurrent clicks can't both "succeed" and
+    // write duplicate status logs / fire duplicate notifications. On race
+    // loss Prisma raises P2025 → we surface a clean 409.
+    //
+    // Terminal transitions ALSO deactivate active assignments in the same
+    // transaction so worker workload counts / "Assigned to me" stay sane.
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.complaint.update({
+          where: {
+            id: complaintId,
+            status: complaint.status,
+            deletedAt: null,
+          },
+          data: updateData,
+        });
 
-    // Log status change
-    await this.prisma.complaintStatusLog.create({
-      data: {
-        complaintId,
-        changedById: userId,
-        fromStatus: complaint.status,
-        toStatus: dto.status,
-        notes: dto.notes,
-      },
-    });
+        await tx.complaintStatusLog.create({
+          data: {
+            complaintId,
+            changedById: userId,
+            fromStatus: complaint.status,
+            toStatus: dto.status,
+            notes: dto.notes,
+          },
+        });
+
+        if (isTerminal(dto.status)) {
+          await this.assignmentsService.deactivateActiveAssignments(
+            complaintId,
+            tx,
+          );
+        }
+      });
+    } catch (err) {
+      if (isPrismaRecordNotFound(err)) {
+        throw new ConflictException({
+          statusCode: 409,
+          code: 'COMPLAINT_STATE_CONFLICT',
+          message:
+            'This complaint has already been updated. Refresh and try again.',
+        });
+      }
+      throw err;
+    }
 
     // Audit (separate from per-complaint status_log → cross-tenant searchable)
     const actor = await this.prisma.user.findUnique({
@@ -848,6 +1711,135 @@ export class ComplaintsService {
   }
 
   /**
+   * Reclassify a complaint (category + derived department).
+   * Used when citizens pick "Other" or the wrong category, or for unrouted queue triage.
+   *
+   * Future: COMPLAINT_ACTION_REQUIRED notifications / offline draft completion flows
+   * may call this after citizen selects a category on a pending report.
+   */
+  async classifyComplaint(
+    complaintId: string,
+    userId: string,
+    municipalityId: string,
+    categoryId: string,
+  ) {
+    const complaint = await this.prisma.complaint.findFirst({
+      where: {
+        id: complaintId,
+        municipalityId,
+        deletedAt: null,
+      },
+      include: {
+        assignments: {
+          where: { isActive: true },
+          take: 1,
+          include: {
+            assignedTo: { select: { departmentId: true } },
+          },
+        },
+      },
+    });
+
+    if (!complaint) {
+      throw new NotFoundException('Complaint not found');
+    }
+
+    const category = await this.prisma.complaintCategory.findFirst({
+      where: {
+        id: categoryId,
+        municipalityId: complaint.municipalityId,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        name: true,
+        departmentId: true,
+      },
+    });
+
+    if (!category) {
+      throw new BadRequestException(
+        'Category not found or does not belong to this municipality',
+      );
+    }
+
+    const newDepartmentId = category.departmentId;
+    const previousCategoryId = complaint.categoryId;
+    const previousDepartmentId = complaint.departmentId;
+
+    if (
+      previousCategoryId === categoryId &&
+      previousDepartmentId === newDepartmentId
+    ) {
+      return {
+        id: complaintId,
+        categoryId,
+        departmentId: newDepartmentId,
+        category: { id: category.id, name: category.name },
+      };
+    }
+
+    const activeAssignment = complaint.assignments[0];
+    const assigneeDepartmentId =
+      activeAssignment?.assignedTo?.departmentId ?? null;
+
+    if (
+      activeAssignment &&
+      classificationConflictsWithAssignment(newDepartmentId, assigneeDepartmentId)
+    ) {
+      throw new ConflictException({
+        statusCode: 409,
+        code: 'CLASSIFICATION_ASSIGNMENT_CONFLICT',
+        message:
+          'Cannot change category while an active assignment conflicts with the new department. Remove or reassign the worker first.',
+      });
+    }
+
+    await this.prisma.complaint.update({
+      where: { id: complaintId },
+      data: {
+        categoryId,
+        departmentId: newDepartmentId,
+      },
+    });
+
+    const actor = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
+    await this.audit.log({
+      actorId: userId,
+      actorEmail: actor?.email,
+      municipalityId,
+      action: AUDIT_ACTIONS.COMPLAINT_CLASSIFY,
+      resourceType: 'Complaint',
+      resourceId: complaintId,
+      metadata: {
+        fromCategoryId: previousCategoryId,
+        toCategoryId: categoryId,
+        fromDepartmentId: previousDepartmentId,
+        toDepartmentId: newDepartmentId,
+      },
+    });
+
+    const assignedUserIds = complaint.assignments.map((a) => a.assignedToId);
+    this.realtime.complaintUpdated({
+      id: complaintId,
+      municipalityId,
+      departmentId: newDepartmentId,
+      createdById: complaint.createdById,
+      assignedUserIds,
+    });
+
+    return {
+      id: complaintId,
+      categoryId,
+      departmentId: newDepartmentId,
+      category: { id: category.id, name: category.name },
+    };
+  }
+
+  /**
    * Reject a complaint with reason (HOD/Supervisor only)
    */
   async rejectComplaint(
@@ -879,26 +1871,48 @@ export class ComplaintsService {
     // Validate transition
     this.statusService.validateTransition(complaint.status, ComplaintStatus.REJECTED);
 
-    // Update complaint
-    await this.prisma.complaint.update({
-      where: { id: complaintId },
-      data: {
-        status: ComplaintStatus.REJECTED,
-        rejectionReason: reason,
-        rejectionNotes: notes,
-      },
-    });
+    // Atomic transition with assignment deactivation in the same txn.
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.complaint.update({
+          where: {
+            id: complaintId,
+            status: complaint.status,
+            deletedAt: null,
+          },
+          data: {
+            status: ComplaintStatus.REJECTED,
+            rejectionReason: reason,
+            rejectionNotes: notes,
+          },
+        });
 
-    // Log status change
-    await this.prisma.complaintStatusLog.create({
-      data: {
-        complaintId,
-        changedById: userId,
-        fromStatus: complaint.status,
-        toStatus: ComplaintStatus.REJECTED,
-        notes: notes || `Rejected: ${reason}`,
-      },
-    });
+        await tx.complaintStatusLog.create({
+          data: {
+            complaintId,
+            changedById: userId,
+            fromStatus: complaint.status,
+            toStatus: ComplaintStatus.REJECTED,
+            notes: notes || `Rejected: ${reason}`,
+          },
+        });
+
+        await this.assignmentsService.deactivateActiveAssignments(
+          complaintId,
+          tx,
+        );
+      });
+    } catch (err) {
+      if (isPrismaRecordNotFound(err)) {
+        throw new ConflictException({
+          statusCode: 409,
+          code: 'COMPLAINT_STATE_CONFLICT',
+          message:
+            'This complaint has already been updated. Refresh and try again.',
+        });
+      }
+      throw err;
+    }
 
     // Audit
     const actor = await this.prisma.user.findUnique({
@@ -914,6 +1928,31 @@ export class ComplaintsService {
       resourceId: complaintId,
       metadata: { reason, notes },
     });
+
+    // Realtime so HOD inbox / worker queues update without polling.
+    const assignedUserIds = await this.prisma.complaintAssignment
+      .findMany({
+        where: { complaintId },
+        select: { assignedToId: true },
+      })
+      .then((rows) => Array.from(new Set(rows.map((r) => r.assignedToId))));
+    this.realtime.complaintUpdated({
+      id: complaintId,
+      municipalityId,
+      departmentId: complaint.departmentId,
+      createdById: complaint.createdById,
+      assignedUserIds,
+    });
+
+    await this.notifyCitizenOfStatusChange(
+      {
+        id: complaintId,
+        createdById: complaint.createdById,
+        municipalityId,
+        referenceCode: complaint.referenceCode,
+      },
+      ComplaintStatus.REJECTED,
+    );
 
     return {
       id: complaintId,
@@ -1001,16 +2040,19 @@ export class ComplaintsService {
 
     const baseWhere: any = { municipalityId, deletedAt: null };
 
-    // Apply department filter for non-admins
+    // Apply department filter for non-admins. Mirrors findAll() exactly so
+    // tab counts and the list always agree.
     if (!permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
       if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) && user?.departmentId) {
-        // Show complaints in their department OR unassigned complaints
-        baseWhere.OR = [
-          { departmentId: user.departmentId },
-          { departmentId: null },
-        ];
+        baseWhere.departmentId = user.departmentId;
       } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED)) {
-        baseWhere.assignments = { some: { assignedToId: userId, isActive: true } };
+        Object.assign(
+          baseWhere,
+          this.assignmentsService.buildActiveAssignmentVisibilityFilter(
+            userId,
+            user?.departmentId,
+          ),
+        );
       } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_OWN)) {
         baseWhere.createdById = userId;
       } else {
@@ -1064,24 +2106,43 @@ export class ComplaintsService {
       }),
     ]);
 
+    const citizenOnly = this.isCitizenOnlyViewer(permissions);
+
     // Permission-scoped base: identical to findAll's permission branch.
-    const scopedWhere: any = { municipalityId, deletedAt: null };
+    const scopedWhere: any = { deletedAt: null };
+    const historyScopedWhere: any = { deletedAt: null };
+    if (!citizenOnly) {
+      scopedWhere.municipalityId = municipalityId;
+      historyScopedWhere.municipalityId = municipalityId;
+    }
+
     if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
       // no extra filter
     } else if (
       permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) &&
       user?.departmentId
     ) {
-      scopedWhere.OR = [
-        { departmentId: user.departmentId },
-        { departmentId: null },
-      ];
+      scopedWhere.departmentId = user.departmentId;
+      historyScopedWhere.departmentId = user.departmentId;
     } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED)) {
-      scopedWhere.assignments = {
-        some: { assignedToId: userId, isActive: true },
+      Object.assign(
+        scopedWhere,
+        this.assignmentsService.buildActiveAssignmentVisibilityFilter(
+          userId,
+          user?.departmentId,
+        ),
+      );
+      // History scope: any complaint the worker was ever assigned to.
+      // We intentionally drop the strict same-department check here so a
+      // worker who transferred departments still sees their past work.
+      historyScopedWhere.assignments = {
+        some: { assignedToId: userId },
       };
     } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_OWN)) {
       scopedWhere.createdById = userId;
+      historyScopedWhere.createdById = userId;
+      delete scopedWhere.municipalityId;
+      delete historyScopedWhere.municipalityId;
     } else {
       return {
         needsAttention: 0,
@@ -1090,33 +2151,19 @@ export class ComplaintsService {
         all: 0,
         overdue: 0,
         myReports: 0,
+        completed: 0,
+        rejected: 0,
+        closed: 0,
+        history: 0,
       };
     }
 
     const now = new Date();
-    const openStatuses = {
-      notIn: [
-        ComplaintStatus.COMPLETED,
-        ComplaintStatus.CLOSED,
-        ComplaintStatus.REJECTED,
-      ],
-    };
 
-    // Build the per-bucket where clauses. Each bucket layers extra filters on
-    // top of the permission-scoped base so the backend never leaks beyond the
-    // caller's authority.
     const needsAttentionWhere =
       permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) ||
       permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)
-        ? {
-            ...scopedWhere,
-            assignments: { none: { isActive: true } },
-            status: openStatuses,
-            ...(user?.departmentId &&
-            !permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)
-              ? { departmentId: user.departmentId }
-              : {}),
-          }
+        ? buildNeedsAttentionWhere(scopedWhere)
         : null;
 
     const assignedToMeWhere =
@@ -1126,33 +2173,51 @@ export class ComplaintsService {
         ? {
             municipalityId,
             deletedAt: null,
-            assignments: { some: { assignedToId: userId, isActive: true } },
+            status: activeStatusWhere(),
+            ...this.assignmentsService.buildActiveAssignmentVisibilityFilter(
+              userId,
+              user?.departmentId,
+            ),
           }
         : null;
 
     const myDepartmentWhere =
       permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) &&
       user?.departmentId
-        ? {
-            municipalityId,
-            deletedAt: null,
-            departmentId: user.departmentId,
-          }
+        ? buildMyDepartmentActiveWhere(user.departmentId, municipalityId)
         : null;
 
     const allWhere = permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)
-      ? { municipalityId, deletedAt: null }
+      ? buildAllActiveWhere(municipalityId)
       : null;
 
-    const overdueWhere = {
-      ...scopedWhere,
-      dueDate: { lt: now },
-      status: openStatuses,
+    const overdueWhere: Prisma.ComplaintWhereInput = {
+      AND: [scopedWhere, buildOverdueWhere(now)],
     };
 
     const myReportsWhere = permissions.includes(PERMISSIONS.COMPLAINT_VIEW_OWN)
-      ? { municipalityId, deletedAt: null, createdById: userId }
+      ? { deletedAt: null, createdById: userId }
       : null;
+
+    // History buckets — terminal complaints scoped to what the caller may
+    // see. For workers we expand to past assignments so completed work
+    // doesn't visually vanish.
+    const completedWhere = {
+      ...historyScopedWhere,
+      status: ComplaintStatus.COMPLETED,
+    };
+    const rejectedWhere = {
+      ...historyScopedWhere,
+      status: ComplaintStatus.REJECTED,
+    };
+    const closedWhere = {
+      ...historyScopedWhere,
+      status: ComplaintStatus.CLOSED,
+    };
+    const historyWhere = {
+      ...historyScopedWhere,
+      status: { in: TERMINAL_COMPLAINT_STATUSES },
+    };
 
     const [
       needsAttention,
@@ -1161,6 +2226,10 @@ export class ComplaintsService {
       all,
       overdue,
       myReports,
+      completed,
+      rejected,
+      closed,
+      history,
     ] = await Promise.all([
       needsAttentionWhere
         ? this.prisma.complaint.count({ where: needsAttentionWhere })
@@ -1178,6 +2247,10 @@ export class ComplaintsService {
       myReportsWhere
         ? this.prisma.complaint.count({ where: myReportsWhere })
         : Promise.resolve(0),
+      this.prisma.complaint.count({ where: completedWhere }),
+      this.prisma.complaint.count({ where: rejectedWhere }),
+      this.prisma.complaint.count({ where: closedWhere }),
+      this.prisma.complaint.count({ where: historyWhere }),
     ]);
 
     return {
@@ -1187,7 +2260,157 @@ export class ComplaintsService {
       all,
       overdue,
       myReports,
+      completed,
+      rejected,
+      closed,
+      history,
     };
+  }
+
+  /**
+   * Active operational workload per department for the dashboard panel.
+   * Counts only non-terminal complaints currently owned by each department.
+   */
+  async getDepartmentWorkload(userId: string, municipalityId: string) {
+    const [permissions, user] = await Promise.all([
+      this.permissionsResolver.getUserPermissions(userId),
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { departmentId: true },
+      }),
+    ]);
+
+    if (
+      !permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL) &&
+      !permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT)
+    ) {
+      throw new ForbiddenException(
+        'You do not have permission to view department workload',
+      );
+    }
+
+    let departmentIdFilter: string | undefined;
+    if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
+      departmentIdFilter = undefined;
+    } else if (user?.departmentId) {
+      departmentIdFilter = user.departmentId;
+    } else {
+      return [];
+    }
+
+    const departments = await this.prisma.department.findMany({
+      where: {
+        municipalityId,
+        deletedAt: null,
+        ...(departmentIdFilter ? { id: departmentIdFilter } : {}),
+      },
+      select: {
+        id: true,
+        name: true,
+        nameAr: true,
+        nameFr: true,
+        headUserId: true,
+        head: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            avatarUrl: true,
+            isActive: true,
+          },
+        },
+        _count: { select: { users: true } },
+      },
+      orderBy: { name: 'asc' },
+    });
+
+    const now = new Date();
+    const includeTransferOutbound =
+      permissions.includes(PERMISSIONS.DEPARTMENT_CREATE) ||
+      permissions.includes(PERMISSIONS.DEPARTMENT_UPDATE);
+
+    const [activeByDept, overdueByDept, transfersIn, transfersOut] =
+      await Promise.all([
+        this.prisma.complaint.groupBy({
+          by: ['departmentId'],
+          where: {
+            municipalityId,
+            deletedAt: null,
+            departmentId: { not: null },
+            status: activeStatusWhere(),
+          },
+          _count: { _all: true },
+        }),
+        this.prisma.complaint.groupBy({
+          by: ['departmentId'],
+          where: {
+            municipalityId,
+            deletedAt: null,
+            departmentId: { not: null },
+            AND: [buildOverdueWhere(now)],
+          },
+          _count: { _all: true },
+        }),
+        this.prisma.transferRequest.groupBy({
+          by: ['toDepartmentId'],
+          where: {
+            municipalityId,
+            status: TransferStatus.PENDING,
+          },
+          _count: { _all: true },
+        }),
+        includeTransferOutbound
+          ? this.prisma.transferRequest.groupBy({
+              by: ['fromDepartmentId'],
+              where: {
+                municipalityId,
+                status: TransferStatus.PENDING,
+              },
+              _count: { _all: true },
+            })
+          : Promise.resolve([]),
+      ]);
+
+    const activeMap = new Map(
+      activeByDept.map((row) => [row.departmentId, row._count._all]),
+    );
+    const overdueMap = new Map(
+      overdueByDept.map((row) => [row.departmentId, row._count._all]),
+    );
+    const transfersInMap = new Map(
+      transfersIn.map((row) => [row.toDepartmentId, row._count._all]),
+    );
+    const transfersOutMap = new Map(
+      transfersOut.map((row) => [row.fromDepartmentId, row._count._all]),
+    );
+
+    return departments.map((dept) => {
+      const activeComplaints = activeMap.get(dept.id) ?? 0;
+      const overdueComplaints = overdueMap.get(dept.id) ?? 0;
+      const { healthScore, health } = deriveDepartmentHealth(
+        activeComplaints,
+        overdueComplaints,
+      );
+      return {
+        id: dept.id,
+        name: dept.name,
+        nameAr: dept.nameAr,
+        nameFr: dept.nameFr,
+        head: dept.head,
+        staffCount: dept._count.users,
+        activeComplaints,
+        overdueComplaints,
+        pendingTransfersIn: transfersInMap.get(dept.id) ?? 0,
+        ...(includeTransferOutbound
+          ? {
+              pendingTransfersOut: transfersOutMap.get(dept.id) ?? 0,
+            }
+          : {}),
+        healthScore,
+        health,
+      };
+    });
   }
 
   /**
@@ -1205,9 +2428,15 @@ export class ComplaintsService {
     const baseWhere: any = { municipalityId, deletedAt: null };
     if (!permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ALL)) {
       if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_DEPARTMENT) && user?.departmentId) {
-        baseWhere.OR = [{ departmentId: user.departmentId }, { departmentId: null }];
+        baseWhere.departmentId = user.departmentId;
       } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_ASSIGNED)) {
-        baseWhere.assignments = { some: { assignedToId: userId, isActive: true } };
+        Object.assign(
+          baseWhere,
+          this.assignmentsService.buildActiveAssignmentVisibilityFilter(
+            userId,
+            user?.departmentId,
+          ),
+        );
       } else if (permissions.includes(PERMISSIONS.COMPLAINT_VIEW_OWN)) {
         baseWhere.createdById = userId;
       } else {
@@ -1349,6 +2578,21 @@ export class ComplaintsService {
       });
     }
 
+    const assignedUserIds = await this.prisma.complaintAssignment
+      .findMany({
+        where: { complaintId, isActive: true },
+        select: { assignedToId: true },
+      })
+      .then((rows) => rows.map((r) => r.assignedToId));
+
+    this.realtime.complaintUpdated({
+      id: complaintId,
+      municipalityId,
+      departmentId: complaint.departmentId,
+      createdById: complaint.createdById,
+      assignedUserIds,
+    });
+
     return { attachments };
   }
 
@@ -1369,6 +2613,21 @@ export class ComplaintsService {
     await this.prisma.complaint.update({
       where: { id: complaintId },
       data: { deletedAt: new Date() },
+    });
+
+    const assignedUserIds = await this.prisma.complaintAssignment
+      .findMany({
+        where: { complaintId },
+        select: { assignedToId: true },
+      })
+      .then((rows) => rows.map((r) => r.assignedToId));
+
+    this.realtime.complaintDeleted({
+      id: complaintId,
+      municipalityId,
+      departmentId: complaint.departmentId,
+      createdById: complaint.createdById,
+      assignedUserIds,
     });
 
     return { message: 'Complaint deleted successfully' };

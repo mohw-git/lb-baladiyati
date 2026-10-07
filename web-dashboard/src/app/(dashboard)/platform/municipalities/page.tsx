@@ -1,18 +1,27 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { ApiError, platformApi, type PlatformMunicipality } from '@/lib/api';
-import { Loader2, Plus, Power, PowerOff, UserCog, AlertTriangle, Crown, Mail } from 'lucide-react';
+import {
+  ApiError,
+  platformApi,
+  type MunicipalityStarterTemplate,
+  type PlatformMunicipality,
+} from '@/lib/api';
+import { Loader2, Plus, Power, PowerOff, UserCog, AlertTriangle, Crown, Mail, Map, MapPin } from 'lucide-react';
 import { useLocale, useTranslate } from '@/lib/i18n';
 import { pickName } from '@shared/types/locale';
+import { ActionMenu } from '@/components/ui/action-menu';
 
 interface CreateForm {
   name: string;
   nameAr: string;
   nameFr: string;
   code: string;
+  starterTemplate: MunicipalityStarterTemplate;
   adminEmail: string;
   adminPassword: string;
   adminFirstName: string;
@@ -24,6 +33,7 @@ const emptyForm: CreateForm = {
   nameAr: '',
   nameFr: '',
   code: '',
+  starterTemplate: 'FULL_GOVERNMENT',
   adminEmail: '',
   adminPassword: '',
   adminFirstName: '',
@@ -32,6 +42,7 @@ const emptyForm: CreateForm = {
 
 export default function PlatformMunicipalitiesPage() {
   const queryClient = useQueryClient();
+  const router = useRouter();
   const t = useTranslate();
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState<CreateForm>(emptyForm);
@@ -46,7 +57,7 @@ export default function PlatformMunicipalitiesPage() {
   });
 
   const munis: PlatformMunicipality[] = Array.isArray(data) ? data : (data as any)?.data ?? [];
-  const munisWithoutAdmin = munis.filter((m) => m.isActive && !m.adminUserId);
+  const munisWithoutAdmin = munis.filter((m) => m.isActive && !m.adminUserId && !m.admin);
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -55,12 +66,15 @@ export default function PlatformMunicipalitiesPage() {
         nameAr: form.nameAr || undefined,
         nameFr: form.nameFr || undefined,
         code: form.code.toUpperCase(),
-      } as any),
+      }),
     onSuccess: () => {
       toast.success(t('platform.municipalities.toast.created'));
       setShowCreate(false);
       setForm(emptyForm);
+      queryClient.invalidateQueries({ queryKey: ['platform', 'municipalities'] });
       queryClient.invalidateQueries({ queryKey: ['platform'] });
+      queryClient.invalidateQueries({ queryKey: ['complaints', 'department-workload'] });
+      queryClient.invalidateQueries({ queryKey: ['platform', 'users'] });
     },
     onError: (err: ApiError) => toast.error(err.message),
   });
@@ -70,7 +84,17 @@ export default function PlatformMunicipalitiesPage() {
       platformApi.updateMunicipality(id, { isActive }),
     onSuccess: () => {
       toast.success(t('platform.municipalities.toast.updated'));
+      queryClient.invalidateQueries({ queryKey: ['platform', 'municipalities'] });
       queryClient.invalidateQueries({ queryKey: ['platform'] });
+    },
+    onError: (err: ApiError) => toast.error(err.message),
+  });
+
+  const applyStarterCategoriesMutation = useMutation({
+    mutationFn: (municipalityId: string) => platformApi.applyStarterCategories(municipalityId),
+    onSuccess: () => {
+      toast.success(t('platform.municipalities.toast.starterCategories'));
+      queryClient.invalidateQueries({ queryKey: ['platform', 'municipalities'] });
     },
     onError: (err: ApiError) => toast.error(err.message),
   });
@@ -86,7 +110,9 @@ export default function PlatformMunicipalitiesPage() {
       toast.success(t('platform.municipalities.toast.transferAdmin'));
       setTransferTarget(null);
       setNewAdminEmail('');
+      queryClient.invalidateQueries({ queryKey: ['platform', 'municipalities'] });
       queryClient.invalidateQueries({ queryKey: ['platform'] });
+      queryClient.invalidateQueries({ queryKey: ['complaints', 'department-workload'] });
     },
     onError: (err: ApiError) => toast.error(err.message),
   });
@@ -98,13 +124,22 @@ export default function PlatformMunicipalitiesPage() {
           <h1 className="text-xl font-bold text-gray-900">{t('platform.municipalities.title')}</h1>
           <p className="mt-0.5 text-sm text-gray-600">{t('platform.subtitle')}</p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 rounded border border-amber-700 bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700"
-        >
-          <Plus className="h-4 w-4" />
-          {t('platform.municipalities.new')}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Link
+            href="/platform/boundaries"
+            className="btn-gov-secondary flex items-center gap-2 text-sm"
+          >
+            <MapPin className="h-4 w-4" />
+            {t('nav.boundaryAssignment')}
+          </Link>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 rounded border border-amber-700 bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700"
+          >
+            <Plus className="h-4 w-4" />
+            {t('platform.municipalities.new')}
+          </button>
+        </div>
       </div>
 
       {munisWithoutAdmin.length > 0 && (
@@ -112,7 +147,7 @@ export default function PlatformMunicipalitiesPage() {
           <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-600" />
           <div className="text-sm text-amber-900">
             <p className="font-semibold">
-              {munisWithoutAdmin.length}: {t('orgChart.legend.muniVacant')}
+              {munisWithoutAdmin.length}: {t('departments.overview.legend.muniVacant')}
             </p>
           </div>
         </div>
@@ -167,7 +202,7 @@ export default function PlatformMunicipalitiesPage() {
                       </div>
                     ) : (
                       <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
-                        <AlertTriangle className="h-3 w-3" /> {t('orgChart.vacant')}
+                        <AlertTriangle className="h-3 w-3" /> {t('departments.hod.vacant')}
                       </span>
                     )}
                   </td>
@@ -185,6 +220,36 @@ export default function PlatformMunicipalitiesPage() {
                   </td>
                   <td className="text-right">
                     <div className="flex justify-end gap-2">
+                      <ActionMenu
+                        ariaLabel={t('common.actions')}
+                        items={[
+                          {
+                            key: 'advanced-boundary',
+                            label: t('platform.boundary.viewAdvancedEditor'),
+                            icon: <Map className="h-3.5 w-3.5" />,
+                            onClick: () =>
+                              router.push(`/platform/municipalities/${m.id}/boundary`),
+                          },
+                          ...((m._count?.complaintCategories ?? 0) === 0 &&
+                          (m._count?.departments ?? 0) > 0
+                            ? [
+                                {
+                                  key: 'apply-starter-categories',
+                                  label: t('platform.municipalities.applyStarterCategories'),
+                                  onClick: () => {
+                                    if (
+                                      window.confirm(
+                                        t('platform.municipalities.applyStarterCategories.confirm'),
+                                      )
+                                    ) {
+                                      applyStarterCategoriesMutation.mutate(m.id);
+                                    }
+                                  },
+                                },
+                              ]
+                            : []),
+                        ]}
+                      />
                       <button
                         onClick={() => {
                           setTransferTarget(m);
@@ -348,6 +413,38 @@ export default function PlatformMunicipalitiesPage() {
                     className="input-gov"
                   />
                 </div>
+              </div>
+
+              <div className="border-t border-gray-200 pt-3">
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  {t('platform.municipalities.starterTemplate.label')}
+                </label>
+                <p className="mb-2 text-xs text-gray-500">
+                  {t('platform.municipalities.starterTemplate.hint')}
+                </p>
+                <select
+                  value={form.starterTemplate}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      starterTemplate: e.target.value as MunicipalityStarterTemplate,
+                    })
+                  }
+                  className="select-gov"
+                >
+                  <option value="FULL_GOVERNMENT">
+                    {t('platform.municipalities.starterTemplate.full')} —{' '}
+                    {t('platform.municipalities.starterTemplate.fullDesc')}
+                  </option>
+                  <option value="DEPARTMENTS_ONLY">
+                    {t('platform.municipalities.starterTemplate.departmentsOnly')} —{' '}
+                    {t('platform.municipalities.starterTemplate.departmentsOnlyDesc')}
+                  </option>
+                  <option value="BLANK">
+                    {t('platform.municipalities.starterTemplate.blank')} —{' '}
+                    {t('platform.municipalities.starterTemplate.blankDesc')}
+                  </option>
+                </select>
               </div>
 
               <div className="border-t border-gray-200 pt-3">

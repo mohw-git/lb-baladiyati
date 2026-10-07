@@ -3,6 +3,47 @@ import { PrismaService } from '../../core/prisma/prisma.service';
 import { UpdateMunicipalityBrandingDto } from './dto/update-municipality-branding.dto';
 import { StorageService } from '../../core/storage/storage.service';
 
+/** Fields returned for municipality settings / branding UI (GET me + PATCH branding). */
+const MUNICIPALITY_PROFILE_SELECT = {
+  id: true,
+  name: true,
+  nameAr: true,
+  nameFr: true,
+  description: true,
+  descriptionAr: true,
+  descriptionFr: true,
+  code: true,
+  logoUrl: true,
+  bannerImageUrl: true,
+  bannerOverlayColor: true,
+  bannerOverlayOpacity: true,
+  primaryColor: true,
+  email: true,
+  phone: true,
+  whatsApp: true,
+  address: true,
+  addressAr: true,
+  addressFr: true,
+  openingHours: true,
+  openingHoursAr: true,
+  openingHoursFr: true,
+  website: true,
+  latitude: true,
+  longitude: true,
+  isActive: true,
+  createdAt: true,
+  adminUserId: true,
+  admin: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      avatarUrl: true,
+    },
+  },
+} as const;
+
 @Injectable()
 export class MunicipalitiesService {
   constructor(
@@ -130,33 +171,7 @@ export class MunicipalitiesService {
   async findOne(id: string) {
     const municipality = await this.prisma.municipality.findUnique({
       where: { id },
-      select: {
-        id: true,
-        name: true,
-        nameAr: true,
-        nameFr: true,
-        description: true,
-        descriptionAr: true,
-        descriptionFr: true,
-        code: true,
-        logoUrl: true,
-        bannerImageUrl: true,
-        bannerOverlayColor: true,
-        bannerOverlayOpacity: true,
-        primaryColor: true,
-        isActive: true,
-        createdAt: true,
-        adminUserId: true,
-        admin: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-            avatarUrl: true,
-          },
-        },
-      },
+      select: MUNICIPALITY_PROFILE_SELECT,
     });
 
     if (!municipality) {
@@ -216,33 +231,7 @@ export class MunicipalitiesService {
         ...(dto.latitude !== undefined && { latitude: dto.latitude }),
         ...(dto.longitude !== undefined && { longitude: dto.longitude }),
       },
-      select: {
-        id: true,
-        name: true,
-        nameAr: true,
-        nameFr: true,
-        description: true,
-        descriptionAr: true,
-        descriptionFr: true,
-        code: true,
-        logoUrl: true,
-        bannerImageUrl: true,
-        bannerOverlayColor: true,
-        bannerOverlayOpacity: true,
-        primaryColor: true,
-        email: true,
-        phone: true,
-        whatsApp: true,
-        address: true,
-        addressAr: true,
-        addressFr: true,
-        openingHours: true,
-        openingHoursAr: true,
-        openingHoursFr: true,
-        website: true,
-        latitude: true,
-        longitude: true,
-      },
+      select: MUNICIPALITY_PROFILE_SELECT,
     });
 
     return updated;

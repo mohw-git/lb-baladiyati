@@ -24,6 +24,46 @@ export class UpdatePlatformBrandingDto {
   @Max(1)
   bannerOverlayOpacity?: number;
 
+  @ApiPropertyOptional({ description: 'Hero banner horizontal focal point (0–100)' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  bannerFocalX?: number;
+
+  @ApiPropertyOptional({ description: 'Hero banner vertical focal point (0–100)' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  bannerFocalY?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  authBackgroundImageUrl?: string;
+
+  @ApiPropertyOptional({ description: 'Auth background horizontal focal point (0–100)' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  authBackgroundFocalX?: number;
+
+  @ApiPropertyOptional({ description: 'Auth background vertical focal point (0–100)' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  authBackgroundFocalY?: number;
+
+  @ApiPropertyOptional({ description: 'Auth background overlay opacity (0–1)' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  authBackgroundOverlayOpacity?: number;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
@@ -114,18 +154,20 @@ export class UpdatePlatformBrandingDto {
   @IsString()
   openingHoursFr?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: 'Apple App Store listing URL (public landing page)' })
   @IsOptional()
-  @IsString()
+  @IsUrl({ require_protocol: true })
   appStoreUrl?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: 'Google Play listing URL (public landing page)' })
   @IsOptional()
-  @IsString()
+  @IsUrl({ require_protocol: true })
   googlePlayUrl?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    description: 'Direct Android APK download URL; used for QR code on the public landing page',
+  })
   @IsOptional()
-  @IsString()
+  @IsUrl({ require_protocol: true })
   apkUrl?: string;
 }

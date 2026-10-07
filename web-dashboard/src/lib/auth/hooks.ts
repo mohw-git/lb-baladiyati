@@ -27,14 +27,14 @@ export function usePermission(permission: PermissionKey | string): boolean {
 export function useAnyPermission(...permissions: (PermissionKey | string)[]): boolean {
   const user = useAuthStore((s) => s.user);
   if (!user?.permissions) return false;
-  return permissions.some((p) => user.permissions.includes(p));
+  return permissions.some((p) => user.permissions!.includes(p));
 }
 
 /** Check if user has ALL of the given permissions */
 export function useAllPermissions(...permissions: (PermissionKey | string)[]): boolean {
   const user = useAuthStore((s) => s.user);
   if (!user?.permissions) return false;
-  return permissions.every((p) => user.permissions.includes(p));
+  return permissions.every((p) => user.permissions!.includes(p));
 }
 
 /** Get user display name */

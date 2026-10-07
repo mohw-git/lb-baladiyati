@@ -1,5 +1,5 @@
 /**
- * Supported UI locales for the Baladi platform.
+ * Supported UI locales for the Baladiyati platform.
  *
  * - `en` — English (canonical, also the fallback whenever a translation is missing)
  * - `ar` — Arabic (RTL layout)

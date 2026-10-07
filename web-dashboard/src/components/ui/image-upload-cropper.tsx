@@ -30,6 +30,8 @@ export interface ImageUploadCropperProps {
   previewSize?: number;
   /** Disabled state. */
   disabled?: boolean;
+  /** Bust browser cache on preview after upload (timestamp). */
+  previewCacheBust?: string | number;
 }
 
 async function readFile(file: File): Promise<string> {
@@ -96,6 +98,7 @@ export function ImageUploadCropper({
   hint,
   previewSize = 96,
   disabled,
+  previewCacheBust,
 }: ImageUploadCropperProps) {
   const t = useTranslate();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -153,7 +156,11 @@ export function ImageUploadCropper({
     }
   };
 
-  const previewSrc = value ? getFileUrl(value) : null;
+  const previewBase = value ? getFileUrl(value) : null;
+  const previewSrc =
+    previewBase && previewCacheBust != null
+      ? `${previewBase}${previewBase.includes('?') ? '&' : '?'}v=${previewCacheBust}`
+      : previewBase;
 
   return (
     <div className="space-y-2">

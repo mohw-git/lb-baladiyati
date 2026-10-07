@@ -4,7 +4,7 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/core/prisma/prisma.service';
 
-describe('Baladi Backend (e2e)', () => {
+describe('Baladiyati Backend (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let adminToken: string;

@@ -14,7 +14,7 @@ import {
   AlertTriangle,
   Building2,
 } from 'lucide-react';
-import { ApiError, transfersApi, usersApi } from '@/lib/api';
+import { ApiError, departmentsApi, transfersApi } from '@/lib/api';
 import { useAuth } from '@/lib/auth/hooks';
 import { PERMISSIONS } from '@shared/constants/permissions';
 import type { TransferRequest, TransferStatus } from '@shared/types/transfer';
@@ -37,6 +37,12 @@ export default function TransfersInboxPage() {
 
   const canRespond = user?.permissions?.includes(PERMISSIONS.TRANSFER_RESPOND);
   const canRequest = user?.permissions?.includes(PERMISSIONS.TRANSFER_REQUEST);
+
+  const invalidateAfterTransferChange = () => {
+    qc.invalidateQueries({ queryKey: ['transfers'] });
+    qc.invalidateQueries({ queryKey: ['complaints'] });
+    qc.invalidateQueries({ queryKey: ['complaint'] });
+  };
 
   const { data, isLoading } = useQuery({
     queryKey: ['transfers', tab],
@@ -118,7 +124,7 @@ export default function TransfersInboxPage() {
                     transfer={t}
                     canAct={tab === 'inbox' && !!canRespond}
                     canCancel={tab === 'outgoing' && t.requestedById === user?.id}
-                    onChanged={() => qc.invalidateQueries({ queryKey: ['transfers'] })}
+                    onChanged={invalidateAfterTransferChange}
                   />
                 ))}
               </div>
@@ -168,13 +174,18 @@ function TransferCard({
 
   const meta = STATUS_BADGE[transfer.status];
 
-  const { data: usersData } = useQuery({
-    queryKey: ['users', 'transfer-accept', transfer.toDepartmentId],
-    queryFn: () => usersApi.list({ excludeCitizens: true, limit: 200 }),
-    enabled: showAccept,
+  // Use the per-department `members` endpoint instead of the global `/users`
+  // endpoint. The previous /users call required `user.view_all` which HOD
+  // doesn't have, so the dropdown was empty even when the dept had staff.
+  // departmentsApi.listMembers is dept-scoped and authorised for any
+  // authenticated user in the same municipality.
+  const { data: membersData } = useQuery({
+    queryKey: ['department', transfer.toDepartmentId, 'members'],
+    queryFn: () => departmentsApi.listMembers(transfer.toDepartmentId),
+    enabled: showAccept && !!transfer.toDepartmentId,
   });
-  const candidates = (usersData?.items ?? []).filter(
-    (u: any) => u.department?.id === transfer.toDepartmentId,
+  const candidates = (membersData?.members ?? []).filter(
+    (m: any) => m.isActive,
   );
 
   const accept = useMutation({

@@ -34,17 +34,29 @@ export const AUDIT_ACTIONS = {
   AUTH_2FA_EMAIL_ENABLE: 'auth.2fa.email.enable',
   AUTH_2FA_EMAIL_LOGIN: 'auth.2fa.email.login.success',
   AUTH_2FA_EMAIL_OTP_REQUEST: 'auth.2fa.email.otp_requested',
+  AUTH_2FA_DISABLE_EMAIL_OTP_REQUEST: 'auth.2fa.disable.email.otp_requested',
+  AUTH_2FA_DISABLE_FAILED: 'auth.2fa.disable.failed',
   // Users (tenant)
   USER_CREATE: 'user.create',
   USER_UPDATE: 'user.update',
   USER_ROLE_ASSIGN: 'user.role.assign',
   USER_ROLE_REMOVE: 'user.role.remove',
+  USER_GOVERNANCE_DENIED: 'user.governance.denied',
   // Complaints
   COMPLAINT_CREATE: 'complaint.create',
   COMPLAINT_ASSIGN: 'complaint.assign',
   COMPLAINT_STATUS_CHANGE: 'complaint.status.change',
   COMPLAINT_REJECT: 'complaint.reject',
+  COMPLAINT_CLASSIFY: 'complaint.classify',
   COMPLAINT_DELETE: 'complaint.delete',
+  COMPLAINT_RISKY_ACCEPTED: 'complaint.risky.accepted',
+  // Categories
+  CATEGORY_CREATE: 'category.create',
+  CATEGORY_UPDATE: 'category.update',
+  CATEGORY_ACTIVATE: 'category.activate',
+  CATEGORY_DEACTIVATE: 'category.deactivate',
+  CATEGORY_DELETE: 'category.delete',
+  CATEGORY_MOVE_DEPARTMENT: 'category.move_department',
   // KYC
   KYC_SUBMIT: 'kyc.submit',
   KYC_APPROVE: 'kyc.approve',
@@ -53,17 +65,23 @@ export const AUDIT_ACTIONS = {
   // Platform
   PLATFORM_MUNICIPALITY_CREATE: 'platform.municipality.create',
   PLATFORM_MUNICIPALITY_UPDATE: 'platform.municipality.update',
+  PLATFORM_MUNICIPALITY_BOUNDARY_CREATE: 'platform.municipality.boundary.create',
+  PLATFORM_MUNICIPALITY_BOUNDARY_UPDATE: 'platform.municipality.boundary.update',
+  PLATFORM_MUNICIPALITY_BOUNDARY_DEACTIVATE: 'platform.municipality.boundary.deactivate',
   PLATFORM_USER_ACTIVATE: 'platform.user.activate',
   PLATFORM_USER_DEACTIVATE: 'platform.user.deactivate',
   PLATFORM_USER_DELETE: 'platform.user.delete',
   PLATFORM_USER_RESET_PASSWORD: 'platform.user.reset_password',
   PLATFORM_USER_RESET_2FA: 'platform.user.reset_2fa',
+  PLATFORM_USER_VERIFY_EMAIL: 'platform.user.verify_email',
   PLATFORM_USER_FORCE_LOGOUT: 'platform.user.force_logout',
   PLATFORM_TRANSFER_ADMIN: 'platform.municipality.transfer_admin',
   PLATFORM_IMPERSONATE: 'platform.impersonate',
   PLATFORM_MAINTENANCE_ON: 'platform.maintenance.enable',
   PLATFORM_MAINTENANCE_OFF: 'platform.maintenance.disable',
   PLATFORM_SETTING_UPDATE: 'platform.setting.update',
+  PLATFORM_BROADCAST_SEND: 'platform.broadcast.send',
+  PLATFORM_BROADCAST_PREVIEW: 'platform.broadcast.preview',
 } as const;
 
 /** Extracts client IP and user-agent from an Express request, normalizing X-Forwarded-For. */

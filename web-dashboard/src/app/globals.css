@@ -1,3 +1,6 @@
+@import 'leaflet/dist/leaflet.css';
+@import 'leaflet-draw/dist/leaflet.draw.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -324,6 +327,18 @@
   .upload-area {
     min-height: 80px;
   }
+}
+
+/* Leaflet map preview (platform boundary editor) */
+.boundary-map-root .leaflet-container {
+  height: 100%;
+  width: 100%;
+  font: inherit;
+}
+
+.boundary-map-root .leaflet-pane,
+.boundary-map-root .leaflet-tile-pane {
+  z-index: 0;
 }
 
 /* ─── Print ──────────────────────────────────────────────────────────────────── */

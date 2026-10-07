@@ -4,42 +4,38 @@ import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth, useUserName } from '@/lib/auth';
+import { isCitizenAccount } from '@/lib/auth/user';
 import { useAuthStore } from '@/lib/auth/store';
 import { notificationsApi, municipalitiesApi } from '@/lib/api';
 import { authApi } from '@/lib/api/endpoints/auth';
 import { Avatar } from '@/components/ui/avatar';
-import { Bell, LogOut, User, ChevronDown, Building2 } from 'lucide-react';
+import { Bell, LogOut, User, ChevronDown, Building2, Menu, Globe } from 'lucide-react';
 import { LanguageSwitcher } from './language-switcher';
 import { useTranslate, useLocale, pickName, systemRoleLabelKey } from '@/lib/i18n';
 import { useQuery } from '@tanstack/react-query';
 
-export function Header() {
+type HeaderProps = {
+  onOpenMobileNav?: () => void;
+};
+
+export function Header({ onOpenMobileNav }: HeaderProps) {
   const t = useTranslate();
   const locale = useLocale();
-  const isRtl = locale === 'ar';
   const { user, logout } = useAuth();
   const userName = useUserName();
   const router = useRouter();
-  const [unreadCount, setUnreadCount] = useState(0);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!user) return;
-    const fetchCount = () => {
-      notificationsApi
-        .unreadCount()
-        .then((data) => setUnreadCount(data.unreadCount))
-        .catch((err) => {
-          if (err?.status && err.status !== 401) {
-            console.warn('[notifications] Failed to fetch unread count:', err.message);
-          }
-        });
-    };
-    fetchCount();
-    const interval = setInterval(fetchCount, 60000);
-    return () => clearInterval(interval);
-  }, [user]);
+  const { data: unreadData } = useQuery({
+    queryKey: ['notifications', 'unread-count'],
+    queryFn: () => notificationsApi.unreadCount(),
+    enabled: !!user,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+  });
+
+  const unreadCount = unreadData?.unreadCount ?? 0;
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -70,10 +66,11 @@ export function Header() {
 
   if (!user) return null;
 
+  const showStaffRole = !isCitizenAccount(user);
   const firstRole = user.roles?.[0];
   const rawRoleName = typeof firstRole === 'string' ? firstRole : (firstRole as any)?.name || '';
   const sysRoleKey = rawRoleName ? systemRoleLabelKey(rawRoleName) : null;
-  const roleName = sysRoleKey ? t(sysRoleKey) : rawRoleName;
+  const roleName = showStaffRole ? (sysRoleKey ? t(sysRoleKey) : rawRoleName) : '';
   const municipalityName = muniData
     ? pickName(muniData as any, locale) || (user as any)?.municipality?.name
     : (user as any)?.municipality?.name || '';
@@ -99,17 +96,35 @@ export function Header() {
         </div>
       )}
 
-      <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center justify-between border-b border-gray-200 bg-white px-4">
-        {/* Left: municipality context */}
-        <div className="flex items-center gap-2 min-w-0">
-          {municipalityName && (
-            <div className="hidden items-center gap-1.5 sm:flex">
+      <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center justify-between border-b border-gray-200 bg-white px-3 sm:px-4">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <button
+            type="button"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded text-navy-800 hover:bg-gray-100 lg:hidden"
+            onClick={onOpenMobileNav}
+            aria-label={t('nav.openMenu')}
+          >
+            <Menu className="h-5 w-5" />
+          </button>
+          {user.isSuperAdmin ? (
+            <div className="flex min-w-0 items-center gap-2 lg:hidden">
+              <Globe className="h-4 w-4 shrink-0 text-amber-600" />
+              <span className="truncate text-sm font-bold text-navy-900">{t('common.appName')}</span>
+            </div>
+          ) : municipalityName ? (
+            <div className="flex min-w-0 items-center gap-1.5 lg:hidden">
               <Building2 className="h-3.5 w-3.5 shrink-0 text-gray-400" />
-              <span className="text-xs font-medium text-gray-600 truncate max-w-[200px]">
+              <span className="truncate text-xs font-semibold text-gray-700">{municipalityName}</span>
+            </div>
+          ) : null}
+          {municipalityName && !user.isSuperAdmin ? (
+            <div className="hidden min-w-0 items-center gap-1.5 lg:flex">
+              <Building2 className="h-3.5 w-3.5 shrink-0 text-gray-400" />
+              <span className="max-w-[200px] truncate text-xs font-medium text-gray-600">
                 {municipalityName}
               </span>
             </div>
-          )}
+          ) : null}
         </div>
 
         {/* Right: actions — RTL-aware using flexbox (auto-reverses in dir=rtl) */}
@@ -141,6 +156,7 @@ export function Header() {
                 firstName={user.firstName}
                 lastName={user.lastName}
                 size={28}
+                cacheKey={user.avatarUrl ?? undefined}
               />
               <div className="hidden text-start md:block">
                 <p className="text-xs font-semibold text-gray-900 leading-tight">{userName}</p>
@@ -154,7 +170,7 @@ export function Header() {
             {showUserMenu && (
               <div
                 className={`absolute top-full mt-1 w-52 rounded border border-gray-200 bg-white py-1 shadow-md z-50 ${
-                  isRtl ? 'left-0' : 'right-0'
+                  'end-0'
                 }`}
               >
                 <div className="border-b border-gray-100 px-4 py-2.5">

@@ -10,48 +10,112 @@ import { PrismaService } from '../../core/prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CreateDepartmentDto } from './dto/create-department.dto';
 import { UpdateDepartmentDto } from './dto/update-department.dto';
+import {
+  isProtectedCitizenAccount,
+  staffMemberWhere,
+} from '../../core/users/user-governance';
+import { PermissionsResolver } from '../../core/rbac/permissions.resolver';
+import {
+  assertCanAccessDepartmentDetails,
+  canListDepartmentsForRouting,
+  hasMunicipalityWideDepartmentAccess,
+  type DepartmentAccessContext,
+} from './department-access';
+
+const departmentFullSelect = {
+  id: true,
+  name: true,
+  nameAr: true,
+  nameFr: true,
+  description: true,
+  descriptionAr: true,
+  descriptionFr: true,
+  createdAt: true,
+  headUserId: true,
+  head: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      avatarUrl: true,
+      isActive: true,
+    },
+  },
+  _count: {
+    select: { users: true, complaints: true },
+  },
+} as const;
+
+const departmentRoutingSelect = {
+  id: true,
+  name: true,
+  nameAr: true,
+  nameFr: true,
+} as const;
 
 @Injectable()
 export class DepartmentsService {
-  constructor(private prisma: PrismaService, private audit: AuditService) {}
+  constructor(
+    private prisma: PrismaService,
+    private audit: AuditService,
+    private permissionsResolver: PermissionsResolver,
+  ) {}
 
-  async findAll(municipalityId: string) {
-    const departments = await this.prisma.department.findMany({
-      where: {
-        municipalityId,
-        deletedAt: null,
-      },
-      select: {
-        id: true,
-        name: true,
-        nameAr: true,
-        nameFr: true,
-        description: true,
-        descriptionAr: true,
-        descriptionFr: true,
-        createdAt: true,
-        headUserId: true,
-        head: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-            avatarUrl: true,
-            isActive: true,
-          },
-        },
-        _count: {
-          select: { users: true, complaints: true },
-        },
-      },
-      orderBy: { name: 'asc' },
-    });
-
-    return { data: departments };
+  private async accessContext(
+    userId: string,
+    municipalityId: string,
+  ): Promise<DepartmentAccessContext> {
+    const [permissions, user] = await Promise.all([
+      this.permissionsResolver.getUserPermissions(userId),
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { departmentId: true },
+      }),
+    ]);
+    return {
+      permissions,
+      userDepartmentId: user?.departmentId ?? null,
+    };
   }
 
-  async findOne(id: string, municipalityId: string) {
+  async findAll(userId: string, municipalityId: string) {
+    const ctx = await this.accessContext(userId, municipalityId);
+    const baseWhere = { municipalityId, deletedAt: null };
+
+    if (hasMunicipalityWideDepartmentAccess(ctx.permissions)) {
+      const departments = await this.prisma.department.findMany({
+        where: baseWhere,
+        select: departmentFullSelect,
+        orderBy: { name: 'asc' },
+      });
+      return { data: departments };
+    }
+
+    if (canListDepartmentsForRouting(ctx.permissions)) {
+      const departments = await this.prisma.department.findMany({
+        where: baseWhere,
+        select: departmentRoutingSelect,
+        orderBy: { name: 'asc' },
+      });
+      return { data: departments };
+    }
+
+    if (ctx.userDepartmentId) {
+      const department = await this.prisma.department.findFirst({
+        where: { id: ctx.userDepartmentId, ...baseWhere },
+        select: departmentFullSelect,
+      });
+      return { data: department ? [department] : [] };
+    }
+
+    return { data: [] };
+  }
+
+  async findOne(id: string, municipalityId: string, userId: string) {
+    const ctx = await this.accessContext(userId, municipalityId);
+    assertCanAccessDepartmentDetails(ctx, id);
+
     const department = await this.prisma.department.findFirst({
       where: {
         id,
@@ -94,8 +158,13 @@ export class DepartmentsService {
     });
   }
 
-  async update(id: string, municipalityId: string, dto: UpdateDepartmentDto) {
-    const department = await this.findOne(id, municipalityId);
+  async update(
+    id: string,
+    municipalityId: string,
+    userId: string,
+    dto: UpdateDepartmentDto,
+  ) {
+    const department = await this.findOne(id, municipalityId, userId);
 
     // Check for duplicate name if name is being changed
     if (dto.name && dto.name !== department.name) {
@@ -119,8 +188,8 @@ export class DepartmentsService {
     });
   }
 
-  async remove(id: string, municipalityId: string) {
-    await this.findOne(id, municipalityId);
+  async remove(id: string, municipalityId: string, userId: string) {
+    await this.findOne(id, municipalityId, userId);
 
     // Soft delete
     await this.prisma.department.update({
@@ -149,6 +218,7 @@ export class DepartmentsService {
     actor: { id: string; email: string },
     req?: Request,
   ) {
+    await this.findOne(departmentId, municipalityId, actor.id);
     const dept = await this.prisma.department.findFirst({
       where: { id: departmentId, municipalityId, deletedAt: null },
     });
@@ -156,16 +226,19 @@ export class DepartmentsService {
 
     const newHead = await this.prisma.user.findFirst({
       where: { id: newHeadUserId, municipalityId, isActive: true },
+      include: {
+        userRoles: { include: { role: { select: { name: true } } } },
+      },
     });
     if (!newHead) {
       throw new NotFoundException(
         'Target user not found in this municipality (or is inactive)',
       );
     }
-    if (newHead.createdVia === 'SELF_REGISTRATION') {
+    if (isProtectedCitizenAccount(newHead)) {
       throw new BadRequestException(
-        'Self-registered (citizen) accounts cannot be promoted to staff positions. ' +
-          'Provision a fresh staff account instead.',
+        'Citizen accounts cannot be promoted to staff positions. ' +
+          'Create a separate staff account instead.',
       );
     }
 
@@ -264,6 +337,7 @@ export class DepartmentsService {
     actor: { id: string; email: string },
     req?: Request,
   ) {
+    await this.findOne(departmentId, municipalityId, actor.id);
     const dept = await this.prisma.department.findFirst({
       where: { id: departmentId, municipalityId, deletedAt: null },
     });
@@ -309,7 +383,10 @@ export class DepartmentsService {
    * List the staff members of a department (excludes self-registered citizens).
    * The Head of Department appears in the list and is flagged with `isHead: true`.
    */
-  async listMembers(departmentId: string, municipalityId: string) {
+  async listMembers(departmentId: string, municipalityId: string, userId: string) {
+    const ctx = await this.accessContext(userId, municipalityId);
+    assertCanAccessDepartmentDetails(ctx, departmentId);
+
     const dept = await this.prisma.department.findFirst({
       where: { id: departmentId, municipalityId, deletedAt: null },
       select: { id: true, name: true, headUserId: true },
@@ -317,11 +394,11 @@ export class DepartmentsService {
     if (!dept) throw new NotFoundException('Department not found');
 
     const members = await this.prisma.user.findMany({
-      where: {
+      where: staffMemberWhere({
         municipalityId,
         departmentId,
-        createdVia: { not: 'SELF_REGISTRATION' as any },
-      },
+        isActive: true,
+      }),
       select: {
         id: true,
         email: true,
@@ -364,6 +441,7 @@ export class DepartmentsService {
     actor: { id: string; email: string },
     req?: Request,
   ) {
+    await this.findOne(departmentId, municipalityId, actor.id);
     const dept = await this.prisma.department.findFirst({
       where: { id: departmentId, municipalityId, deletedAt: null },
       select: { id: true, name: true },
@@ -377,6 +455,9 @@ export class DepartmentsService {
 
     const user = await this.prisma.user.findFirst({
       where: { email: trimmed, municipalityId },
+      include: {
+        userRoles: { include: { role: { select: { name: true } } } },
+      },
     });
     if (!user) {
       throw new NotFoundException(
@@ -384,10 +465,10 @@ export class DepartmentsService {
           'The user must already be provisioned as a staff member of this municipality.',
       );
     }
-    if (user.createdVia === ('SELF_REGISTRATION' as any)) {
+    if (isProtectedCitizenAccount(user)) {
       throw new BadRequestException(
-        'Self-registered (citizen) accounts cannot be assigned to a department. ' +
-          'Provision a fresh staff account instead.',
+        'Citizen accounts cannot be assigned to a department. ' +
+          'Create a separate staff account instead.',
       );
     }
     if (!user.isActive) {
@@ -445,6 +526,7 @@ export class DepartmentsService {
     actor: { id: string; email: string },
     req?: Request,
   ) {
+    await this.findOne(departmentId, municipalityId, actor.id);
     const dept = await this.prisma.department.findFirst({
       where: { id: departmentId, municipalityId, deletedAt: null },
       select: { id: true, name: true, headUserId: true },

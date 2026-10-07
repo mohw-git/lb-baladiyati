@@ -1,13 +1,15 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ScheduleModule } from '@nestjs/schedule';
 import { LoggerModule } from 'nestjs-pino';
 import { randomUUID } from 'crypto';
-import { join } from 'path';
 
 // Core modules
 import { ConfigModule } from './core/config/config.module';
+import { resolveUploadRoot } from './core/storage/upload-path.util';
 import { PrismaModule } from './core/prisma/prisma.module';
 import { AuthCoreModule } from './core/auth/auth.module';
 import { RbacModule } from './core/rbac/rbac.module';
@@ -36,6 +38,7 @@ import { HealthModule } from './modules/health/health.module';
 
 // Guards
 import { JwtAuthGuard } from './core/auth/jwt-auth.guard';
+import { TwoFactorEnrollmentGuard } from './core/auth/two-factor-enrollment.guard';
 import { PermissionsGuard } from './core/rbac/permissions.guard';
 import { WebOnlyGuard } from './core/auth/guards/web-only.guard';
 import { MaintenanceGuard } from './core/maintenance/maintenance.guard';
@@ -88,14 +91,18 @@ import { MaintenanceGuard } from './core/maintenance/maintenance.guard';
       },
     }),
 
-    // Serve static files (uploads)
-    // Use process.cwd() (project root) because __dirname points to dist/src/ after compilation
-    ServeStaticModule.forRoot({
-      rootPath: join(process.cwd(), 'uploads'),
-      serveRoot: '/uploads',
-      serveStaticOptions: {
-        index: false, // Don't try to serve index.html as fallback
-      },
+    // Public uploads (not KYC — blocked in main.ts). Root follows UPLOAD_PATH.
+    ServeStaticModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => [
+        {
+          rootPath: resolveUploadRoot(config.get<string>('UPLOAD_PATH')),
+          serveRoot: '/uploads',
+          serveStaticOptions: {
+            index: false,
+          },
+        },
+      ],
     }),
 
     // Rate limiting - default 100 requests per minute
@@ -105,6 +112,7 @@ import { MaintenanceGuard } from './core/maintenance/maintenance.guard';
         limit: 100,
       },
     ]),
+    ScheduleModule.forRoot(),
 
     // Core modules
     ConfigModule,
@@ -149,6 +157,11 @@ import { MaintenanceGuard } from './core/maintenance/maintenance.guard';
     {
       provide: APP_GUARD,
       useClass: PermissionsGuard,
+    },
+    // Staff without 2FA cannot access app APIs (profile + 2FA setup still allowed)
+    {
+      provide: APP_GUARD,
+      useClass: TwoFactorEnrollmentGuard,
     },
     // Global Web-Only Guard (rejects mobile-app requests on @WebOnly endpoints)
     {

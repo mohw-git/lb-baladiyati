@@ -14,11 +14,11 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: 'Baladi — Municipal Services Portal',
+  title: 'Baladiyati — Municipal Services Portal',
   description: 'Official municipal complaint management and citizen services portal.',
   other: {
     // Government-standard meta
-    'application-name': 'Baladi Municipal Portal',
+    'application-name': 'Baladiyati Municipal Portal',
     'theme-color': '#0f2555',
   },
 };

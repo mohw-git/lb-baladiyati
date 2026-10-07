@@ -6,6 +6,13 @@ import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { toast } from 'sonner';
 import { newsApi, getFileUrl, ApiError } from '@/lib/api';
+import {
+  NEWS_CONTENT_MIN,
+  NEWS_TITLE_MAX,
+  NEWS_TITLE_MIN,
+  trimNewsFields,
+  validateNewsFields,
+} from '@/lib/news-form';
 import { cn } from '@/lib/utils';
 import { ArrowLeft, Loader2, Save, Eye, EyeOff, Trash2 } from 'lucide-react';
 import { useTranslate, useLocale, isRtl } from '@/lib/i18n';
@@ -19,6 +26,28 @@ export default function EditNewsPage() {
   const rtl = isRtl(locale);
   const [form, setForm] = useState({ title: '', content: '' });
   const [coverImage, setCoverImage] = useState<File | null>(null);
+  const [coverImageLoading, setCoverImageLoading] = useState(false);
+
+  const handleCoverImageChange = async (file: File | null) => {
+    if (!file) {
+      setCoverImage(null);
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error(t('upload.error.tooLarge'));
+      return;
+    }
+    setCoverImageLoading(true);
+    try {
+      const { compressImageFile } = await import('@/lib/utils/image-compress');
+      const compressed = await compressImageFile(file, { maxLongEdge: 1920, quality: 0.82 });
+      setCoverImage(compressed);
+    } catch {
+      setCoverImage(file);
+    } finally {
+      setCoverImageLoading(false);
+    }
+  };
 
   const { data: article, isLoading } = useQuery({
     queryKey: ['news', id],
@@ -31,20 +60,24 @@ export default function EditNewsPage() {
     }
   }, [article]);
 
+  const showApiError = (err: unknown) => {
+    const message =
+      err instanceof ApiError
+        ? err.getDisplayMessage(t('common.error'))
+        : t('common.error');
+    toast.error(message);
+  };
+
   const updateMutation = useMutation({
-    mutationFn: () =>
-      newsApi.update(
-        id,
-        { title: form.title, content: form.content },
-        coverImage || undefined
-      ),
+    mutationFn: (payload: { title: string; content: string }) =>
+      newsApi.update(id, payload, coverImage || undefined),
     onSuccess: () => {
       toast.success(t('news.toast.updated'));
       queryClient.invalidateQueries({ queryKey: ['news'] });
       queryClient.invalidateQueries({ queryKey: ['news', id] });
       setCoverImage(null);
     },
-    onError: (err: ApiError) => toast.error(err.message),
+    onError: showApiError,
   });
 
   const publishMutation = useMutation({
@@ -54,7 +87,7 @@ export default function EditNewsPage() {
       queryClient.invalidateQueries({ queryKey: ['news'] });
       queryClient.invalidateQueries({ queryKey: ['news', id] });
     },
-    onError: (err: ApiError) => toast.error(err.message),
+    onError: showApiError,
   });
 
   const unpublishMutation = useMutation({
@@ -64,7 +97,7 @@ export default function EditNewsPage() {
       queryClient.invalidateQueries({ queryKey: ['news'] });
       queryClient.invalidateQueries({ queryKey: ['news', id] });
     },
-    onError: (err: ApiError) => toast.error(err.message),
+    onError: showApiError,
   });
 
   const deleteMutation = useMutation({
@@ -73,8 +106,19 @@ export default function EditNewsPage() {
       toast.success(t('news.toast.deleted'));
       router.push('/news');
     },
-    onError: (err: ApiError) => toast.error(err.message),
+    onError: showApiError,
   });
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const { title, content } = trimNewsFields(form.title, form.content);
+    const validationMsg = validateNewsFields(title, content, t);
+    if (validationMsg) {
+      toast.error(validationMsg);
+      return;
+    }
+    updateMutation.mutate({ title, content });
+  };
 
   const handleDelete = () => {
     if (confirm(t('news.confirm.delete').replace('{title}', article?.title || ''))) {
@@ -120,13 +164,7 @@ export default function EditNewsPage() {
       </div>
 
       <div className="gov-card p-4">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            updateMutation.mutate();
-          }}
-          className="space-y-3"
-        >
+        <form onSubmit={handleSubmit} className="space-y-3">
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-700">{t('news.field.title')} *</label>
             <input
@@ -134,8 +172,11 @@ export default function EditNewsPage() {
               value={form.title}
               onChange={(e) => setForm({ ...form, title: e.target.value })}
               required
+              minLength={NEWS_TITLE_MIN}
+              maxLength={NEWS_TITLE_MAX}
               className="input-gov"
             />
+            <p className="mt-1 text-xs text-gray-500">{t('news.hint.titleMin')}</p>
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-700">{t('news.field.content')} *</label>
@@ -143,9 +184,11 @@ export default function EditNewsPage() {
               value={form.content}
               onChange={(e) => setForm({ ...form, content: e.target.value })}
               required
+              minLength={NEWS_CONTENT_MIN}
               rows={8}
               className="input-gov"
             />
+            <p className="mt-1 text-xs text-gray-500">{t('news.hint.contentMin')}</p>
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-700">{t('news.field.coverImage')}</label>
@@ -161,9 +204,14 @@ export default function EditNewsPage() {
             <input
               type="file"
               accept="image/*"
-              onChange={(e) => setCoverImage(e.target.files?.[0] || null)}
+              disabled={coverImageLoading}
+              onChange={(e) => {
+                void handleCoverImageChange(e.target.files?.[0] || null);
+                e.target.value = '';
+              }}
               className="input-gov"
             />
+            <p className="mt-1 text-xs text-gray-500">{t('news.hint.coverImage')}</p>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2 pt-2">
             {article.isPublished ? (

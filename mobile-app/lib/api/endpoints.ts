@@ -21,6 +21,29 @@ export const authApi = {
     post<any>('/auth/refresh', { refreshToken }, { skipAuth: true }),
   twoFactorLogin: (data: { challengeToken: string; code: string }) =>
     post<any>('/auth/2fa/login', data, { skipAuth: true }),
+  emailTwoFactorLogin: (data: { challengeToken: string; code: string }) =>
+    post<any>('/auth/2fa/email/login', data, { skipAuth: true }),
+  resendEmailTwoFactorCode: (challengeToken: string) =>
+    post<{ message: string }>('/auth/2fa/email/resend', { challengeToken }, { skipAuth: true }),
+  resendVerification: (email: string) =>
+    post<{ message: string }>('/auth/resend-verification', { email }, { skipAuth: true }),
+  enableEmailTwoFactor: (password: string) =>
+    post<{ enabled: true; method: 'EMAIL' }>('/auth/2fa/email/enable', { password }),
+  requestDisableEmailTwoFactor: (password: string) =>
+    post<{ message: string }>('/auth/2fa/email/disable/request', { password }),
+  confirmDisableEmailTwoFactor: (data: { password: string; code: string }) =>
+    post<{ disabled: true }>('/auth/2fa/email/disable/confirm', data),
+  disableTwoFactor: (data: { password: string; code: string }) =>
+    post<{ disabled: true }>('/auth/2fa/disable', data),
+  setupTwoFactor: () =>
+    post<{ secret: string; otpauthUrl: string; qrCodeDataUrl: string }>('/auth/2fa/setup'),
+  verifyTwoFactor: (code: string) =>
+    post<{ enabled: true }>('/auth/2fa/verify', { code }),
+  uploadAvatar: (file: { uri: string; name: string; type: string }) => {
+    const formData = new FormData();
+    formData.append('avatar', { uri: file.uri, name: file.name, type: file.type } as any);
+    return postFormData<{ avatarUrl: string }>('/auth/me/avatar', formData);
+  },
   getProfile: () => get<any>('/auth/me'),
   updateProfile: (data: {
     firstName?: string;
@@ -54,6 +77,9 @@ export const complaintsApi = {
     if (data.latitude !== undefined && data.latitude !== null) formData.append('latitude', String(data.latitude));
     if (data.longitude !== undefined && data.longitude !== null) formData.append('longitude', String(data.longitude));
     if (data.address) formData.append('address', data.address);
+    if (data.selectedMunicipalityId) {
+      formData.append('selectedMunicipalityId', data.selectedMunicipalityId);
+    }
     if (photos && photos.length > 0) {
       photos.forEach((photo) => {
         formData.append('attachments', {
@@ -91,11 +117,20 @@ export const complaintsApi = {
   /** Get complaint statistics */
   getStats: () => get<any>('/complaints/stats/summary'),
   remove: (id: string) => del<any>(`/complaints/${id}`),
+  resolveLocation: (latitude: number, longitude: number) =>
+    get<{
+      status: string;
+      municipalityId: string | null;
+      method: string | null;
+      candidates: { id: string; name: string; code: string; nameAr?: string; nameFr?: string }[];
+      distanceMeters?: number;
+    }>(`/complaints/resolve-location?latitude=${latitude}&longitude=${longitude}`),
 };
 
 // Categories
 export const categoriesApi = {
-  list: () => get<any[]>('/categories'),
+  list: (municipalityId?: string) =>
+    get<any[]>(`/categories${municipalityId ? `?municipalityId=${encodeURIComponent(municipalityId)}` : ''}`),
 };
 
 // News
@@ -107,7 +142,10 @@ export const newsApi = {
 // Notifications
 export const notificationsApi = {
   list: (params: any = {}) => getPaginated<any>(`/notifications${qs(params)}`),
-  unreadCount: () => get<any>('/notifications/unread-count'),
+  unreadCount: async () => {
+    const data = await get<{ unreadCount?: number; count?: number }>('/notifications/unread-count');
+    return { unreadCount: data.unreadCount ?? data.count ?? 0 };
+  },
   markRead: (id: string) => patch<any>(`/notifications/${id}/read`),
   markAllRead: () => post<any>('/notifications/read-all'),
 };
@@ -116,7 +154,7 @@ export const notificationsApi = {
 export const deviceTokensApi = {
   register: (token: string, platform: 'ANDROID' | 'IOS' | 'WEB') =>
     post<any>('/device-tokens', { token, platform }),
-  remove: (token: string) => del<any>(`/device-tokens/${token}`),
+  remove: (token: string) => del<any>(`/device-tokens/${encodeURIComponent(token)}`),
 };
 
 // Departments (for help-request modal pickers)
@@ -128,17 +166,27 @@ export const departmentsApi = {
 export const helpRequestsApi = {
   list: (params: any = {}) => getPaginated<any>(`/help-requests${qs(params)}`),
   getById: (id: string) => get<any>(`/help-requests/${id}`),
-  pendingCount: () => get<{ count: number }>('/help-requests/pending-count'),
+  pendingCount: () =>
+    get<{ count: number; receiverCount: number; sourceCount: number }>(
+      '/help-requests/pending-count',
+    ),
   historyForComplaint: (complaintId: string) =>
     get<any[]>(`/help-requests/complaint/${complaintId}`),
   create: (complaintId: string, data: { toDepartmentId: string; reason: string }) =>
     post<any>(`/help-requests/complaint/${complaintId}`, data),
+  approveSource: (id: string, data: { note?: string } = {}) =>
+    post<any>(`/help-requests/${id}/approve-source`, data),
+  rejectSource: (id: string, data: { note: string }) =>
+    post<any>(`/help-requests/${id}/reject-source`, data),
   cancel: (id: string) => del<any>(`/help-requests/${id}`),
   accept: (id: string, data: { reason?: string } = {}) =>
     post<any>(`/help-requests/${id}/accept`, data),
   decline: (id: string, data: { reason: string }) =>
     post<any>(`/help-requests/${id}/decline`, data),
-  assign: (id: string, data: { assigneeId: string; note?: string }) =>
+  // Backend DTO uses `helperAssigneeId` (matches Prisma column). The earlier
+  // `assigneeId` here would have been silently dropped by class-validator's
+  // whitelist, causing the assign to 400 with a confusing message.
+  assign: (id: string, data: { helperAssigneeId: string; note?: string }) =>
     post<any>(`/help-requests/${id}/assign`, data),
   submit: (id: string, data: { notes: string; attachments?: any[] }) =>
     post<any>(`/help-requests/${id}/submit`, data),
